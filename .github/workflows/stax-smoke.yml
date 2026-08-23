@@ -84,11 +84,22 @@ jobs:
           echo "SIDECAR_API_KEY=${KEY}" >> "$GITHUB_ENV"
 
       - name: Build agent-sidecar image
-        run: docker compose -f docker-compose.yml --profile agent-sidecar build agent-sidecar
+        # Both profiles are required here, not just agent-sidecar: Compose
+        # resolves `depends_on` against the profile-filtered project model,
+        # and agent-sidecar depends_on omniroute-base, which only exists
+        # under the `base` profile (from the included
+        # omniroute/docker-compose.yml). Omitting --profile base makes
+        # omniroute-base "undefined" to this command even though it's
+        # already running — confirmed via the real error message:
+        # `service "agent-sidecar" depends on undefined service
+        # "omniroute-base": invalid compose project`. The later
+        # logs/down steps in this job already pass both profiles; this
+        # step and the next one didn't.
+        run: docker compose -f docker-compose.yml --profile base --profile agent-sidecar build agent-sidecar
 
       - name: Run agent-sidecar pytest suite against live OmniRoute
         run: |
-          docker compose -f docker-compose.yml --profile agent-sidecar run --rm \
+          docker compose -f docker-compose.yml --profile base --profile agent-sidecar run --rm \
             -e OMNIROUTE_API_KEY="${SIDECAR_API_KEY}" \
             -e AGENT_SIDECAR_MODEL_ID=opencode/big-pickle \
             agent-sidecar uv run pytest tests/ -v
