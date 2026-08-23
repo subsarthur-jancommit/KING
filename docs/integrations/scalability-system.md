@@ -342,12 +342,27 @@ including file, even as a partial patch, is a hard conflict at `up`/`build`
 time even though `config` renders it as a clean merge. Root-caused by
 reading the real CI error (only visible after the actions/checkout SHA-pin
 fix let jobs get past checkout) rather than assuming the memory theory was
-still right. The safer mechanism, if this heap ceiling turns out to still
-be necessary once testing resumes: build the `omniroute:base` image
-directly with `docker build --build-arg OMNIROUTE_BUILD_MEMORY_MB=...`
-*before* `docker compose up` (no `--build` flag needed at that point, since
-the tagged image already exists) — this never touches the compose service
-graph at all, so it can't collide with anything `include:`s.
+still right.
+
+**Confirmed for real once the compose-collision and SHA-pin issues were
+both out of the way**: the `agent-sidecar` job reproduced the *exact* same
+failure as the original investigation — `The runner has received a
+shutdown signal`, again at "Generating static pages using 3 workers
+(440/587)" — in a run where `observability` (a completely different,
+unrelated job) passed cleanly. This confirms the heap-exhaustion theory
+was correct all along; the compose-collision bug had just been blocking
+every job identically before that, making it impossible to tell.
+
+**Actual fix applied**, in all three jobs that build `omniroute-base`
+(`agent-sidecar` and `openhands` in `stax-smoke.yml`,
+`boot-and-verify` in `omniroute-smoke.yml`): a dedicated
+`docker build --target runner-base --build-arg
+OMNIROUTE_BUILD_MEMORY_MB=1536 -t omniroute:base omniroute/` step runs
+*before* `docker compose ... up` (with no `--build` flag on the `up` call,
+since the image is already built and tagged to match what
+`omniroute-base`'s `image:` field expects). This never touches the compose
+service graph, so it can't collide with anything `include:`s the way the
+reverted approach did.
 
 ## Why these and not others
 
