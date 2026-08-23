@@ -27,7 +27,7 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 | [agent-sidecar](../../agent-sidecar/) | Combined smolagents + pydantic-ai Python service, using OmniRoute as both LLM backend and MCP tool source | ✅ installed & live-validated (see below) |
 | [Langfuse](../../observability/) | Self-hosted, framework-agnostic (OpenTelemetry) tracing across every agent runtime in this workspace | ✅ vendored & statically validated (Docker daemon unavailable here — see below) |
 | [OpenHands Agent Canvas](./openhands-agent-canvas.md) | Self-hosted control center to run/monitor multiple coding agents and automations, LLM-configured to route through OmniRoute | ✅ vendored & statically validated (see linked doc) |
-| [Smithery](./smithery.md) | External MCP server registry — pull third-party MCP servers as tools, optionally publish OmniRoute's own MCP server | pending |
+| [Smithery](./smithery.md) | External MCP server registry — pull third-party MCP servers as tools, optionally publish OmniRoute's own MCP server | ✅ CLI verified & skill installed (user-scoped — see linked doc) |
 
 ## Graphify — status
 
@@ -57,7 +57,12 @@ exact file:line locations under `omniroute/src/lib/cloudAgent/`.
 
 `graphify-out/` (graph.json, GRAPH_REPORT.md, cache/, manifest) is generated
 build output — gitignored, not committed. Regenerate anytime with
-`graphify update .` (incremental, AST-only, no API cost).
+`graphify update .` (incremental, AST-only, no API cost). Re-run after every
+STAX phase landed (now covering `agent-sidecar/`, docs, and configs too, not
+just `--code-only` source): 129,621 nodes / 219,980 edges / 9,584
+communities from 11,993 files — verified the update respected `.gitignore`
+correctly (zero nodes sourced from `agent-sidecar/.venv/` or `node_modules/`,
+both of which exist on disk in this workspace by this point).
 
 ## repomix — status
 
