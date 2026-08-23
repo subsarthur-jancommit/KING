@@ -330,6 +330,25 @@ headroom under 7GB for the OS, Docker daemon, and Node's baseline
 overhead. No `omniroute/` file touched; this only supplies a build arg the
 Dockerfile already explicitly supports overriding.
 
+**Correction, found the hard way**: that partial-override approach was
+reverted. `docker compose config` validated it cleanly (build.args merged
+additively, every other field untouched, exactly as intended), but
+`docker compose up`/`build` rejected it outright at runtime:
+`services.omniroute-base conflicts with imported resource`. **`docker
+compose config` is not a reliable proxy for what `docker compose up` will
+accept** — `include:` is meant for pulling in non-overlapping services from
+other files, and redeclaring a same-named service directly in the
+including file, even as a partial patch, is a hard conflict at `up`/`build`
+time even though `config` renders it as a clean merge. Root-caused by
+reading the real CI error (only visible after the actions/checkout SHA-pin
+fix let jobs get past checkout) rather than assuming the memory theory was
+still right. The safer mechanism, if this heap ceiling turns out to still
+be necessary once testing resumes: build the `omniroute:base` image
+directly with `docker build --build-arg OMNIROUTE_BUILD_MEMORY_MB=...`
+*before* `docker compose up` (no `--build` flag needed at that point, since
+the tagged image already exists) — this never touches the compose service
+graph at all, so it can't collide with anything `include:`s.
+
 ## Why these and not others
 
 A short gap-analysis pass considered and explicitly rejected: **Hermes Agent**
