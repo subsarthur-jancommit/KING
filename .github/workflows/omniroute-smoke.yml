@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Generate CI-only secrets and write omniroute/.env
         run: |
@@ -39,8 +39,26 @@ jobs:
           sed -i "s|^# OMNIROUTE_DISABLE_BACKGROUND_SERVICES=false|OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true|" omniroute/.env
           echo "INITIAL_PASSWORD=${INITIAL_PASSWORD}" >> "$GITHUB_ENV"
 
+      - name: Pre-build omniroute:base with a lower per-worker heap ceiling
+        # next build's static-page generation spawns 3 parallel workers that
+        # each inherit NODE_OPTIONS (issue #4076's fix sets
+        # --max-old-space-size=${OMNIROUTE_BUILD_MEMORY_MB}, default 4096MB)
+        # -> up to ~12GB of potential combined heap, more than this runner's
+        # 7GB RAM. Built directly (not via `docker compose ... build`)
+        # because overriding this via a same-named service block in
+        # docker-compose.yml was tried and rejected at up/build time
+        # ("conflicts with imported resource") even though `docker compose
+        # config` showed it as a clean merge — see
+        # docs/integrations/scalability-system.md in this repo.
+        run: |
+          docker build \
+            --target runner-base \
+            --build-arg OMNIROUTE_BUILD_MEMORY_MB=1536 \
+            -t omniroute:base \
+            omniroute/
+
       - name: Build and start (root compose wrapper, base profile)
-        run: docker compose -f docker-compose.yml --profile base up -d --build
+        run: docker compose -f docker-compose.yml --profile base up -d
 
       - name: Wait for /healthz
         run: |

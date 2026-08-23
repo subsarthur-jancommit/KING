@@ -1,0 +1,22 @@
+[project]
+name = "stax-agent-sidecar"
+version = "0.1.0"
+description = "STAX agent-sidecar — smolagents + pydantic-ai runners using OmniRoute as LLM backend and MCP tool source."
+requires-python = ">=3.11"
+dependencies = [
+    "smolagents[toolkit,mcp]>=1.0.0",
+    "pydantic-ai>=1.0.0",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_sidecar"]

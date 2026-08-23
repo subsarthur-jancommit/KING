@@ -1,0 +1,248 @@
+name: STAX smoke test
+
+on:
+  pull_request:
+    paths:
+      - "docker-compose.yml"
+      - "agent-sidecar/**"
+      - "observability/**"
+      - ".github/workflows/stax-smoke.yml"
+  workflow_dispatch: {}
+
+jobs:
+  agent-sidecar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Generate CI-only secrets and write omniroute/.env
+        run: |
+          set -euo pipefail
+          cp omniroute/.env.example omniroute/.env
+          JWT_SECRET=$(openssl rand -base64 48)
+          API_KEY_SECRET=$(openssl rand -hex 32)
+          INITIAL_PASSWORD=$(openssl rand -base64 18)
+          echo "::add-mask::${JWT_SECRET}"
+          echo "::add-mask::${API_KEY_SECRET}"
+          echo "::add-mask::${INITIAL_PASSWORD}"
+          sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${JWT_SECRET}|" omniroute/.env
+          sed -i "s|^API_KEY_SECRET=.*|API_KEY_SECRET=${API_KEY_SECRET}|" omniroute/.env
+          sed -i "s|^INITIAL_PASSWORD=.*|INITIAL_PASSWORD=${INITIAL_PASSWORD}|" omniroute/.env
+          sed -i "s|^# OMNIROUTE_DISABLE_BACKGROUND_SERVICES=false|OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true|" omniroute/.env
+          echo "INITIAL_PASSWORD=${INITIAL_PASSWORD}" >> "$GITHUB_ENV"
+
+      - name: Pre-build omniroute:base with a lower per-worker heap ceiling
+        # next build's static-page generation spawns 3 parallel workers that
+        # each inherit NODE_OPTIONS (issue #4076's fix sets
+        # --max-old-space-size=${OMNIROUTE_BUILD_MEMORY_MB}, default 4096MB)
+        # -> up to ~12GB of potential combined heap, more than this runner's
+        # 7GB RAM. Built directly with `docker build` (not via `docker
+        # compose ... build`) because a same-named service override in
+        # docker-compose.yml to pass this build arg was tried and rejected
+        # at `up`/`build` time ("conflicts with imported resource") even
+        # though `docker compose config` showed it as a clean merge — see
+        # docs/integrations/scalability-system.md. Building the image
+        # directly and tagging it to match omniroute-base's `image:
+        # omniroute:base` sidesteps the compose service graph entirely.
+        run: |
+          docker build \
+            --target runner-base \
+            --build-arg OMNIROUTE_BUILD_MEMORY_MB=1536 \
+            -t omniroute:base \
+            omniroute/
+
+      - name: Start OmniRoute (base profile, reuses the pre-built image)
+        run: docker compose -f docker-compose.yml --profile base up -d
+
+      - name: Wait for OmniRoute /healthz
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:20128/healthz >/dev/null; then
+              echo "Ready after $((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "OmniRoute did not become healthy in time" >&2
+          docker compose -f docker-compose.yml --profile base logs
+          exit 1
+
+      - name: Provision a scoped OMNIROUTE_API_KEY for the sidecar
+        run: |
+          set -euo pipefail
+          curl -sf -c cookies.txt -X POST http://localhost:20128/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d "{\"password\":\"${INITIAL_PASSWORD}\"}" >/dev/null
+          KEY_JSON=$(curl -sf -b cookies.txt -X POST http://localhost:20128/api/keys \
+            -H "Content-Type: application/json" \
+            -d '{"name":"ci-agent-sidecar","scopes":["models","routing","health"]}')
+          KEY=$(echo "$KEY_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['key'])")
+          echo "::add-mask::${KEY}"
+          echo "SIDECAR_API_KEY=${KEY}" >> "$GITHUB_ENV"
+
+      - name: Build agent-sidecar image
+        # Both profiles are required here, not just agent-sidecar: Compose
+        # resolves `depends_on` against the profile-filtered project model,
+        # and agent-sidecar depends_on omniroute-base, which only exists
+        # under the `base` profile (from the included
+        # omniroute/docker-compose.yml). Omitting --profile base makes
+        # omniroute-base "undefined" to this command even though it's
+        # already running — confirmed via the real error message:
+        # `service "agent-sidecar" depends on undefined service
+        # "omniroute-base": invalid compose project`. The later
+        # logs/down steps in this job already pass both profiles; this
+        # step and the next one didn't.
+        run: docker compose -f docker-compose.yml --profile base --profile agent-sidecar build agent-sidecar
+
+      - name: Run agent-sidecar pytest suite against live OmniRoute
+        run: |
+          docker compose -f docker-compose.yml --profile base --profile agent-sidecar run --rm \
+            -e OMNIROUTE_API_KEY="${SIDECAR_API_KEY}" \
+            -e AGENT_SIDECAR_MODEL_ID=opencode/big-pickle \
+            agent-sidecar uv run pytest tests/ -v
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml --profile base --profile agent-sidecar logs --tail=300
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml --profile base --profile agent-sidecar down -v
+
+  observability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Generate CI-only secrets and write observability/.env
+        run: |
+          set -euo pipefail
+          {
+            echo "SALT=$(openssl rand -hex 32)"
+            echo "ENCRYPTION_KEY=$(openssl rand -hex 32)"
+            echo "NEXTAUTH_SECRET=$(openssl rand -hex 32)"
+            echo "NEXTAUTH_URL=http://localhost:3000"
+            echo "POSTGRES_USER=postgres"
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+            echo "POSTGRES_DB=postgres"
+            echo "CLICKHOUSE_USER=clickhouse"
+            echo "CLICKHOUSE_PASSWORD=$(openssl rand -hex 24)"
+            echo "MINIO_ROOT_USER=minio"
+            echo "MINIO_ROOT_PASSWORD=$(openssl rand -hex 24)"
+            echo "REDIS_AUTH=$(openssl rand -hex 24)"
+            echo "LANGFUSE_REDIS_PORT=16379"
+          } > observability/.env
+          # DATABASE_URL references POSTGRES_PASSWORD — expand it into the file
+          # the same way an operator following .env.example by hand would.
+          PGPASS=$(grep '^POSTGRES_PASSWORD=' observability/.env | cut -d= -f2-)
+          echo "DATABASE_URL=postgresql://postgres:${PGPASS}@postgres:5432/postgres" >> observability/.env
+
+      - name: Build and start Langfuse (observability profile — standalone, no OmniRoute needed)
+        run: docker compose -f docker-compose.yml --profile observability --env-file observability/.env up -d --build
+
+      - name: Wait for Langfuse health (API alive + database reachable)
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            if curl -sf "http://localhost:3000/api/public/health?failIfDatabaseUnavailable=true" >/dev/null; then
+              echo "Langfuse ready after $((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Langfuse did not become healthy in time" >&2
+          docker compose -f docker-compose.yml --profile observability logs
+          exit 1
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml --profile observability logs --tail=300
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml --profile observability down -v
+
+  openhands:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Generate CI-only secrets and write omniroute/.env
+        run: |
+          set -euo pipefail
+          cp omniroute/.env.example omniroute/.env
+          JWT_SECRET=$(openssl rand -base64 48)
+          API_KEY_SECRET=$(openssl rand -hex 32)
+          INITIAL_PASSWORD=$(openssl rand -base64 18)
+          echo "::add-mask::${JWT_SECRET}"
+          echo "::add-mask::${API_KEY_SECRET}"
+          echo "::add-mask::${INITIAL_PASSWORD}"
+          sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${JWT_SECRET}|" omniroute/.env
+          sed -i "s|^API_KEY_SECRET=.*|API_KEY_SECRET=${API_KEY_SECRET}|" omniroute/.env
+          sed -i "s|^INITIAL_PASSWORD=.*|INITIAL_PASSWORD=${INITIAL_PASSWORD}|" omniroute/.env
+          sed -i "s|^# OMNIROUTE_DISABLE_BACKGROUND_SERVICES=false|OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true|" omniroute/.env
+          echo "OH_AGENT_CANVAS_SECRET_KEY=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+
+      - name: Pre-build omniroute:base with a lower per-worker heap ceiling
+        # See the identical step in the agent-sidecar job for the full
+        # rationale (issue #4076 heap fix + 3 parallel next-build workers
+        # exceeding this runner's RAM at the default ceiling).
+        run: |
+          docker build \
+            --target runner-base \
+            --build-arg OMNIROUTE_BUILD_MEMORY_MB=1536 \
+            -t omniroute:base \
+            omniroute/
+
+      - name: Start OmniRoute + OpenHands Agent Canvas (reuses the pre-built image)
+        run: docker compose -f docker-compose.yml --profile base --profile openhands up -d
+
+      - name: Wait for OmniRoute /healthz
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:20128/healthz >/dev/null; then
+              echo "OmniRoute ready after $((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "OmniRoute did not become healthy in time" >&2
+          exit 1
+
+      - name: Wait for OpenHands Agent Canvas to respond
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ || echo 000)
+            if [ "$code" != "000" ]; then
+              echo "OpenHands Agent Canvas responded with HTTP $code after $((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "OpenHands Agent Canvas did not respond in time" >&2
+          docker compose -f docker-compose.yml --profile base --profile openhands logs
+          exit 1
+
+      - name: Note — LLM wiring is a manual UI step, not covered by this smoke test
+        run: |
+          echo "This job only proves the container boots and serves HTTP." \
+               "The Settings > LLM wiring documented in" \
+               "docs/integrations/openhands-agent-canvas.md is a one-time manual step," \
+               "not automated here."
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml --profile base --profile openhands logs --tail=300
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml --profile base --profile openhands down -v

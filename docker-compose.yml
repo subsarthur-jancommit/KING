@@ -1,6 +1,54 @@
 # KING root — thin wrapper so `docker compose up` works from repo root.
 # Delegates entirely to the vendored OmniRoute compose file; see omniroute/docker-compose.yml
 # for the full profile list (base, web, cli, host, cliproxyapi, memory, bifrost).
+# Also includes STAX's own opt-in profiles — see docs/integrations/scalability-system.md.
 include:
   - path: omniroute/docker-compose.yml
-    env_file: omniroute/.env
+  - path: observability/docker-compose.langfuse.yml
+
+services:
+  agent-sidecar:
+    build: ./agent-sidecar
+    image: king-agent-sidecar:local
+    env_file:
+      - path: agent-sidecar/.env
+        required: false
+    environment:
+      - OMNIROUTE_BASE_URL=http://omniroute-base:${DASHBOARD_PORT:-20128}
+    depends_on:
+      omniroute-base:
+        condition: service_healthy
+    profiles:
+      - agent-sidecar
+
+  openhands-agent-canvas:
+    # Pinned by digest, not a semver tag: the upstream image has no semver
+    # releases (verified against the GHCR registry API — only `latest`,
+    # `main`, and sha-/PR-based tags exist). `main`'s digest as of
+    # 2026-08-23 — see docs/integrations/openhands-agent-canvas.md for how
+    # to refresh this.
+    image: ghcr.io/openhands/agent-canvas@sha256:becb2c0cdebb4427304c4476c34b0c9bf9ddd50e7a0abee444c764c2151ab1b3
+    ports:
+      - "${OPENHANDS_CANVAS_PORT:-8000}:8000"
+    volumes:
+      - openhands-canvas-settings:/home/openhands/.openhands
+      - ./:/projects/king
+    environment:
+      # CHANGEME: export OH_AGENT_CANVAS_SECRET_KEY (openssl rand -base64 32)
+      # before actually using the `openhands` profile — the fallback below
+      # is a placeholder, not a secret. Deliberately a soft default, not a
+      # hard-required ${VAR:?err}: that form is interpolated for the whole
+      # merged compose model regardless of active profile, and would break
+      # `--profile base` (plain OmniRoute) for anyone who never asked for
+      # this service — validated the hard way while building this file,
+      # same class of bug as the Langfuse redis/env_file issues.
+      - OH_SECRET_KEY=${OH_AGENT_CANVAS_SECRET_KEY:-CHANGEME-openssl-rand-base64-32}
+      # - LOCAL_BACKEND_API_KEY=  # only required if you later run with --public
+    depends_on:
+      omniroute-base:
+        condition: service_healthy
+    profiles:
+      - openhands
+
+volumes:
+  openhands-canvas-settings:
