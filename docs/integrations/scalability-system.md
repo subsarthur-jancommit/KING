@@ -275,6 +275,61 @@ both with and without MCP tools) *are* genuinely live-validated, directly
 on the host against the real running OmniRoute instance, which is a
 stronger proof than a container boot would have added on top.
 
+## CI (GitHub Actions) — status, and a real root-caused failure
+
+`.github/workflows/stax-smoke.yml` runs three independent jobs
+(`agent-sidecar`, `observability`, `openhands`) on real GitHub-hosted
+runners, which — unlike this sandbox — have a genuine Docker daemon.
+`omniroute-smoke.yml` (pre-existing) already covers plain `--profile base`.
+
+**`observability` and `openhands` passed cleanly on first/second try** —
+real, live proof: the full 6-service Langfuse stack boots and its
+`/api/public/health?failIfDatabaseUnavailable=true` endpoint confirms
+genuine Postgres connectivity; OmniRoute + OpenHands Agent Canvas boot
+together and the container serves HTTP.
+
+**`agent-sidecar` (and, once, `omniroute-smoke.yml`'s own job) failed
+repeatedly** with `The runner has received a shutdown signal`, always
+mid-build, always around "Generating static pages using 3 workers
+(440/587)". Investigated rather than blindly retried:
+
+- Ruled out **concurrent-job resource contention** (my first hypothesis) —
+  it recurred identically when re-run alone, no other job running.
+- Ruled out **my own `timeout-minutes: 30`** — failures happened at ~6-7
+  minutes elapsed, nowhere near that.
+- Ruled out **GitHub Actions minute/quota exhaustion** — checked
+  `get_workflow_run_usage` on both a failing run and the very first,
+  cleanly-successful `omniroute-smoke.yml` run from before any of this
+  investigation; both report `duration_ms: 0` identically, so that field
+  isn't a usable signal for this account either way.
+- **Root cause, found via `graphify query` pointing at
+  `omniroute/tests/unit/dockerfile-build-heap-4076.test.ts`**: issue #4076,
+  a previously-hit-and-fixed "JavaScript heap out of memory" during
+  `npm run build` in the Docker `builder` stage. The fix sets
+  `NODE_OPTIONS=--max-old-space-size=${OMNIROUTE_BUILD_MEMORY_MB}`
+  (`omniroute/Dockerfile`, default `4096`) before the build — but
+  `next build`'s static-page generation spawns **3 parallel worker
+  processes**, and `NODE_OPTIONS` propagates to every child process each
+  worker inherits its own 4096MB ceiling. Up to ~12GB of *potential*
+  combined heap across 3 workers comfortably exceeds the 7GB total RAM on
+  a standard GitHub-hosted `ubuntu-latest` runner — worse than the
+  original #4076 bug (which was about a single process exceeding V8's
+  *default* ~2GB ceiling on a memory-*unconstrained* build box), this is
+  three independently-ceilinged processes able to jointly exceed the
+  *host's* physical RAM regardless of any single process's own ceiling.
+
+**Fix**: `docker-compose.yml` at KING root now carries a partial-override
+`omniroute-base` service block, merged additively into the one included
+from `omniroute/docker-compose.yml` (verified via `docker compose config`
+that only `build.args` changes — `OMNIROUTE_BASE_PATH` is preserved
+alongside the new key, and image/ports/profiles/healthcheck are all
+untouched, avoiding a repeat of the earlier `redis` full-service-collision
+class of bug). Sets `OMNIROUTE_BUILD_MEMORY_MB=1536` — the Dockerfile's own
+documented override point — so 3 workers × 1536MB ≈ 4.6GB, leaving
+headroom under 7GB for the OS, Docker daemon, and Node's baseline
+overhead. No `omniroute/` file touched; this only supplies a build arg the
+Dockerfile already explicitly supports overriding.
+
 ## Why these and not others
 
 A short gap-analysis pass considered and explicitly rejected: **Hermes Agent**

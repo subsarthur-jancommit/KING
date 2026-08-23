@@ -7,6 +7,26 @@ include:
   - path: observability/docker-compose.langfuse.yml
 
 services:
+  # Partial override, merged into the included omniroute-base definition —
+  # does not redeclare context/target/image/ports/profiles (those still
+  # come from omniroute/docker-compose.yml; verified this stays additive,
+  # not a replacement, via `docker compose config` before relying on it —
+  # see docs/integrations/scalability-system.md, "CI runner memory" note).
+  # Lowers the builder-stage V8 heap ceiling from the Dockerfile's own
+  # default (4096MB, documented override point:
+  # `ARG OMNIROUTE_BUILD_MEMORY_MB=4096` in omniroute/Dockerfile, itself the
+  # fix for issue #4076 "heap out of memory" during `npm run build").
+  # `next build`'s static-page generation spawns 3 parallel worker
+  # processes that each inherit NODE_OPTIONS, so the default 4096MB
+  # ceiling means up to ~12GB of *potential* combined heap — comfortably
+  # more than the 7GB total RAM on a standard GitHub-hosted `ubuntu-latest`
+  # runner. 1536MB x 3 workers = ~4.6GB, leaving headroom for the OS,
+  # Docker daemon, and Node's own baseline overhead.
+  omniroute-base:
+    build:
+      args:
+        OMNIROUTE_BUILD_MEMORY_MB: "1536"
+
   agent-sidecar:
     build: ./agent-sidecar
     image: king-agent-sidecar:local
