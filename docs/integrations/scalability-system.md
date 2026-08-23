@@ -22,12 +22,42 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 
 | Component | What it does | Status |
 |---|---|---|
-| [Graphify](../../.claude/skills/graphify/) | Local, zero-LLM-cost code knowledge graph (tree-sitter) for AI agents to navigate the 220K-line `omniroute/` codebase without grepping | ✅ installed |
-| repomix | Repo-to-context packer + on-demand MCP server (`--mcp`) for direct codebase Q&A | ✅ installed |
+| Graphify | Local, zero-LLM-cost code knowledge graph (tree-sitter) for AI agents to navigate the 220K-line `omniroute/` codebase without grepping | ✅ installed & validated (58,205 nodes / 139,183 edges / 1,945 communities from 10,343 files; see below) |
+| repomix | Repo-to-context packer + on-demand MCP server (`--mcp`) for direct codebase Q&A | pending |
 | [agent-sidecar](../../agent-sidecar/) | Combined smolagents + pydantic-ai Python service, using OmniRoute as both LLM backend and MCP tool source | pending |
 | [Langfuse](../../observability/) | Self-hosted, framework-agnostic (OpenTelemetry) tracing across every agent runtime in this workspace | pending |
 | OpenHands Agent Canvas | Self-hosted control center to run/monitor multiple coding agents and automations, LLM-configured to route through OmniRoute | pending |
 | [Smithery](./smithery.md) | External MCP server registry — pull third-party MCP servers as tools, optionally publish OmniRoute's own MCP server | pending |
+
+## Graphify — status
+
+Installed project-scoped for Claude Code (`graphify claude install` — writes
+the usage rules into this file's sibling `CLAUDE.md` at repo root, plus a
+non-destructive `PreToolUse` hook in `.claude/settings.json` alongside the
+existing `ecc@ecc` plugin config). Graph built with:
+
+```bash
+graphify extract . --code-only --no-cluster   # local tree-sitter AST only, zero LLM cost, ~4 min
+graphify cluster-only . --no-viz --no-label   # local Leiden clustering, zero LLM cost, ~1 min
+```
+
+Result: 58,205 nodes / 139,183 edges / 1,945 communities across 10,343 files.
+Known gap: 157 `.sql` migration files under `omniroute/src/lib/db/migrations/`
+are not indexed (`tree_sitter_sql` extra not installed — low value relative to
+the cost of a second full extraction pass; revisit with
+`uv tool install --reinstall graphifyy[sql]` if migration-schema graph
+queries become a real need). `graph.html` was skipped (`--no-viz`) since the
+graph exceeds the ~5,000-node threshold where the interactive viz gets
+unwieldy — use `graphify query`/`explain`/`path` instead.
+
+Validated end-to-end with `graphify explain "CloudAgentBase"`, which
+correctly resolved all 4 real subclasses
+(`CursorCloudAgent`/`CodexCloudAgent`/`DevinAgent`/`JulesAgent`) and their
+exact file:line locations under `omniroute/src/lib/cloudAgent/`.
+
+`graphify-out/` (graph.json, GRAPH_REPORT.md, cache/, manifest) is generated
+build output — gitignored, not committed. Regenerate anytime with
+`graphify update .` (incremental, AST-only, no API cost).
 
 ## Why these and not others
 
