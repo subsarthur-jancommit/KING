@@ -1,3 +1,13 @@
 # OmniRoute runtime secrets/data — never commit
 /omniroute/.env
 /omniroute/data/
+
+# STAX scalability-system tooling — workspace-level, see docs/integrations/
+/node_modules/
+/repomix-output.*
+/graphify-out/
+/agent-sidecar/.venv/
+/agent-sidecar/.env
+/agent-sidecar/__pycache__/
+/agent-sidecar/**/__pycache__/
+/observability/.env

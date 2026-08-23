@@ -1,0 +1,13 @@
+{
+  "name": "king-workspace-tools",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Workspace-level tooling for KING (STAX scalability system). Not part of the vendored omniroute/ package graph.",
+  "devDependencies": {
+    "repomix": "1.18.0"
+  },
+  "scripts": {
+    "repomix:pack": "repomix --config repomix.config.json",
+    "repomix:mcp": "repomix --mcp --sandbox omniroute"
+  }
+}
