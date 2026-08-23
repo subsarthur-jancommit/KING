@@ -8,6 +8,7 @@
   },
   "scripts": {
     "repomix:pack": "repomix --config repomix.config.json",
-    "repomix:mcp": "repomix --mcp --sandbox omniroute"
+    "repomix:pack:scoped": "repomix --config repomix.config.json --include",
+    "repomix:mcp": "repomix --mcp --sandbox"
   }
 }

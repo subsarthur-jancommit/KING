@@ -23,7 +23,7 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 | Component | What it does | Status |
 |---|---|---|
 | Graphify | Local, zero-LLM-cost code knowledge graph (tree-sitter) for AI agents to navigate the 220K-line `omniroute/` codebase without grepping | ✅ installed & validated (58,205 nodes / 139,183 edges / 1,945 communities from 10,343 files; see below) |
-| repomix | Repo-to-context packer + on-demand MCP server (`--mcp`) for direct codebase Q&A | pending |
+| repomix | Repo-to-context packer + on-demand MCP server (`--mcp`) for direct codebase Q&A | ✅ installed & validated (see below) |
 | [agent-sidecar](../../agent-sidecar/) | Combined smolagents + pydantic-ai Python service, using OmniRoute as both LLM backend and MCP tool source | pending |
 | [Langfuse](../../observability/) | Self-hosted, framework-agnostic (OpenTelemetry) tracing across every agent runtime in this workspace | pending |
 | OpenHands Agent Canvas | Self-hosted control center to run/monitor multiple coding agents and automations, LLM-configured to route through OmniRoute | pending |
@@ -58,6 +58,50 @@ exact file:line locations under `omniroute/src/lib/cloudAgent/`.
 `graphify-out/` (graph.json, GRAPH_REPORT.md, cache/, manifest) is generated
 build output — gitignored, not committed. Regenerate anytime with
 `graphify update .` (incremental, AST-only, no API cost).
+
+## repomix — status
+
+Installed as a pinned root devDependency (`repomix@1.18.0`) plus
+`repomix.config.json`. **Important, validated finding**: a full unscoped pack
+of this workspace is **not practically usable as a context bundle** — even
+with `output.compress: true` (tree-sitter structural extraction, enabled by
+default in the config), a full pack is **~20.6M tokens** (uncompressed:
+34.6M tokens, 123MB) across 11,314 files. That is far beyond any model's
+context window and was deleted after the validation run — `npm run
+repomix:pack` against the whole repo is provided for completeness, not
+everyday use.
+
+The practical interface is **scoped packing**, validated against a real
+subdirectory:
+
+```bash
+npm run repomix:pack:scoped -- "omniroute/open-sse/mcp-server/**" -o /tmp/out.xml
+# → 61 files, 33,997 tokens — comfortably fits in any model's context
+```
+
+and the **MCP server mode**, registered project-scoped so every contributor
+gets it automatically:
+
+```bash
+claude mcp add repomix --scope project -- npx -y repomix --mcp --sandbox
+```
+
+This wrote `.mcp.json` (committed) with the server confined to the repo root
+via `--sandbox` (no absolute/host paths, no remote packing). Confirmed
+registered via `claude mcp list`; a human must still approve it once per
+Claude Code session (expected first-run security prompt, not an error). Once
+approved, an agent can call the `pack_codebase` tool with its own `include`
+patterns for the exact slice of the codebase a task needs — this is the
+recommended default over static full-repo packs.
+
+`repomix.config.json` excludes `omniroute/CHANGELOG.md` (2.2MB),
+`omniroute/docs/i18n/**` (40+ duplicated translation trees),
+`omniroute/docs/openapi.yaml` (267KB), lockfiles, and `graphify-out/`.
+Repomix's built-in secret scanner also excluded 19 test files during the
+validation pack (matches in guardrail/security test fixtures — e.g.
+`webhook-ssrf-guard.test.ts`, `proxy-registry-manager.test.ts` — almost
+certainly fake credentials used to test the guardrails themselves, not real
+secrets, but worth a manual look if repomix output is ever shared externally).
 
 ## Why these and not others
 

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml",
+    "parsableStyle": true,
+    "fileSummary": true,
+    "directoryStructure": true,
+    "compress": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "topFilesLength": 20,
+    "showLineNumbers": false,
+    "copyToClipboard": false,
+    "includeEmptyDirectories": false,
+    "gitSortByChanges": true
+  },
+  "include": [],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "omniroute/CHANGELOG.md",
+      "omniroute/docs/i18n/**",
+      "omniroute/llm.txt",
+      "omniroute/docs/openapi.yaml",
+      "graphify-out/**",
+      "package-lock.json",
+      "omniroute/package-lock.json",
+      "**/*.lock"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": true
+  },
+  "tokenCount": {
+    "encoding": "o200k_base"
+  }
+}
