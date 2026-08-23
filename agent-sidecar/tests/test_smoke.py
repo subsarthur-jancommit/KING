@@ -1,0 +1,65 @@
+"""End-to-end smoke test: both runners against a live OmniRoute instance.
+
+Mirrors the technique omniroute-smoke.yml already uses in CI — the keyless,
+no-"enable"-step free provider `opencode/big-pickle` — so this needs no real
+upstream provider credentials, only a running OmniRoute and an
+OMNIROUTE_API_KEY (any scope that includes at least `models` + `routing`).
+
+Skipped automatically if OmniRoute isn't reachable or no key is configured,
+so it never fails a run that simply hasn't set up the prerequisites (see
+docs/integrations/scalability-system.md, "Fase 3").
+"""
+
+from __future__ import annotations
+
+import os
+
+import httpx
+import pytest
+
+from agent_sidecar.config import load_settings
+from agent_sidecar.pydantic_runner import run_sync as pydantic_run_sync
+from agent_sidecar.smol_runner import run as smol_run
+
+
+def _omniroute_reachable(base_url: str) -> bool:
+    try:
+        resp = httpx.get(f"{base_url}/healthz", timeout=5.0)
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+settings = load_settings()
+pytestmark = pytest.mark.skipif(
+    not settings.omniroute_api_key or not _omniroute_reachable(settings.omniroute_base_url),
+    reason=(
+        "OMNIROUTE_API_KEY not set or OmniRoute not reachable at "
+        f"{settings.omniroute_base_url} — see docs/integrations/"
+        "scalability-system.md 'Fase 3' for setup."
+    ),
+)
+
+
+def test_smolagents_reaches_omniroute():
+    result = smol_run("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
+    assert "SMOKE-TEST-OK" in result
+
+
+def test_pydantic_ai_reaches_omniroute():
+    result = pydantic_run_sync("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
+    assert "SMOKE-TEST-OK" in result
+
+
+@pytest.mark.skipif(
+    not os.environ.get("OMNIROUTE_MCP_API_KEY"),
+    reason="OMNIROUTE_MCP_API_KEY not set — MCP tool loading is opt-in, see mcp_tools module docstring.",
+)
+def test_mcp_tools_load_via_smolagents():
+    from smolagents import MCPClient
+
+    from agent_sidecar.mcp_tools import smolagents_mcp_server_parameters
+
+    params = smolagents_mcp_server_parameters(settings)
+    with MCPClient(params, structured_output=True) as tools:
+        assert len(tools) > 0

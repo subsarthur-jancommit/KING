@@ -24,7 +24,7 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 |---|---|---|
 | Graphify | Local, zero-LLM-cost code knowledge graph (tree-sitter) for AI agents to navigate the 220K-line `omniroute/` codebase without grepping | ✅ installed & validated (58,205 nodes / 139,183 edges / 1,945 communities from 10,343 files; see below) |
 | repomix | Repo-to-context packer + on-demand MCP server (`--mcp`) for direct codebase Q&A | ✅ installed & validated (see below) |
-| [agent-sidecar](../../agent-sidecar/) | Combined smolagents + pydantic-ai Python service, using OmniRoute as both LLM backend and MCP tool source | pending |
+| [agent-sidecar](../../agent-sidecar/) | Combined smolagents + pydantic-ai Python service, using OmniRoute as both LLM backend and MCP tool source | ✅ installed & live-validated (see below) |
 | [Langfuse](../../observability/) | Self-hosted, framework-agnostic (OpenTelemetry) tracing across every agent runtime in this workspace | ✅ vendored & statically validated (Docker daemon unavailable here — see below) |
 | OpenHands Agent Canvas | Self-hosted control center to run/monitor multiple coding agents and automations, LLM-configured to route through OmniRoute | pending |
 | [Smithery](./smithery.md) | External MCP server registry — pull third-party MCP servers as tools, optionally publish OmniRoute's own MCP server | pending |
@@ -206,6 +206,69 @@ now resolves cleanly to all 8 expected services
 **Live boot (actually connecting an agent-sidecar run to a running Langfuse
 and seeing a trace appear) is still pending a Docker-capable environment** —
 see the verification steps table.
+
+## agent-sidecar — status
+
+`agent-sidecar/` (Python, `uv`-managed, `smolagents[toolkit,mcp]` +
+`pydantic-ai`) is a thin combined service: both frameworks' model clients
+point at OmniRoute's `/v1` OpenAI-compatible endpoint
+(`omniroute_model.py`), never a third-party provider directly. **Live-tested
+end to end against the running OmniRoute instance from the section
+above** (not mocked):
+
+```bash
+export OMNIROUTE_BASE_URL=http://localhost:20128
+export OMNIROUTE_API_KEY=sk-...            # models,routing,health scope
+uv run python -m agent_sidecar.smol_runner "Say exactly: SMOLAGENTS-STAX-OK"
+# -> smolagents' CodeAgent wrote and ran `final_answer("SMOLAGENTS-STAX-OK")`,
+#    returned exactly that string.
+uv run python -m agent_sidecar.pydantic_runner "Say exactly: PYDANTIC-AI-STAX-OK"
+# -> PYDANTIC-AI-STAX-OK
+uv run pytest tests/ -v   # 2 passed, 1 skipped (MCP — opt-in, see below)
+```
+
+**Important finding, changes the plan's original assumption**: MCP tool
+loading needed its own investigation. `/api/mcp/stream` (OmniRoute's
+Streamable HTTP MCP transport) calls `requireManagementAuth()` with no
+options, which only accepts a `manage`/`admin`-scoped key (or a dashboard
+session). The narrower `mcp:connect` scope that `omniroute/.env.example`
+and `managementScopes.ts` document exists for a *different* purpose — it
+only bypasses the loopback-only network restriction for remote callers, it
+does **not** by itself satisfy the scope check inside the route handler.
+Confirmed by testing both: a `models,routing,health,mcp:connect` key got
+`403 "API key lacks 'manage' scope"`; a `manage`-scoped key succeeded and
+listed all **110** MCP tools (matching `omniroute/open-sse/mcp-server/README.md`
+exactly).
+
+Consequence: MCP tool loading in `agent_sidecar/mcp_tools.py` is **opt-in**
+and gated on a *separate* env var, `OMNIROUTE_MCP_API_KEY` — deliberately
+not the sidecar's default `OMNIROUTE_API_KEY`, so the sidecar's baseline
+footprint stays least-privilege (no `manage`/`admin`) and an operator has to
+consciously provision the more powerful key if they actually want MCP
+tools. Also live-validated with a temporary `manage`-scoped key (created,
+used once, deleted immediately after):
+
+```bash
+export OMNIROUTE_MCP_API_KEY=sk-...        # manage scope — elevated, opt-in only
+# smolagents: MCPClient(...) -> 110 tools (gamification_*, local_corpus_*, ...)
+# pydantic-ai: Agent(model, toolsets=[MCPToolset(...)]).run_sync(...) -> works
+```
+
+Packaged with `agent-sidecar/Dockerfile` (no default CMD — invoked
+explicitly per-runner or via `pytest`) and wired into the root
+`docker-compose.yml` as a new `agent-sidecar` profile (default off),
+`depends_on: omniroute-base` with `condition: service_healthy` across the
+`include:` boundary. Learning applied from the Langfuse phase: its
+`env_file` is declared `required: false` so `--profile base` alone never
+needs `agent-sidecar/.env` to exist — confirmed via `docker compose config`
+with and without that profile active.
+
+**Not live-tested**: the Dockerized path itself (no Docker daemon in this
+sandbox, same constraint as Fase 3/4) — only statically validated via
+`docker compose config`. The Python code paths themselves (both runners,
+both with and without MCP tools) *are* genuinely live-validated, directly
+on the host against the real running OmniRoute instance, which is a
+stronger proof than a container boot would have added on top.
 
 ## Why these and not others
 

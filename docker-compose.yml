@@ -6,3 +6,18 @@ include:
   - path: omniroute/docker-compose.yml
     env_file: omniroute/.env
   - path: observability/docker-compose.langfuse.yml
+
+services:
+  agent-sidecar:
+    build: ./agent-sidecar
+    image: king-agent-sidecar:local
+    env_file:
+      - path: agent-sidecar/.env
+        required: false
+    environment:
+      - OMNIROUTE_BASE_URL=http://omniroute-base:${DASHBOARD_PORT:-20128}
+    depends_on:
+      omniroute-base:
+        condition: service_healthy
+    profiles:
+      - agent-sidecar
