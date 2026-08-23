@@ -1,0 +1,3 @@
+# OmniRoute runtime secrets/data — never commit
+/omniroute/.env
+/omniroute/data/

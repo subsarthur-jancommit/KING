@@ -51,3 +51,83 @@ and plugin automatically — no manual per-user setup required.
 - Run `claude plugin list` to confirm `ecc@ecc` is enabled, and
   `claude plugin details ecc@ecc` to see the current component inventory and
   projected token cost.
+
+## OmniRoute integration
+
+This repository vendors [OmniRoute](https://github.com/diegosouzapw/OmniRoute)
+(MIT-licensed) at [`omniroute/`](omniroute/) — a local-first, self-hosted
+AI/LLM gateway that presents one OpenAI-compatible endpoint in front of 300+
+upstream providers, with automatic multi-tier fallback, prompt compression,
+an MCP/A2A server, a management dashboard, and a CLI. See
+[`omniroute/README.md`](omniroute/README.md) for the full feature set,
+[`omniroute/LICENSE`](omniroute/LICENSE) for licensing, and
+[`omniroute/THIRD_PARTY_NOTICES.md`](omniroute/THIRD_PARTY_NOTICES.md) for
+third-party attributions.
+
+### How it was vendored
+
+The `omniroute/` subfolder was brought in via `git subtree` (squashed) from
+`https://github.com/diegosouzapw/omniroute`, branch `release/v3.8.50`. To
+pull future upstream updates:
+
+```bash
+git fetch omniroute-upstream release/v3.8.50   # re-verify the default branch first — it may have moved:
+                                                # git ls-remote --symref https://github.com/diegosouzapw/omniroute HEAD
+git subtree pull --prefix=omniroute omniroute-upstream release/v3.8.50 --squash
+```
+
+Because `--squash` is used, each pull lands as a single commit in this repo —
+OmniRoute's own granular commit history is not browsable here, only upstream.
+
+### Quick start
+
+```bash
+cp omniroute/.env.example omniroute/.env
+# Fill in the three required secrets in omniroute/.env:
+#   JWT_SECRET       -> openssl rand -base64 48
+#   API_KEY_SECRET   -> openssl rand -hex 32
+#   INITIAL_PASSWORD -> any non-default value (do not leave as CHANGEME)
+
+docker compose --profile base up -d --build   # from the repo root, using the wrapper below
+# or: cd omniroute && docker compose --profile base up -d --build
+```
+
+The dashboard/API listens on `http://localhost:20128` by default. Health
+check: `GET /api/monitoring/health`. See `omniroute/docker-compose.yml` for
+all available profiles (`base`, `web`, `cli`, `host`, `cliproxyapi`, `memory`,
+`bifrost`).
+
+A thin `docker-compose.yml` wrapper at the repo root (`include:`-based) lets
+`docker compose` be run from here without `cd`-ing into `omniroute/`.
+`omniroute/.env` and `omniroute/data/` are gitignored — secrets and runtime
+data must never be committed.
+
+### Environment note
+
+This integration was assembled in a sandboxed environment without a reachable
+Docker daemon. The compose configuration was statically validated
+(`docker compose config`), but the image has not actually been built or run.
+Treat the first `docker compose --profile base up -d --build` in a
+Docker-capable environment as the real end-to-end verification step.
+
+### CI smoke test
+
+[`.github/workflows/omniroute-smoke.yml`](.github/workflows/omniroute-smoke.yml)
+builds and boots OmniRoute via the root `docker-compose.yml` on GitHub-hosted
+runners (which have a real Docker daemon, unlike the sandbox this integration
+was assembled in) and proves it works end-to-end with **zero external API
+keys**:
+
+1. Generates CI-only secrets and starts the `base` profile.
+2. Polls `/healthz` until the container reports ready.
+3. Logs in as the initial admin (`POST /api/auth/login`) and confirms the
+   session via `/api/auth/status`.
+4. Sends a real chat completion to `POST /v1/chat/completions` using the
+   `opencode/big-pickle` model — a no-auth, keyless free-tier provider that
+   OmniRoute routes to directly with no key or "enable" step required — and
+   asserts a genuine response comes back.
+
+This runs on every push/PR touching `omniroute/**` or the compose files, and
+via manual `workflow_dispatch`. It is the authoritative proof that the
+vendored app actually runs; the static `docker compose config` checks done
+during initial vendoring only validated the wiring, not a live boot.

@@ -1,0 +1,6 @@
+# KING root — thin wrapper so `docker compose up` works from repo root.
+# Delegates entirely to the vendored OmniRoute compose file; see omniroute/docker-compose.yml
+# for the full profile list (base, web, cli, host, cliproxyapi, memory, bifrost).
+include:
+  - path: omniroute/docker-compose.yml
+    env_file: omniroute/.env
