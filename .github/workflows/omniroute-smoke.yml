@@ -1,0 +1,84 @@
+name: OmniRoute smoke test
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "omniroute/**"
+      - "docker-compose.yml"
+      - ".github/workflows/omniroute-smoke.yml"
+  pull_request:
+    paths:
+      - "omniroute/**"
+      - "docker-compose.yml"
+      - ".github/workflows/omniroute-smoke.yml"
+  workflow_dispatch: {}
+
+jobs:
+  boot-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate CI-only secrets and write omniroute/.env
+        run: |
+          set -euo pipefail
+          cp omniroute/.env.example omniroute/.env
+          JWT_SECRET=$(openssl rand -base64 48)
+          API_KEY_SECRET=$(openssl rand -hex 32)
+          INITIAL_PASSWORD=$(openssl rand -base64 18)
+          echo "::add-mask::${JWT_SECRET}"
+          echo "::add-mask::${API_KEY_SECRET}"
+          echo "::add-mask::${INITIAL_PASSWORD}"
+          sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${JWT_SECRET}|" omniroute/.env
+          sed -i "s|^API_KEY_SECRET=.*|API_KEY_SECRET=${API_KEY_SECRET}|" omniroute/.env
+          sed -i "s|^INITIAL_PASSWORD=.*|INITIAL_PASSWORD=${INITIAL_PASSWORD}|" omniroute/.env
+          sed -i "s|^# OMNIROUTE_DISABLE_BACKGROUND_SERVICES=false|OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true|" omniroute/.env
+          echo "INITIAL_PASSWORD=${INITIAL_PASSWORD}" >> "$GITHUB_ENV"
+
+      - name: Build and start (root compose wrapper, base profile)
+        run: docker compose -f docker-compose.yml --profile base up -d --build
+
+      - name: Wait for /healthz
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:20128/healthz >/dev/null; then
+              echo "Ready after $((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "OmniRoute did not become healthy in time" >&2
+          docker compose -f docker-compose.yml --profile base logs
+          exit 1
+
+      - name: Verify admin login (dashboard auth flow)
+        run: |
+          set -euo pipefail
+          curl -sf -c cookies.txt -X POST http://localhost:20128/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d "{\"password\":\"${INITIAL_PASSWORD}\"}" >/dev/null
+          STATUS=$(curl -sf -b cookies.txt http://localhost:20128/api/auth/status)
+          echo "$STATUS"
+          echo "$STATUS" | grep -q '"authenticated":true'
+
+      - name: Verify gateway produces real output (keyless free provider, no API key required)
+        run: |
+          set -euo pipefail
+          curl -sf -X POST http://localhost:20128/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"model":"opencode/big-pickle","messages":[{"role":"user","content":"Say OK"}],"stream":false}' \
+            | tee response.json
+          grep -q '"content"' response.json
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml --profile base logs --tail=300
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml --profile base down -v

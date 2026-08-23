@@ -109,3 +109,25 @@ Docker daemon. The compose configuration was statically validated
 (`docker compose config`), but the image has not actually been built or run.
 Treat the first `docker compose --profile base up -d --build` in a
 Docker-capable environment as the real end-to-end verification step.
+
+### CI smoke test
+
+[`.github/workflows/omniroute-smoke.yml`](.github/workflows/omniroute-smoke.yml)
+builds and boots OmniRoute via the root `docker-compose.yml` on GitHub-hosted
+runners (which have a real Docker daemon, unlike the sandbox this integration
+was assembled in) and proves it works end-to-end with **zero external API
+keys**:
+
+1. Generates CI-only secrets and starts the `base` profile.
+2. Polls `/healthz` until the container reports ready.
+3. Logs in as the initial admin (`POST /api/auth/login`) and confirms the
+   session via `/api/auth/status`.
+4. Sends a real chat completion to `POST /v1/chat/completions` using the
+   `opencode/big-pickle` model — a no-auth, keyless free-tier provider that
+   OmniRoute routes to directly with no key or "enable" step required — and
+   asserts a genuine response comes back.
+
+This runs on every push/PR touching `omniroute/**` or the compose files, and
+via manual `workflow_dispatch`. It is the authoritative proof that the
+vendored app actually runs; the static `docker compose config` checks done
+during initial vendoring only validated the wiring, not a live boot.
