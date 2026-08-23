@@ -25,7 +25,7 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 | Graphify | Local, zero-LLM-cost code knowledge graph (tree-sitter) for AI agents to navigate the 220K-line `omniroute/` codebase without grepping | ✅ installed & validated (58,205 nodes / 139,183 edges / 1,945 communities from 10,343 files; see below) |
 | repomix | Repo-to-context packer + on-demand MCP server (`--mcp`) for direct codebase Q&A | ✅ installed & validated (see below) |
 | [agent-sidecar](../../agent-sidecar/) | Combined smolagents + pydantic-ai Python service, using OmniRoute as both LLM backend and MCP tool source | pending |
-| [Langfuse](../../observability/) | Self-hosted, framework-agnostic (OpenTelemetry) tracing across every agent runtime in this workspace | pending |
+| [Langfuse](../../observability/) | Self-hosted, framework-agnostic (OpenTelemetry) tracing across every agent runtime in this workspace | ✅ vendored & statically validated (Docker daemon unavailable here — see below) |
 | OpenHands Agent Canvas | Self-hosted control center to run/monitor multiple coding agents and automations, LLM-configured to route through OmniRoute | pending |
 | [Smithery](./smithery.md) | External MCP server registry — pull third-party MCP servers as tools, optionally publish OmniRoute's own MCP server | pending |
 
@@ -150,6 +150,62 @@ self-host stack, OpenHands Agent Canvas's official image), this workspace
 falls back to the same standard the root README already established: static
 `docker compose config` validation, documented as unverified-live pending a
 Docker-capable environment.
+
+## Langfuse — status
+
+Vendored from `github.com/langfuse/langfuse`'s official self-host
+`docker-compose.yml` (Langfuse v4, fetched 2026-08-23) into
+`observability/docker-compose.langfuse.yml`, included from the root
+`docker-compose.yml` behind a new `observability` profile. Every image is
+pre-built and pulled (`docker.langfuse.com/langfuse/*`, `clickhouse`,
+`minio`, `redis`, `postgres`) — nothing is built from source, and
+`omniroute/` is untouched.
+
+Docker itself can't be exercised live in this sandbox (see below), so
+validation here is **static**: `docker compose config` against the merged
+root + omniroute + observability compose model. That static pass caught two
+real bugs before they could reach a live run:
+
+1. **Service-name collision.** Both `omniroute/docker-compose.yml` and the
+   vendored Langfuse file define a bare `redis:` service. Compose's
+   `include:` merges services by name across included files — the two
+   `redis:` blocks silently merged into one hybrid service (kept
+   OmniRoute's image/container-name, but Langfuse's extra port mapping leaked
+   in and Langfuse's `profiles: [observability]` **overwrote OmniRoute's
+   "no profile = always on" redis into being profile-gated**, which would
+   have silently broken OmniRoute's rate-limiter redis under `--profile
+   base` alone). Fixed by renaming the vendored service to `langfuse-redis`
+   (and its `depends_on`/`REDIS_HOST` references) — confirmed via
+   `docker compose config` that OmniRoute's `redis` now correctly shows
+   `profiles: None` (always active, port 6379) and `langfuse-redis` shows
+   `profiles: [observability]` (port 16379, no collision).
+2. **`env_file` at the `include:` level is required unconditionally**, not
+   lazily per-profile — `docker compose config` failed on a missing
+   `observability/.env` even when only `--profile base` (plain OmniRoute,
+   no Langfuse at all) was requested. This broke the "fully opt-in, zero
+   cost until activated" principle every other STAX/OmniRoute profile
+   follows. Fixed by dropping the include-level `env_file:` entirely — every
+   Langfuse variable already carries its own inline `${VAR:-default}`
+   fallback in the compose file, so `--profile base` alone now needs no new
+   file at all. Real secrets are applied only when explicitly requested:
+   `docker compose --profile observability --env-file observability/.env up`.
+
+A third issue was caught while hand-testing `observability/.env.example`:
+Compose's `--env-file` parser does **not** strip a trailing `# comment` on
+the same line as `VAR=` — it becomes part of the value. The template
+originally had `SALT=    # openssl rand -hex 32` on one line; fixed by
+moving every hint comment to its own line above the (empty) `VAR=` line, and
+re-validated that filled-in values come out clean (confirmed
+`POSTGRES_PASSWORD` and its downstream `DATABASE_URL` interpolation both
+resolve correctly with no stray comment text).
+
+`docker compose config --services` with `COMPOSE_PROFILES=base,observability`
+now resolves cleanly to all 8 expected services
+(`omniroute-base`, `redis`, `langfuse-worker`, `langfuse-web`, `clickhouse`,
+`minio`, `langfuse-redis`, `postgres`) with no missing-file or merge errors.
+**Live boot (actually connecting an agent-sidecar run to a running Langfuse
+and seeing a trace appear) is still pending a Docker-capable environment** —
+see the verification steps table.
 
 ## Why these and not others
 
