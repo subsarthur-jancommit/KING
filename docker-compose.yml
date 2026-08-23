@@ -4,7 +4,6 @@
 # Also includes STAX's own opt-in profiles — see docs/integrations/scalability-system.md.
 include:
   - path: omniroute/docker-compose.yml
-    env_file: omniroute/.env
   - path: observability/docker-compose.langfuse.yml
 
 services:

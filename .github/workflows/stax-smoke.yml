@@ -1,14 +1,6 @@
 name: STAX smoke test
 
 on:
-  push:
-    branches:
-      - claude/king-scalability-plan-kw9tdy
-    paths:
-      - "docker-compose.yml"
-      - "agent-sidecar/**"
-      - "observability/**"
-      - ".github/workflows/stax-smoke.yml"
   pull_request:
     paths:
       - "docker-compose.yml"
