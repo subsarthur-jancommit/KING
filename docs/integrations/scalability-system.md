@@ -26,7 +26,7 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 | repomix | Repo-to-context packer + on-demand MCP server (`--mcp`) for direct codebase Q&A | ✅ installed & validated (see below) |
 | [agent-sidecar](../../agent-sidecar/) | Combined smolagents + pydantic-ai Python service, using OmniRoute as both LLM backend and MCP tool source | ✅ installed & live-validated (see below) |
 | [Langfuse](../../observability/) | Self-hosted, framework-agnostic (OpenTelemetry) tracing across every agent runtime in this workspace | ✅ vendored & statically validated (Docker daemon unavailable here — see below) |
-| OpenHands Agent Canvas | Self-hosted control center to run/monitor multiple coding agents and automations, LLM-configured to route through OmniRoute | pending |
+| [OpenHands Agent Canvas](./openhands-agent-canvas.md) | Self-hosted control center to run/monitor multiple coding agents and automations, LLM-configured to route through OmniRoute | ✅ vendored & statically validated (see linked doc) |
 | [Smithery](./smithery.md) | External MCP server registry — pull third-party MCP servers as tools, optionally publish OmniRoute's own MCP server | pending |
 
 ## Graphify — status
