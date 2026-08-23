@@ -103,6 +103,54 @@ validation pack (matches in guardrail/security test fixtures — e.g.
 certainly fake credentials used to test the guardrails themselves, not real
 secrets, but worth a manual look if repomix output is ever shared externally).
 
+## Running OmniRoute for STAX validation — status
+
+**Validated finding: this sandbox has no reachable Docker daemon** (`docker`/
+`docker compose` CLIs are installed, but `/var/run/docker.sock` doesn't
+exist — the same constraint the root `README.md` already documents for the
+original vendoring work). `docker compose --profile base up` cannot actually
+boot here. Since Node.js 22.22.2 is available and satisfies `omniroute`'s
+own `engines.node` range, STAX validation runs OmniRoute directly instead:
+
+```bash
+cp omniroute/.env.example omniroute/.env
+# fill JWT_SECRET / API_KEY_SECRET / INITIAL_PASSWORD per the root README
+cd omniroute && npm install && npm run dev   # http://localhost:20128
+```
+
+This is a genuine live instance, not a mock — confirmed end-to-end:
+`GET /healthz` → `ok`; `POST /api/auth/login` + `GET /api/auth/status` →
+`{"authenticated":true}`; a real `POST /v1/chat/completions` against the
+keyless `opencode/big-pickle` model returned actual generated content — the
+exact technique `omniroute-smoke.yml` already uses in CI.
+
+A scoped key was then provisioned via `POST /api/keys`
+(`{"name":"stax-agent-sidecar","scopes":["models","routing","health"]}`,
+session-cookie authenticated) and validated by using it — not just
+creating it — for a second real chat completion
+(`Authorization: Bearer sk-...`), which returned genuine content. **Note, a
+correction to the original plan**: `GET /api/monitoring/health` turned out
+to return the *same* `{"status":"healthy","setupComplete":true}` payload
+whether called anonymously or with the scoped key — the plan had assumed a
+richer authenticated payload here; that assumption didn't hold in practice,
+so the actual proof-of-authentication used instead was the second
+`/v1/chat/completions` call succeeding with the key attached.
+
+**Operational gotcha found while validating**: running `npm install` inside
+`omniroute/` (needed to run it directly without Docker) can nondeterministically
+touch `omniroute/package-lock.json` — a newer local npm resolving one
+optional transitive dependency slightly differently than whatever npm
+generated the committed lockfile. This is a change *inside* `omniroute/`,
+which STAX must never commit. Always `git status omniroute/` after running
+its `npm install`/dev server, and `git checkout -- omniroute/package-lock.json`
+to discard any such drift before committing anything else.
+
+**Wherever Docker itself is genuinely required** (Langfuse's multi-container
+self-host stack, OpenHands Agent Canvas's official image), this workspace
+falls back to the same standard the root README already established: static
+`docker compose config` validation, documented as unverified-live pending a
+Docker-capable environment.
+
 ## Why these and not others
 
 A short gap-analysis pass considered and explicitly rejected: **Hermes Agent**
