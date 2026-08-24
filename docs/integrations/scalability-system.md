@@ -355,14 +355,37 @@ every job identically before that, making it impossible to tell.
 
 **Actual fix applied**, in all three jobs that build `omniroute-base`
 (`agent-sidecar` and `openhands` in `stax-smoke.yml`,
-`boot-and-verify` in `omniroute-smoke.yml`): a dedicated
-`docker build --target runner-base --build-arg
-OMNIROUTE_BUILD_MEMORY_MB=1536 -t omniroute:base omniroute/` step runs
+`boot-and-verify` in `omniroute-smoke.yml`): a dedicated build step runs
 *before* `docker compose ... up` (with no `--build` flag on the `up` call,
 since the image is already built and tagged to match what
 `omniroute-base`'s `image:` field expects). This never touches the compose
 service graph, so it can't collide with anything `include:`s the way the
 reverted approach did.
+
+That step is now `./scripts/ci-build-omniroute-base.sh`, shared by all three
+jobs rather than copy-pasted into each, and shellcheck-linted by the
+`preflight` job.
+
+### The heap ceiling alone was not enough
+
+The ceiling bounds the V8 heap, but this build also loads
+`onnxruntime-node` and `@huggingface/transformers`, whose native allocations
+sit outside it. Peak RSS still lands close to a hosted runner's RAM, and when
+it crosses, the kernel OOM-killer takes the runner agent down with it —
+surfacing as `The runner has received a shutdown signal` and exit 143, always
+at the same `Generating static pages using 3 workers (440/587)` checkpoint.
+
+This was confirmed as capacity variance rather than a build defect, by
+observation rather than assumption: on commit `d583545` this exact step OOM'd
+in the `agent-sidecar` job while the *identical* command succeeded in
+`boot-and-verify` on another runner at the same moment. Same commit, same
+script, different outcome.
+
+So the script also provisions swap before building, giving the kernel
+somewhere to put cold pages instead of choosing a process to kill. Swap
+failing to provision is a warning, not an error — a runner that refuses it
+can still build, just with less margin, and failing there would trade a
+probabilistic failure for a guaranteed one.
 
 ## Why these and not others
 
