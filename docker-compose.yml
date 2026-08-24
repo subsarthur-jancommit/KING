@@ -2,6 +2,12 @@
 # Delegates entirely to the vendored OmniRoute compose file; see omniroute/docker-compose.yml
 # for the full profile list (base, web, cli, host, cliproxyapi, memory, bifrost).
 # Also includes STAX's own opt-in profiles — see docs/integrations/scalability-system.md.
+#
+# Deploying to a VPS: run `./scripts/stax-preflight.sh` first. Compose cannot
+# gate a required variable per-profile (`${VAR:?err}` is interpolated across
+# the whole merged model before profile filtering — verified, see
+# docs/integrations/vps-hardening.md), so the placeholder-secret and
+# public-binding checks live in that script instead of in this file.
 include:
   - path: omniroute/docker-compose.yml
   - path: observability/docker-compose.langfuse.yml
@@ -15,9 +21,29 @@ services:
         required: false
     environment:
       - OMNIROUTE_BASE_URL=http://omniroute-base:${DASHBOARD_PORT:-20128}
+      # smolagents' CodeAgent executes model-generated Python. "local" runs it
+      # inside THIS container, guarded only by an AST-level import allowlist —
+      # smolagents documents that as not a security boundary. That is fine
+      # while every task arrives from an operator on the command line, which
+      # is the only way this service is invoked today. Switch to "docker" or
+      # "e2b" before any untrusted input can reach it.
+      # See docs/integrations/vps-hardening.md.
+      - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-local}
     depends_on:
       omniroute-base:
         condition: service_healthy
+    # One-shot runner, not a long-lived service: it executes its CMD and
+    # exits, so `up -d` must not treat that exit as a crash to restart.
+    restart: "no"
+    security_opt:
+      # Blocks setuid escalation inside the container. Safe here because the
+      # image runs a plain Python process as a non-root user and never needs
+      # to gain privileges (see agent-sidecar/Dockerfile).
+      - no-new-privileges:true
+    # A VPS has far less headroom than a CI runner, and this session already
+    # hit real OOM behaviour building this same stack. Bound it explicitly.
+    mem_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
+    cpus: ${AGENT_SIDECAR_CPUS:-1.0}
     profiles:
       - agent-sidecar
 
@@ -29,24 +55,77 @@ services:
     # to refresh this.
     image: ghcr.io/openhands/agent-canvas@sha256:becb2c0cdebb4427304c4476c34b0c9bf9ddd50e7a0abee444c764c2151ab1b3
     ports:
-      - "${OPENHANDS_CANVAS_PORT:-8000}:8000"
+      # Loopback-only by default — the same rule omniroute/docker-compose.yml
+      # already applies to its own password-less Redis, and for the same
+      # reason its comment gives: a bare "8000:8000" binds 0.0.0.0, which on
+      # a VPS publishes this agent control panel on every interface.
+      #
+      # This is deliberately stricter than OmniRoute's own dashboard binding,
+      # because the dashboard authenticates (INITIAL_PASSWORD + JWT) and this
+      # container is not known to. Upstream documents no authentication env
+      # var for it other than LOCAL_BACKEND_API_KEY, which their docs scope to
+      # `--public` mode; absent a documented default-auth guarantee, assume
+      # there is none. Reach it over an SSH tunnel
+      # (`ssh -L 8000:127.0.0.1:8000 vps`) or put a reverse proxy with TLS and
+      # auth in front before ever setting OPENHANDS_CANVAS_BIND_HOST=0.0.0.0.
+      - "${OPENHANDS_CANVAS_BIND_HOST:-127.0.0.1}:${OPENHANDS_CANVAS_PORT:-8000}:8000"
     volumes:
       - openhands-canvas-settings:/home/openhands/.openhands
       - ./:/projects/king
+      # Secret masking. The whole-repo mount above would otherwise hand every
+      # agent run the real contents of these gitignored .env files — OmniRoute's
+      # JWT_SECRET, API_KEY_SECRET and INITIAL_PASSWORD, plus every provider
+      # credential in them. Bind-mounting /dev/null over each path shadows it
+      # inside this container only: reads return empty, `:ro` rejects writes,
+      # and the files on the host are untouched and still work for every other
+      # service. Deeper mount paths are applied after the parent bind mount,
+      # which is what makes this layering work.
+      #
+      # These paths track the repo layout above them — if you change the
+      # project mount, revisit this list.
+      - /dev/null:/projects/king/omniroute/.env:ro
+      - /dev/null:/projects/king/observability/.env:ro
+      - /dev/null:/projects/king/agent-sidecar/.env:ro
+      # Agent sandboxing is an explicit operator decision, not a default.
+      # Uncommenting this lets Agent Canvas spawn per-task sandbox containers
+      # (upstream's safer runtime), but access to the Docker socket is
+      # equivalent to root on the host — a container that can create
+      # containers can mount the host filesystem. Without it, agent processes
+      # run inside this container instead, with the filesystem access the
+      # mounts above grant. Neither option is strictly safer than the other;
+      # pick one deliberately. See docs/integrations/vps-hardening.md.
+      # - /var/run/docker.sock:/var/run/docker.sock
     environment:
       # CHANGEME: export OH_AGENT_CANVAS_SECRET_KEY (openssl rand -base64 32)
       # before actually using the `openhands` profile — the fallback below
-      # is a placeholder, not a secret. Deliberately a soft default, not a
-      # hard-required ${VAR:?err}: that form is interpolated for the whole
-      # merged compose model regardless of active profile, and would break
-      # `--profile base` (plain OmniRoute) for anyone who never asked for
-      # this service — validated the hard way while building this file,
-      # same class of bug as the Langfuse redis/env_file issues.
+      # is a placeholder, not a secret. Upstream uses this key to encrypt
+      # stored LLM API keys and conversation secrets at rest, so leaving the
+      # placeholder in place means encrypting them under a value published in
+      # this repo's git history.
+      #
+      # Deliberately a soft default, not a hard-required ${VAR:?err}: that
+      # form is interpolated across the whole merged compose model before
+      # profiles are filtered, so it would break `--profile base` (plain
+      # OmniRoute) for anyone who never asked for this service. Verified
+      # directly, twice — it is the same class of bug as the Langfuse
+      # redis/env_file issues. `./scripts/stax-preflight.sh` enforces this
+      # instead, where the check can actually be scoped to the profile.
       - OH_SECRET_KEY=${OH_AGENT_CANVAS_SECRET_KEY:-CHANGEME-openssl-rand-base64-32}
       # - LOCAL_BACKEND_API_KEY=  # only required if you later run with --public
     depends_on:
       omniroute-base:
         condition: service_healthy
+    # A control panel is meant to survive a VPS reboot, unlike agent-sidecar
+    # above. Matches what omniroute/docker-compose.yml sets on its own
+    # long-lived services.
+    restart: unless-stopped
+    # Deliberately no `no-new-privileges` here, unlike agent-sidecar: this is
+    # a third-party image whose agent runtime may legitimately need to
+    # escalate for in-sandbox package installs, and CI only proves it serves
+    # HTTP — not that a hardened run stays healthy under real agent work.
+    # Untested hardening that breaks at runtime is worse than none.
+    mem_limit: ${OPENHANDS_CANVAS_MEM_LIMIT:-2g}
+    cpus: ${OPENHANDS_CANVAS_CPUS:-2.0}
     profiles:
       - openhands
 
