@@ -6,10 +6,48 @@ on:
       - "docker-compose.yml"
       - "agent-sidecar/**"
       - "observability/**"
+      - "scripts/**"
       - ".github/workflows/stax-smoke.yml"
   workflow_dispatch: {}
 
 jobs:
+  # Fast, Docker-free gate. The preflight script is what stands between an
+  # operator and deploying with placeholder secrets or wide-open ports, so its
+  # own logic is tested rather than assumed — and a broken script is caught in
+  # seconds instead of after a 9-minute image build.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Self-test the preflight checks
+        run: ./scripts/stax-preflight.sh --self-test
+
+      - name: Placeholder secret must be rejected
+        run: |
+          set -euo pipefail
+          # The value below is the literal fallback in docker-compose.yml.
+          # If preflight ever stops catching it, this job fails loudly.
+          if OH_AGENT_CANVAS_SECRET_KEY='CHANGEME-openssl-rand-base64-32' \
+               ./scripts/stax-preflight.sh openhands; then
+            echo "preflight accepted the placeholder secret — it must not" >&2
+            exit 1
+          fi
+          echo "Placeholder correctly rejected."
+
+      - name: A real secret must be accepted
+        run: |
+          set -euo pipefail
+          OH_AGENT_CANVAS_SECRET_KEY="$(openssl rand -base64 32)" \
+            ./scripts/stax-preflight.sh openhands
+
+      - name: Shell lint
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/stax-preflight.sh
+
   agent-sidecar:
     runs-on: ubuntu-latest
     timeout-minutes: 30

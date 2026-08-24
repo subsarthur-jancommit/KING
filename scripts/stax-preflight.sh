@@ -203,7 +203,7 @@ self_test() {
   printf 'FOO=first\nFOO=second\nBAR=value # trailing\n' > "$tmp"
   assert_eq "last assignment wins" "$(lookup FOO "$tmp")" "second"
   assert_eq "inline comment kept (matches Compose)" "$(lookup BAR "$tmp")" "value # trailing"
-  FOO=from-env assert_eq "environment beats .env file" "$(FOO=from-env lookup FOO "$tmp")" "from-env"
+  assert_eq "environment beats .env file" "$(FOO=from-env lookup FOO "$tmp")" "from-env"
   rm -f "$tmp"
 
   if [ "$failed" -eq 0 ]; then

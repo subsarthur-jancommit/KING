@@ -43,8 +43,14 @@ hasn't published one.
 ## Running it
 
 ```bash
+./scripts/stax-preflight.sh base openhands     # required on anything but a laptop
 docker compose --profile base --profile openhands up -d --build
 ```
+
+The port binds `127.0.0.1` by default, so on a remote host reach it through
+an SSH tunnel (`ssh -L 8000:127.0.0.1:8000 you@host`) rather than by opening
+the port. See [vps-hardening.md](./vps-hardening.md) for why, and for the
+Docker-socket/sandboxing decision this service leaves to the operator.
 
 `openhands-agent-canvas` `depends_on: omniroute-base` (`condition:
 service_healthy`), so `--profile base` must be included too — Compose
@@ -64,8 +70,12 @@ export OH_AGENT_CANVAS_SECRET_KEY=$(openssl rand -base64 32)
 
 The whole KING repo root is mounted read-write at `/projects/king` (matching
 how `omniroute/docker-compose.yml`'s own `host` profile already mounts `.`
-read-write for CLI tooling — not a new pattern). **If you point an agent
-run through this Canvas at `omniroute/` specifically**, you are responsible
+read-write for CLI tooling — not a new pattern), **except** for the
+gitignored `.env` files, which are masked read-only inside this container so
+agent runs cannot read OmniRoute's `JWT_SECRET` or your provider credentials
+— see [vps-hardening.md](./vps-hardening.md#secret-masking-in-the-openhands-mount).
+
+**If you point an agent run through this Canvas at `omniroute/` specifically**, you are responsible
 for following `omniroute/AGENTS.md`'s own worktree-per-task workflow
 yourself, exactly as if you'd opened a terminal in `omniroute/` directly —
 this tool has no way to enforce that policy on your behalf, the same way a
@@ -99,11 +109,13 @@ first-run LLM wiring is a one-time manual step per deployment.
 
 ## Status
 
-Statically validated only: `docker compose config` resolves the merged
-`base + openhands` (and full `base + observability + agent-sidecar +
-openhands`, 10 services) model cleanly, with no missing-file or collision
-errors. This sandbox has no reachable Docker daemon (same constraint noted
-throughout this doc set), so the actual container boot and the manual
-LLM-wiring runbook above are unverified pending a Docker-capable
-environment — see the verification steps table in
-[scalability-system.md](./scalability-system.md).
+**Boots for real in CI.** The `openhands` job in `.github/workflows/stax-smoke.yml`
+starts this service alongside OmniRoute on a GitHub Actions runner and
+confirms it serves HTTP — green as of the STAX merge. `docker compose config`
+also resolves the merged `base + openhands` model (and the full 10-service
+stack) cleanly.
+
+Still unverified, because CI cannot cover it: the manual `Settings > LLM`
+wiring above, and behaviour under the memory limit during real agent work.
+Both are first-deployment steps on an actual host — see
+[vps-hardening.md](./vps-hardening.md#validation-status).

@@ -394,6 +394,10 @@ the existing `omniroute/docker-compose.yml` pattern (`memory`, `bifrost`,
 docker compose --profile base --profile agent-sidecar up -d --build
 ```
 
+Every new service also carries a `mem_limit`/`cpus` ceiling (overridable per
+service) so that adding a profile has a bounded cost on a small host rather
+than an open-ended one.
+
 Langfuse's self-hosted stack is resource-heavy for a small workspace; if you
 don't want 4 extra containers, use [Langfuse Cloud's free tier](https://langfuse.com)
 instead and point `agent-sidecar`'s `LANGFUSE_HOST` at it — no compose
@@ -407,3 +411,25 @@ Every consumer that talks to OmniRoute (agent-sidecar, OpenHands) gets its
 gitignored `.env` files, never committed, never reused across consumers. See
 `omniroute/.env.example` (section "Internal Agent & MCP Integrations") for
 the underlying convention.
+
+Compose cannot enforce any of this: `${VAR:?err}` is interpolated across the
+whole merged model *before* profiles are filtered, so a required-secret guard
+on one profile breaks `up` for every other profile. Run the preflight script
+instead — it applies the same checks, scoped per profile:
+
+```bash
+./scripts/stax-preflight.sh base agent-sidecar
+```
+
+It blocks on placeholder or missing secrets and warns on off-host port
+bindings. Required before deploying anywhere that isn't your own machine.
+
+## Deploying to a VPS
+
+The defaults in this repo assume a laptop. Before running STAX on a host
+with a public IP, read
+[vps-hardening.md](./vps-hardening.md) — it covers the loopback-by-default
+port bindings and how to tunnel to them, the `.env` masking that keeps agent
+runs from reading your provider credentials, resource limits, and the two
+trade-offs left deliberately to the operator (Docker-socket sandboxing for
+OpenHands, and where smolagents executes generated code).
