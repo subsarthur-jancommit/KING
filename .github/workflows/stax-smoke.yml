@@ -233,8 +233,20 @@ jobs:
       - name: Wait for OpenHands Agent Canvas to respond
         run: |
           set -euo pipefail
+          # This check used to pass without checking anything. When curl cannot
+          # connect it still prints `000` via -w AND exits non-zero, so the old
+          # `|| echo 000` appended a second `000` and the guard compared
+          # "000000" != "000" -> true. It reported success on the very first
+          # attempt, 2s in, while the container was still booting. Confirmed
+          # from a real run's log: "responded with HTTP 000000 after 2s".
+          #
+          # Assigning the fallback to the variable instead of echoing into the
+          # substitution keeps the failure value exactly "000". Any real status
+          # counts as alive on purpose — this only proves the server is
+          # listening, and an auth redirect or 403 proves that just as well
+          # as a 200 does.
           for i in $(seq 1 90); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ || echo 000)
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8000/) || code="000"
             if [ "$code" != "000" ]; then
               echo "OpenHands Agent Canvas responded with HTTP $code after $((i * 2))s"
               exit 0

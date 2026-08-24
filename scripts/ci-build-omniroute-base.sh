@@ -11,22 +11,29 @@
 #    parallel workers that each inherit NODE_OPTIONS. OmniRoute's Dockerfile
 #    sets --max-old-space-size=${OMNIROUTE_BUILD_MEMORY_MB} (issue #4076,
 #    default 4096MB), which at the default gives those workers up to ~12GB of
-#    combined potential heap — more than a hosted runner has. 1536MB x 3
-#    workers is roughly 4.6GB, which leaves real headroom.
+#    combined potential heap. 1536MB x 3 workers is roughly 4.6GB instead.
 #
-# 2. Swap. The heap ceiling only bounds the V8 heap; this build also loads
-#    onnxruntime-node and @huggingface/transformers, whose native allocations
-#    sit outside it. Peak RSS therefore lands close to the runner's RAM, and
-#    when it crosses, the kernel OOM-killer takes the runner agent down with
-#    it. That surfaces as "The runner has received a shutdown signal" and exit
-#    143, always at the same "Generating static pages using 3 workers
-#    (440/587)" checkpoint.
+# 2. Swap headroom, as mitigation for an intermittent runner death.
 #
-#    This is capacity variance, not a build defect, and it was confirmed
-#    directly rather than assumed: on commit d583545 this exact step OOM'd on
-#    one runner while the identical command succeeded on another at the same
-#    moment. Swap gives the kernel somewhere to put cold pages instead of
-#    choosing a process to kill.
+#    What is established: this step intermittently dies with "The runner has
+#    received a shutdown signal" and exit 143, always at the same
+#    "Generating static pages using 3 workers (440/587)" checkpoint. It is
+#    not caused by any particular commit — on d583545 this exact step died in
+#    one job while the identical command succeeded in another, on a different
+#    runner, at the same moment.
+#
+#    What is NOT established is the cause, and earlier comments in this repo
+#    overstated it. They asserted a 7GB runner being exhausted; the runners
+#    actually report 15Gi total with ~14Gi available before the build starts,
+#    so a 4.6GB heap ceiling does not obviously exhaust them. Exit 143 is
+#    SIGTERM, which is GitHub's own runner-shutdown path, whereas the kernel
+#    OOM-killer sends SIGKILL (137). Infrastructure preemption fits the
+#    evidence at least as well as memory pressure does.
+#
+#    Swap is therefore deliberately framed as cheap headroom rather than a
+#    proven fix: it costs nothing, it helps if the cause is memory pressure,
+#    and it is harmless if the cause is preemption. Do not read a green run as
+#    proof that it worked — the failure was always intermittent.
 #
 # Deliberately a plain `docker build` rather than `docker compose build`:
 # overriding the build arg through a same-named service in docker-compose.yml

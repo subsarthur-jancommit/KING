@@ -310,13 +310,16 @@ mid-build, always around "Generating static pages using 3 workers
   (`omniroute/Dockerfile`, default `4096`) before the build — but
   `next build`'s static-page generation spawns **3 parallel worker
   processes**, and `NODE_OPTIONS` propagates to every child process each
-  worker inherits its own 4096MB ceiling. Up to ~12GB of *potential*
-  combined heap across 3 workers comfortably exceeds the 7GB total RAM on
-  a standard GitHub-hosted `ubuntu-latest` runner — worse than the
-  original #4076 bug (which was about a single process exceeding V8's
-  *default* ~2GB ceiling on a memory-*unconstrained* build box), this is
-  three independently-ceilinged processes able to jointly exceed the
-  *host's* physical RAM regardless of any single process's own ceiling.
+  worker inherits its own 4096MB ceiling, for up to ~12GB of *potential*
+  combined heap across 3 workers. Unlike the original #4076 bug (a single
+  process exceeding V8's *default* ~2GB ceiling on a memory-unconstrained
+  build box), this is three independently-ceilinged processes able to
+  jointly outgrow the host regardless of any single process's own ceiling.
+
+  > **This reasoning was believed at the time but the supporting number was
+  > wrong**, and the conclusion is no longer claimed. It assumed a 7GB
+  > runner; the runners actually report 15Gi. See
+  > [the correction below](#the-intermittent-runner-death-and-what-is-actually-known-about-it).
 
 **Fix**: `docker-compose.yml` at KING root now carries a partial-override
 `omniroute-base` service block, merged additively into the one included
@@ -325,10 +328,11 @@ that only `build.args` changes — `OMNIROUTE_BASE_PATH` is preserved
 alongside the new key, and image/ports/profiles/healthcheck are all
 untouched, avoiding a repeat of the earlier `redis` full-service-collision
 class of bug). Sets `OMNIROUTE_BUILD_MEMORY_MB=1536` — the Dockerfile's own
-documented override point — so 3 workers × 1536MB ≈ 4.6GB, leaving
-headroom under 7GB for the OS, Docker daemon, and Node's baseline
-overhead. No `omniroute/` file touched; this only supplies a build arg the
-Dockerfile already explicitly supports overriding.
+documented override point — so 3 workers × 1536MB ≈ 4.6GB rather than
+~12GB. No `omniroute/` file touched; this only supplies a build arg the
+Dockerfile already explicitly supports overriding. The ceiling is still in
+place and is still a sensible bound, but see the correction below before
+treating it as the fix for the intermittent failures.
 
 **Correction, found the hard way**: that partial-override approach was
 reverted. `docker compose config` validated it cleanly (build.args merged
@@ -366,26 +370,33 @@ That step is now `./scripts/ci-build-omniroute-base.sh`, shared by all three
 jobs rather than copy-pasted into each, and shellcheck-linted by the
 `preflight` job.
 
-### The heap ceiling alone was not enough
+### The intermittent runner death, and what is actually known about it
 
-The ceiling bounds the V8 heap, but this build also loads
-`onnxruntime-node` and `@huggingface/transformers`, whose native allocations
-sit outside it. Peak RSS still lands close to a hosted runner's RAM, and when
-it crosses, the kernel OOM-killer takes the runner agent down with it —
-surfacing as `The runner has received a shutdown signal` and exit 143, always
-at the same `Generating static pages using 3 workers (440/587)` checkpoint.
+This step intermittently dies with `The runner has received a shutdown
+signal` and exit 143, always at the same `Generating static pages using 3
+workers (440/587)` checkpoint.
 
-This was confirmed as capacity variance rather than a build defect, by
-observation rather than assumption: on commit `d583545` this exact step OOM'd
-in the `agent-sidecar` job while the *identical* command succeeded in
-`boot-and-verify` on another runner at the same moment. Same commit, same
+**Established.** It is not caused by any particular commit. On `d583545` the
+step died in `agent-sidecar` while the *identical* command succeeded in
+`boot-and-verify`, on another runner, at the same moment — same commit, same
 script, different outcome.
 
-So the script also provisions swap before building, giving the kernel
-somewhere to put cold pages instead of choosing a process to kill. Swap
-failing to provision is a warning, not an error — a runner that refuses it
-can still build, just with less margin, and failing there would trade a
-probabilistic failure for a guaranteed one.
+**Not established — and previously overstated here.** Earlier revisions of
+this document and the workflow comments asserted a 7GB runner being exhausted
+by 3 parallel workers. That figure was wrong. The runners report **15Gi
+total with ~14Gi available** before the build starts (printed by the build
+script itself now), so a 4.6GB combined heap ceiling does not obviously
+exhaust them. Exit 143 is SIGTERM, which is GitHub's own runner-shutdown
+path; the kernel OOM-killer sends SIGKILL (137). Infrastructure preemption
+fits the evidence at least as well as memory pressure does.
+
+The build script provisions swap (3.0Gi → 11Gi, verified in the run logs) as
+**cheap headroom, not a proven fix**: it costs nothing, helps if the cause is
+memory pressure, and is harmless if it is preemption. A green run is not
+proof it worked — the failure was always intermittent, so only a long stretch
+of green runs would be. Swap failing to provision is a warning rather than an
+error, since failing there would trade a probabilistic failure for a
+guaranteed one.
 
 ## Why these and not others
 
