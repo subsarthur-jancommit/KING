@@ -119,11 +119,21 @@ check_agent_sidecar() {
   case "$executor" in
     local)
       warn "AGENT_SIDECAR_EXECUTOR=local runs model-generated Python inside the sidecar container."
-      echo "         Fine while tasks come from an operator on the CLI. Switch to docker/e2b"
-      echo "         before exposing this service to input you do not control."
+      echo "         This is the intended setting while tasks come from an operator on the CLI."
+      echo "         If task text ever arrives from outside your shell, move to e2b/modal/blaxel"
+      echo "         (not docker — see below)."
       ;;
-    docker | e2b | modal | blaxel)
-      pass "AGENT_SIDECAR_EXECUTOR=$executor uses an out-of-process sandbox."
+    docker)
+      # smolagents' DockerExecutor uses docker.from_env(), so inside a
+      # container this needs the host Docker socket mounted into the sidecar
+      # — root-equivalent host access granted to the service that runs
+      # model-written code by design. Off-host sandboxes avoid that entirely.
+      warn "AGENT_SIDECAR_EXECUTOR=docker needs the host Docker socket mounted into the sidecar."
+      echo "         That is root-equivalent host access for the service that executes"
+      echo "         model-generated code. Prefer e2b/modal/blaxel, which need no local daemon."
+      ;;
+    e2b | modal | blaxel)
+      pass "AGENT_SIDECAR_EXECUTOR=$executor sandboxes execution off this host."
       ;;
     *)
       fail "AGENT_SIDECAR_EXECUTOR=$executor is not a value smolagents accepts."

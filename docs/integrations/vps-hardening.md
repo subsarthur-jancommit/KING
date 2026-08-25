@@ -128,11 +128,21 @@ $ docker compose --profile base --profile openhands config
 These paths track the repo layout. If you change the project mount, revisit
 the list — the masks do not follow it automatically.
 
-## Two decisions that are still yours
+## Two decisions, and why they were settled this way
 
-These are genuine trade-offs, not oversights. Both are left at the
-conservative setting with the alternative documented, because picking either
-one silently would be the wrong call.
+These were genuine trade-offs rather than oversights, so they were held open
+until someone decided them deliberately. They are now decided, and they turn
+out to be **the same decision twice**: on this topology, both "safer sandbox"
+options are purchased with the host's root, and neither is worth that price.
+
+The thing that links them is a fact worth stating plainly, because it is
+easy to miss: **agent sandboxing here always means "let a container start
+containers", and a container that can start containers can start a
+privileged one that mounts the host root filesystem.** Docker exposes no
+useful middle ground for this — a socket proxy that still permits container
+creation still permits the escape, because the escape *is* container
+creation. So "sandbox the agent" and "give away the host" are, in this
+deployment, the same action described two different ways.
 
 ### 1. Docker socket, and therefore agent sandboxing
 
@@ -156,11 +166,26 @@ The trade-off is unusually sharp:
   filesystem access its mounts grant — which is why the secret masking above
   matters more in this configuration, not less.
 
-Neither is strictly safer; they fail in different directions. The default is
-"no host escalation path" because that failure is bounded and recoverable,
-while host root is not. If you enable it, do so on a VPS dedicated to this
-workload, not one sharing anything you care about. Preflight warns when it
-sees the mount enabled, so it never becomes an unnoticed default.
+**Decision: stays unmounted.** Not as a cautious default awaiting review —
+as the answer.
+
+The two options fail in different directions, so the question is which
+failure you can live with. Mounted, a bad outcome is *host root* and is not
+recoverable. Unmounted, a bad outcome is a wrecked container and a dirtied
+repo working copy — the container is disposable and the repo is in git, so
+it is recoverable in minutes.
+
+What settles it is which threat actually dominates now that the port binds
+to loopback. An external attacker has to get shell on the VPS first, at
+which point the socket is moot. The realistic threat is *the agent itself*
+misbehaving — a bad model turn, a prompt injection in a file it reads. That
+threat is exactly the one where the unmounted option's failure stays bounded
+and the mounted option's does not. The sandbox would be protecting the
+Canvas process, which is worth far less than the host it would trade away.
+
+If you knowingly want the sandbox anyway, run it on a VPS dedicated to this
+workload and nothing else. Preflight warns whenever it sees the mount
+enabled, so it can never become an unnoticed default.
 
 ### 2. Where smolagents executes generated code
 
@@ -184,11 +209,32 @@ the allowlist: every task arrives as an argv string from whoever ran
 `docker compose run agent-sidecar`. The container is non-root, capped at 1
 CPU and 1GB, carries `no-new-privileges`, and publishes no ports.
 
-**The moment that changes — an HTTP endpoint, a webhook, a queue consumer,
-anything where task text originates outside your shell — `local` is the wrong
-setting.** Prompt injection becomes remote code execution in your container.
-Set `AGENT_SIDECAR_EXECUTOR=docker` before that day, not after. An invalid
-value fails at settings load with a clear message rather than deep inside
+**Decision: `local` stays the default** — and not merely because the current
+invocation makes it acceptable. Switching it would make this deployment
+*worse*.
+
+smolagents' `DockerExecutor` connects with `docker.from_env()` (verified in
+smolagents 1.26.0), which means `DOCKER_HOST` or, failing that,
+`/var/run/docker.sock`. From inside the sidecar container there is no
+daemon, so `AGENT_SIDECAR_EXECUTOR=docker` only works if you mount the host's
+Docker socket into the sidecar — the exact root-equivalent access rejected in
+decision 1 above, now granted to the component that *runs model-written code
+by design*. The nominally safer executor buys container isolation by handing
+over the host. On this topology that is a straight downgrade.
+
+So the sidecar's real boundary is not the executor; it is that the service
+publishes no ports, runs non-root with `no-new-privileges`, is capped at 1
+CPU and 1GB, and is only ever reached by an operator typing
+`docker compose run`. Those hold regardless of executor.
+
+**What would change the answer**: an HTTP endpoint, a webhook, a queue
+consumer — anything where task text originates outside your shell. Then
+prompt injection becomes remote code execution in that container, and
+`local` is no longer defensible. The correct move at that point is *not* to
+mount the socket here, but to move execution off this host entirely: `e2b`,
+`modal`, or `blaxel` run the sandbox as someone else's problem and need no
+local daemon. Set one of those before that day, not after. An invalid value
+fails at settings load with a clear message rather than deep inside
 smolagents.
 
 ## What preflight does not check

@@ -25,8 +25,15 @@ services:
       # inside THIS container, guarded only by an AST-level import allowlist —
       # smolagents documents that as not a security boundary. That is fine
       # while every task arrives from an operator on the command line, which
-      # is the only way this service is invoked today. Switch to "docker" or
-      # "e2b" before any untrusted input can reach it.
+      # is the only way this service is invoked today.
+      #
+      # Do NOT reach for "docker" as the hardened option: smolagents'
+      # DockerExecutor uses docker.from_env(), so from inside this container
+      # it needs the host's Docker socket mounted in — root-equivalent host
+      # access, handed to the one service that runs model-written code by
+      # design. If task text ever starts arriving from outside an operator's
+      # shell, move execution off this host instead ("e2b", "modal",
+      # "blaxel"), which needs no local daemon.
       # See docs/integrations/vps-hardening.md.
       - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-local}
     depends_on:
@@ -86,14 +93,20 @@ services:
       - /dev/null:/projects/king/omniroute/.env:ro
       - /dev/null:/projects/king/observability/.env:ro
       - /dev/null:/projects/king/agent-sidecar/.env:ro
-      # Agent sandboxing is an explicit operator decision, not a default.
-      # Uncommenting this lets Agent Canvas spawn per-task sandbox containers
-      # (upstream's safer runtime), but access to the Docker socket is
-      # equivalent to root on the host — a container that can create
-      # containers can mount the host filesystem. Without it, agent processes
-      # run inside this container instead, with the filesystem access the
-      # mounts above grant. Neither option is strictly safer than the other;
-      # pick one deliberately. See docs/integrations/vps-hardening.md.
+      # Deliberately left unmounted, as a settled decision rather than a
+      # cautious default. Uncommenting this lets Agent Canvas spawn per-task
+      # sandbox containers (upstream's safer runtime), but a container that
+      # can create containers can create a privileged one that mounts the
+      # host root filesystem — so the socket is root-equivalent, and no
+      # socket proxy fixes that, because the escape IS container creation.
+      #
+      # Unmounted, agent code instead runs in this container, bounded by the
+      # mounts above: worst case is a wrecked container and a dirtied repo
+      # working copy, both recoverable. Mounted, worst case is the host, which
+      # is not. Now that the port binds to loopback, the dominant threat is
+      # the agent misbehaving rather than an external attacker — and that is
+      # precisely the case where the bounded failure is the right one to
+      # choose. See docs/integrations/vps-hardening.md.
       # - /var/run/docker.sock:/var/run/docker.sock
     environment:
       # CHANGEME: export OH_AGENT_CANVAS_SECRET_KEY (openssl rand -base64 32)
