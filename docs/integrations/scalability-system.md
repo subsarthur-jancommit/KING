@@ -310,13 +310,16 @@ mid-build, always around "Generating static pages using 3 workers
   (`omniroute/Dockerfile`, default `4096`) before the build — but
   `next build`'s static-page generation spawns **3 parallel worker
   processes**, and `NODE_OPTIONS` propagates to every child process each
-  worker inherits its own 4096MB ceiling. Up to ~12GB of *potential*
-  combined heap across 3 workers comfortably exceeds the 7GB total RAM on
-  a standard GitHub-hosted `ubuntu-latest` runner — worse than the
-  original #4076 bug (which was about a single process exceeding V8's
-  *default* ~2GB ceiling on a memory-*unconstrained* build box), this is
-  three independently-ceilinged processes able to jointly exceed the
-  *host's* physical RAM regardless of any single process's own ceiling.
+  worker inherits its own 4096MB ceiling, for up to ~12GB of *potential*
+  combined heap across 3 workers. Unlike the original #4076 bug (a single
+  process exceeding V8's *default* ~2GB ceiling on a memory-unconstrained
+  build box), this is three independently-ceilinged processes able to
+  jointly outgrow the host regardless of any single process's own ceiling.
+
+  > **This reasoning was believed at the time but the supporting number was
+  > wrong**, and the conclusion is no longer claimed. It assumed a 7GB
+  > runner; the runners actually report 15Gi. See
+  > [the correction below](#the-intermittent-runner-death-and-what-is-actually-known-about-it).
 
 **Fix**: `docker-compose.yml` at KING root now carries a partial-override
 `omniroute-base` service block, merged additively into the one included
@@ -325,10 +328,11 @@ that only `build.args` changes — `OMNIROUTE_BASE_PATH` is preserved
 alongside the new key, and image/ports/profiles/healthcheck are all
 untouched, avoiding a repeat of the earlier `redis` full-service-collision
 class of bug). Sets `OMNIROUTE_BUILD_MEMORY_MB=1536` — the Dockerfile's own
-documented override point — so 3 workers × 1536MB ≈ 4.6GB, leaving
-headroom under 7GB for the OS, Docker daemon, and Node's baseline
-overhead. No `omniroute/` file touched; this only supplies a build arg the
-Dockerfile already explicitly supports overriding.
+documented override point — so 3 workers × 1536MB ≈ 4.6GB rather than
+~12GB. No `omniroute/` file touched; this only supplies a build arg the
+Dockerfile already explicitly supports overriding. The ceiling is still in
+place and is still a sensible bound, but see the correction below before
+treating it as the fix for the intermittent failures.
 
 **Correction, found the hard way**: that partial-override approach was
 reverted. `docker compose config` validated it cleanly (build.args merged
@@ -355,14 +359,44 @@ every job identically before that, making it impossible to tell.
 
 **Actual fix applied**, in all three jobs that build `omniroute-base`
 (`agent-sidecar` and `openhands` in `stax-smoke.yml`,
-`boot-and-verify` in `omniroute-smoke.yml`): a dedicated
-`docker build --target runner-base --build-arg
-OMNIROUTE_BUILD_MEMORY_MB=1536 -t omniroute:base omniroute/` step runs
+`boot-and-verify` in `omniroute-smoke.yml`): a dedicated build step runs
 *before* `docker compose ... up` (with no `--build` flag on the `up` call,
 since the image is already built and tagged to match what
 `omniroute-base`'s `image:` field expects). This never touches the compose
 service graph, so it can't collide with anything `include:`s the way the
 reverted approach did.
+
+That step is now `./scripts/ci-build-omniroute-base.sh`, shared by all three
+jobs rather than copy-pasted into each, and shellcheck-linted by the
+`preflight` job.
+
+### The intermittent runner death, and what is actually known about it
+
+This step intermittently dies with `The runner has received a shutdown
+signal` and exit 143, always at the same `Generating static pages using 3
+workers (440/587)` checkpoint.
+
+**Established.** It is not caused by any particular commit. On `d583545` the
+step died in `agent-sidecar` while the *identical* command succeeded in
+`boot-and-verify`, on another runner, at the same moment — same commit, same
+script, different outcome.
+
+**Not established — and previously overstated here.** Earlier revisions of
+this document and the workflow comments asserted a 7GB runner being exhausted
+by 3 parallel workers. That figure was wrong. The runners report **15Gi
+total with ~14Gi available** before the build starts (printed by the build
+script itself now), so a 4.6GB combined heap ceiling does not obviously
+exhaust them. Exit 143 is SIGTERM, which is GitHub's own runner-shutdown
+path; the kernel OOM-killer sends SIGKILL (137). Infrastructure preemption
+fits the evidence at least as well as memory pressure does.
+
+The build script provisions swap (3.0Gi → 11Gi, verified in the run logs) as
+**cheap headroom, not a proven fix**: it costs nothing, helps if the cause is
+memory pressure, and is harmless if it is preemption. A green run is not
+proof it worked — the failure was always intermittent, so only a long stretch
+of green runs would be. Swap failing to provision is a warning rather than an
+error, since failing there would trade a probabilistic failure for a
+guaranteed one.
 
 ## Why these and not others
 
@@ -394,6 +428,10 @@ the existing `omniroute/docker-compose.yml` pattern (`memory`, `bifrost`,
 docker compose --profile base --profile agent-sidecar up -d --build
 ```
 
+Every new service also carries a `mem_limit`/`cpus` ceiling (overridable per
+service) so that adding a profile has a bounded cost on a small host rather
+than an open-ended one.
+
 Langfuse's self-hosted stack is resource-heavy for a small workspace; if you
 don't want 4 extra containers, use [Langfuse Cloud's free tier](https://langfuse.com)
 instead and point `agent-sidecar`'s `LANGFUSE_HOST` at it — no compose
@@ -407,3 +445,25 @@ Every consumer that talks to OmniRoute (agent-sidecar, OpenHands) gets its
 gitignored `.env` files, never committed, never reused across consumers. See
 `omniroute/.env.example` (section "Internal Agent & MCP Integrations") for
 the underlying convention.
+
+Compose cannot enforce any of this: `${VAR:?err}` is interpolated across the
+whole merged model *before* profiles are filtered, so a required-secret guard
+on one profile breaks `up` for every other profile. Run the preflight script
+instead — it applies the same checks, scoped per profile:
+
+```bash
+./scripts/stax-preflight.sh base agent-sidecar
+```
+
+It blocks on placeholder or missing secrets and warns on off-host port
+bindings. Required before deploying anywhere that isn't your own machine.
+
+## Deploying to a VPS
+
+The defaults in this repo assume a laptop. Before running STAX on a host
+with a public IP, read
+[vps-hardening.md](./vps-hardening.md) — it covers the loopback-by-default
+port bindings and how to tunnel to them, the `.env` masking that keeps agent
+runs from reading your provider credentials, resource limits, and the two
+trade-offs left deliberately to the operator (Docker-socket sandboxing for
+OpenHands, and where smolagents executes generated code).
