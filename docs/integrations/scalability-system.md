@@ -467,3 +467,7 @@ port bindings and how to tunnel to them, the `.env` masking that keeps agent
 runs from reading your provider credentials, resource limits, and the two
 trade-offs left deliberately to the operator (Docker-socket sandboxing for
 OpenHands, and where smolagents executes generated code).
+
+For the actual runbook — server setup through verification, per profile,
+in order — see [vps-deploy-guide.md](./vps-deploy-guide.md) (Bahasa
+Indonesia).

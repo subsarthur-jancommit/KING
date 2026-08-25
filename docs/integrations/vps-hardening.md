@@ -5,7 +5,9 @@ where "reachable from the network" means "reachable from my own machine". A
 VPS is different: every published port faces the internet, and the blast
 radius of a leaked credential is real. This page is the difference between
 those two situations — what changed, what is still your call, and what to run
-before you deploy.
+before you deploy. For the step-by-step runbook itself — server setup
+through verification, per profile — see
+[vps-deploy-guide.md](./vps-deploy-guide.md) (Bahasa Indonesia).
 
 Short version:
 
