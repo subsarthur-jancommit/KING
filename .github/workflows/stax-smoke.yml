@@ -176,6 +176,21 @@ jobs:
             -e AGENT_SIDECAR_MODEL_ID=opencode/big-pickle \
             agent-sidecar uv run pytest tests/ -v
 
+      - name: Give the wrapper its key the way a deployment does
+        run: |
+          set -euo pipefail
+          # The step above passes the key with `-e` because it runs a one-shot
+          # container. The wrapper is a long-lived service and reads
+          # agent-sidecar/.env (env_file in docker-compose.yml), which is also
+          # where docs/integrations/activepieces-workflow.md tells an operator
+          # to put it — so configure it the same way here rather than
+          # inventing a CI-only path.
+          {
+            echo "OMNIROUTE_API_KEY=${SIDECAR_API_KEY}"
+            echo "AGENT_SIDECAR_MODEL_ID=opencode/big-pickle"
+          } > agent-sidecar/.env
+          chmod 600 agent-sidecar/.env
+
       - name: Start the HTTP wrapper
         run: |
           docker compose -f docker-compose.yml --profile base --profile agent-sidecar-http up -d agent-sidecar-http
