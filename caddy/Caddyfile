@@ -1,0 +1,19 @@
+# Caddy config for the `proxy` profile — see docs/integrations/reverse-proxy-tls.md.
+#
+# Caddy obtains and renews a Let's Encrypt certificate automatically for
+# OMNIROUTE_PUBLIC_DOMAIN, and redirects http:// to https:// on its own.
+# The ACME HTTP-01 challenge is why port 80 is published alongside 443.
+#
+# The upstream is the Docker network hostname, not the host's published port:
+# traffic never leaves the compose network between Caddy and OmniRoute, so
+# DASHBOARD_PORT does not need to be reachable from outside the VPS at all.
+
+{$OMNIROUTE_PUBLIC_DOMAIN} {
+	reverse_proxy omniroute-base:{$DASHBOARD_PORT:20128} {
+		# OmniRoute streams SSE for /v1/chat/completions and /v1/messages.
+		# Caddy does not buffer responses by default, but say so explicitly:
+		# a future directive that enables buffering would silently break
+		# streaming for every Claude Code and OpenAI-SDK client.
+		flush_interval -1
+	}
+}

@@ -142,5 +142,38 @@ services:
     profiles:
       - openhands
 
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      # Caddy is the one deliberately public entrypoint added by this
+      # profile — it terminates TLS and reverse-proxies internally to
+      # omniroute-base over the Docker network, so OmniRoute's own
+      # published port never needs to be opened on the host firewall.
+      # See docs/integrations/reverse-proxy-tls.md.
+      - "80:80"
+      - "443:443"
+    environment:
+      # Deliberately a soft default, not ${VAR:?err} — same reasoning as
+      # OH_AGENT_CANVAS_SECRET_KEY above: a hard-required var here would be
+      # interpolated across the whole merged compose model before profile
+      # filtering and break `--profile base up` for anyone not using the
+      # proxy profile. ./scripts/stax-preflight.sh enforces this instead.
+      - OMNIROUTE_PUBLIC_DOMAIN=${OMNIROUTE_PUBLIC_DOMAIN:-CHANGEME.example.com}
+      - DASHBOARD_PORT=${DASHBOARD_PORT:-20128}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      omniroute-base:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    profiles:
+      - proxy
+
 volumes:
   openhands-canvas-settings:
+  caddy-data:
+  caddy-config:

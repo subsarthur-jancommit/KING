@@ -110,6 +110,24 @@ Docker daemon. The compose configuration was statically validated
 Treat the first `docker compose --profile base up -d --build` in a
 Docker-capable environment as the real end-to-end verification step.
 
+### Public HTTPS deployment
+
+For a VPS deployment reachable at your own domain rather than `http://IP:20128`,
+the `proxy` profile adds Caddy in front of OmniRoute with automatic Let's
+Encrypt certificates:
+
+```bash
+echo "OMNIROUTE_PUBLIC_DOMAIN=your.domain.com" >> .env
+./scripts/stax-preflight.sh base proxy
+docker compose --profile base --profile proxy up -d
+```
+
+Caddy reaches OmniRoute over the compose network, so only 80/443 need to be
+open at the cloud firewall — `DASHBOARD_PORT` stays closed. This also makes the
+gateway usable as a Claude Code backend via `ANTHROPIC_BASE_URL`, since
+OmniRoute serves a native Anthropic Messages API at `/v1/messages`. See
+[`docs/integrations/reverse-proxy-tls.md`](docs/integrations/reverse-proxy-tls.md).
+
 ### CI smoke test
 
 [`.github/workflows/omniroute-smoke.yml`](.github/workflows/omniroute-smoke.yml)

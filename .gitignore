@@ -2,6 +2,11 @@
 /omniroute/.env
 /omniroute/data/
 
+# Root-level compose environment (OMNIROUTE_PUBLIC_DOMAIN and anything else
+# Compose reads by default). Not secret today, but it is the file operators
+# reach for first when a deploy needs one — see docs/integrations/reverse-proxy-tls.md
+/.env
+
 # STAX scalability-system tooling — workspace-level, see docs/integrations/
 /node_modules/
 /repomix-output.*

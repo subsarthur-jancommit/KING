@@ -22,6 +22,7 @@
 #   ./scripts/stax-preflight.sh base                       # OmniRoute only
 #   ./scripts/stax-preflight.sh base agent-sidecar
 #   ./scripts/stax-preflight.sh base openhands observability
+#   ./scripts/stax-preflight.sh base proxy                 # public HTTPS deploy
 #   ./scripts/stax-preflight.sh --self-test                # verify this script
 #
 # Exit codes: 0 = safe to deploy, 1 = at least one blocking problem.
@@ -29,6 +30,7 @@
 set -euo pipefail
 
 readonly PLACEHOLDER_OH_SECRET='CHANGEME-openssl-rand-base64-32'
+readonly PLACEHOLDER_PUBLIC_DOMAIN='CHANGEME.example.com'
 
 # Upstream Langfuse ships these as literal defaults with a `# CHANGEME`
 # comment; they are published values, not secrets.
@@ -168,6 +170,38 @@ check_openhands() {
   fi
 }
 
+check_proxy() {
+  echo "profile: proxy (Caddy + Let's Encrypt)"
+  local domain
+  domain=$(lookup OMNIROUTE_PUBLIC_DOMAIN .env)
+
+  if [ -z "$domain" ]; then
+    fail "OMNIROUTE_PUBLIC_DOMAIN is unset — Caddy would try to serve the compose placeholder."
+  elif [ "$domain" = "$PLACEHOLDER_PUBLIC_DOMAIN" ]; then
+    fail "OMNIROUTE_PUBLIC_DOMAIN is still $PLACEHOLDER_PUBLIC_DOMAIN."
+  elif [ "${domain#*.}" = "$domain" ]; then
+    # Let's Encrypt will not issue for a bare hostname, and Caddy would retry
+    # the failing ACME order on every boot rather than surfacing it once.
+    fail "OMNIROUTE_PUBLIC_DOMAIN=$domain is not a fully-qualified domain name."
+  else
+    pass "OMNIROUTE_PUBLIC_DOMAIN is set to $domain."
+  fi
+
+  if [ ! -f caddy/Caddyfile ]; then
+    fail "caddy/Caddyfile is missing — the compose file bind-mounts it read-only and Caddy will not start."
+  else
+    pass "caddy/Caddyfile is present."
+  fi
+
+  # Caddy publishes 80/443 on all interfaces by design: it is the TLS
+  # terminator, and ACME HTTP-01 requires port 80 to be reachable from the
+  # public internet. Flagged as informational, not a warning, so it does not
+  # read as the accidental-exposure case check_bind_host exists to catch.
+  echo "         Note: this profile publishes 80/443 on every interface — that is"
+  echo "         intended. Keep DASHBOARD_PORT closed at the cloud firewall so the"
+  echo "         proxy stays the only way in."
+}
+
 check_observability() {
   echo "profile: observability (Langfuse)"
   check_secret "NEXTAUTH_SECRET" \
@@ -231,7 +265,7 @@ main() {
   fi
 
   if [ "$#" -eq 0 ]; then
-    echo "usage: $0 <profile> [profile...]   (base | agent-sidecar | openhands | observability)" >&2
+    echo "usage: $0 <profile> [profile...]   (base | agent-sidecar | openhands | observability | proxy)" >&2
     echo "       $0 --self-test" >&2
     exit 2
   fi
@@ -248,6 +282,7 @@ main() {
       agent-sidecar) check_agent_sidecar ;;
       openhands)     check_openhands ;;
       observability) check_observability ;;
+      proxy)         check_proxy ;;
       *) fail "unknown profile '$profile'" ;;
     esac
     echo
