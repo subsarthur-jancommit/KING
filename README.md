@@ -128,6 +128,22 @@ gateway usable as a Claude Code backend via `ANTHROPIC_BASE_URL`, since
 OmniRoute serves a native Anthropic Messages API at `/v1/messages`. See
 [`docs/integrations/reverse-proxy-tls.md`](docs/integrations/reverse-proxy-tls.md).
 
+### Workflow orchestration
+
+OmniRoute routes model calls; it does not schedule anything or react to
+outside events. The `workflow` profile adds [Activepieces](https://www.activepieces.com)
+(MIT) for that — triggers, branching, retries and run history — with OmniRoute
+still the only path out to a model. Its Postgres and Redis point at Neon and
+Upstash free tiers, so it costs one container rather than four:
+
+```bash
+cp activepieces/.env.example activepieces/.env   # fill in Neon + Upstash
+./scripts/stax-preflight.sh base workflow
+docker compose --profile base --profile workflow up -d
+```
+
+See [`docs/integrations/activepieces-workflow.md`](docs/integrations/activepieces-workflow.md).
+
 ### CI smoke test
 
 [`.github/workflows/omniroute-smoke.yml`](.github/workflows/omniroute-smoke.yml)

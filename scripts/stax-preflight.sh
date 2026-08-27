@@ -170,6 +170,72 @@ check_openhands() {
   fi
 }
 
+check_workflow() {
+  echo "profile: workflow (Activepieces)"
+  if [ ! -f activepieces/.env ]; then
+    fail "activepieces/.env is missing. Copy activepieces/.env.example and fill it in."
+    return
+  fi
+
+  # Lengths match what Activepieces documents: `openssl rand -hex 16` for the
+  # encryption key (32 hex chars) and `openssl rand -hex 32` for the JWT
+  # secret (64). The encryption key is length-sensitive upstream, not just
+  # strength-sensitive — a wrong length fails at boot rather than degrading.
+  local enc
+  enc=$(lookup AP_ENCRYPTION_KEY activepieces/.env)
+  check_secret "AP_ENCRYPTION_KEY" "$enc" '' 32
+  if [ -n "$enc" ] && [ "${#enc}" -ne 32 ]; then
+    fail "AP_ENCRYPTION_KEY must be exactly 32 hex characters (openssl rand -hex 16); got ${#enc}."
+  fi
+  check_secret "AP_JWT_SECRET" "$(lookup AP_JWT_SECRET activepieces/.env)" '' 32
+
+  local pg
+  pg=$(lookup AP_POSTGRES_URL activepieces/.env)
+  if [ -z "$pg" ]; then
+    fail "AP_POSTGRES_URL is unset — point it at your Neon database."
+  elif [ "${pg#*-pooler}" = "$pg" ] && [ "${pg#*neon.tech}" != "$pg" ]; then
+    # Neon's non-pooled endpoint caps concurrent connections far lower than a
+    # long-running worker pool wants; the pooled one is free and same-region.
+    warn "AP_POSTGRES_URL points at a Neon endpoint without '-pooler'."
+    echo "         Use the pooled endpoint (PgBouncer, free) for a long-running service."
+  else
+    pass "AP_POSTGRES_URL is set."
+  fi
+
+  if [ -z "$(lookup AP_REDIS_HOST activepieces/.env)" ]; then
+    fail "AP_REDIS_HOST is unset — point it at your Upstash database."
+  else
+    pass "AP_REDIS_HOST is set."
+  fi
+
+  # Upstream issue #4857: AP_REDIS_USE_SSL=false still negotiates TLS. Only
+  # absence disables it, so a literal "false" here is a misconfiguration that
+  # fails at connect time with a confusing error.
+  local redis_ssl
+  redis_ssl=$(lookup AP_REDIS_USE_SSL activepieces/.env)
+  if [ "$redis_ssl" = "false" ]; then
+    fail "AP_REDIS_USE_SSL=false still forces TLS upstream. Remove the line entirely to disable it."
+  fi
+
+  local frontend
+  frontend=$(lookup AP_FRONTEND_URL activepieces/.env)
+  case "$frontend" in
+    *localhost*|*127.0.0.1*)
+      warn "AP_FRONTEND_URL is $frontend — inbound webhooks from Slack/GitHub will not reach this instance."
+      echo "         Fine while you are tunnelling in over SSH; set the public URL once it is proxied."
+      ;;
+    "")
+      fail "AP_FRONTEND_URL is unset."
+      ;;
+    *)
+      pass "AP_FRONTEND_URL is set to $frontend."
+      ;;
+  esac
+
+  check_bind_host "AP_BIND_HOST" "$(lookup AP_BIND_HOST)" \
+    "Activepieces authenticates, but its webhook endpoints are public by design."
+}
+
 check_proxy() {
   echo "profile: proxy (Caddy + Let's Encrypt)"
   local domain
@@ -265,7 +331,7 @@ main() {
   fi
 
   if [ "$#" -eq 0 ]; then
-    echo "usage: $0 <profile> [profile...]   (base | agent-sidecar | openhands | observability | proxy)" >&2
+    echo "usage: $0 <profile> [profile...]   (base | agent-sidecar | openhands | observability | proxy | workflow)" >&2
     echo "       $0 --self-test" >&2
     exit 2
   fi
@@ -283,6 +349,7 @@ main() {
       openhands)     check_openhands ;;
       observability) check_observability ;;
       proxy)         check_proxy ;;
+      workflow)      check_workflow ;;
       *) fail "unknown profile '$profile'" ;;
     esac
     echo

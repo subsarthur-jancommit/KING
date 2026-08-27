@@ -93,6 +93,7 @@ services:
       - /dev/null:/projects/king/omniroute/.env:ro
       - /dev/null:/projects/king/observability/.env:ro
       - /dev/null:/projects/king/agent-sidecar/.env:ro
+      - /dev/null:/projects/king/activepieces/.env:ro
       # Deliberately left unmounted, as a settled decision rather than a
       # cautious default. Uncommenting this lets Agent Canvas spawn per-task
       # sandbox containers (upstream's safer runtime), but a container that
@@ -142,6 +143,52 @@ services:
     profiles:
       - openhands
 
+  activepieces:
+    # Pinned to the version upstream's own docker-compose.yml ships, not the
+    # newest tag — that pairing is the one they publish as a working set. See
+    # docs/integrations/activepieces-workflow.md for how to bump it.
+    #
+    # Open-core: MIT, except packages/ee/ which carries a separate enterprise
+    # licence. Nothing in this profile touches those paths.
+    image: ghcr.io/activepieces/activepieces:0.88.3
+    ports:
+      # Loopback-only, same rule as openhands-agent-canvas below: reach it
+      # over an SSH tunnel (`ssh -L 8080:127.0.0.1:8080 vps`) for setup. It
+      # does authenticate, but its webhook endpoints are unauthenticated by
+      # design, so put it behind the `proxy` profile on its own subdomain
+      # before exposing it — not on a bare public port.
+      - "${AP_BIND_HOST:-127.0.0.1}:${AP_PORT:-8080}:80"
+    env_file:
+      # Everything lives here rather than in `environment:` below because
+      # AP_REDIS_USE_SSL must be ABSENT to disable TLS — setting it to "false"
+      # still makes Activepieces attempt a TLS handshake (upstream issue
+      # #4857). A compose `${AP_REDIS_USE_SSL:-}` default would inject an
+      # empty value and trip exactly that bug; an env_file simply omits it.
+      - path: activepieces/.env
+        required: false
+    environment:
+      # Left unset deliberately: AP_CONTAINER_TYPE defaults to
+      # WORKER_AND_APP, so one container runs both roles. Upstream's own
+      # compose splits them into app + 5 worker replicas, which is a
+      # horizontal-scale layout this VPS has no headroom for and does not
+      # need.
+      - AP_QUEUE_MODE=${AP_QUEUE_MODE:-REDIS}
+    depends_on:
+      omniroute-base:
+        condition: service_healthy
+    restart: unless-stopped
+    # Deliberately no `no-new-privileges`, for the same reason it is absent on
+    # openhands-agent-canvas: this is a third-party image that installs piece
+    # packages with npm at runtime, and nothing here has tested that a
+    # hardened run survives that. Untested hardening that breaks at runtime is
+    # worse than none.
+    mem_limit: ${AP_MEM_LIMIT:-1536m}
+    cpus: ${AP_CPUS:-1.0}
+    volumes:
+      - activepieces-cache:/usr/src/app/cache
+    profiles:
+      - workflow
+
   caddy:
     image: caddy:2-alpine
     ports:
@@ -177,3 +224,4 @@ volumes:
   openhands-canvas-settings:
   caddy-data:
   caddy-config:
+  activepieces-cache:

@@ -16,4 +16,5 @@
 /agent-sidecar/__pycache__/
 /agent-sidecar/**/__pycache__/
 /observability/.env
+/activepieces/.env
 *.graphify-bak

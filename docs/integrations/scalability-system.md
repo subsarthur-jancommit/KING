@@ -28,6 +28,7 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 | [Langfuse](../../observability/) | Self-hosted, framework-agnostic (OpenTelemetry) tracing across every agent runtime in this workspace | ✅ vendored & statically validated (Docker daemon unavailable here — see below) |
 | [OpenHands Agent Canvas](./openhands-agent-canvas.md) | Self-hosted control center to run/monitor multiple coding agents and automations, LLM-configured to route through OmniRoute | ✅ vendored & statically validated (see linked doc) |
 | [Smithery](./smithery.md) | External MCP server registry — pull third-party MCP servers as tools, optionally publish OmniRoute's own MCP server | ✅ CLI verified & skill installed (user-scoped — see linked doc) |
+| [Activepieces](./activepieces-workflow.md) | Workflow orchestration on top of the gateway — triggers, scheduling, branching and run history, with Postgres/Redis offloaded to Neon/Upstash free tiers so it adds only one container | ✅ statically validated (needs a live VPS + Neon/Upstash accounts — see linked doc) |
 
 ## Graphify — status
 
