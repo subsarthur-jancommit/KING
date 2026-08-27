@@ -170,6 +170,19 @@ check_openhands() {
   fi
 }
 
+check_agent_sidecar_http() {
+  echo "profile: agent-sidecar-http"
+  # Same image, same runners, same executor decision — so reuse that profile's
+  # checks rather than drifting a second copy of them.
+  check_agent_sidecar
+
+  # What is genuinely different: this one is long-lived and publishes a port,
+  # and it has no authentication of its own. Its whole safety argument is that
+  # only things already inside the compose network can reach it.
+  check_bind_host "AGENT_SIDECAR_HTTP_BIND_HOST" "$(lookup AGENT_SIDECAR_HTTP_BIND_HOST)" \
+    "This endpoint has NO authentication and runs model-generated code. Do not expose it."
+}
+
 check_workflow() {
   echo "profile: workflow (Activepieces)"
   if [ ! -f activepieces/.env ]; then
@@ -331,7 +344,8 @@ main() {
   fi
 
   if [ "$#" -eq 0 ]; then
-    echo "usage: $0 <profile> [profile...]   (base | agent-sidecar | openhands | observability | proxy | workflow)" >&2
+    echo "usage: $0 <profile> [profile...]   (base | agent-sidecar | agent-sidecar-http | openhands |
+                                            observability | proxy | workflow)" >&2
     echo "       $0 --self-test" >&2
     exit 2
   fi
@@ -346,6 +360,7 @@ main() {
     case "$profile" in
       base)          check_base ;;
       agent-sidecar) check_agent_sidecar ;;
+      agent-sidecar-http) check_agent_sidecar_http ;;
       openhands)     check_openhands ;;
       observability) check_observability ;;
       proxy)         check_proxy ;;

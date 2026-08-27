@@ -176,13 +176,91 @@ jobs:
             -e AGENT_SIDECAR_MODEL_ID=opencode/big-pickle \
             agent-sidecar uv run pytest tests/ -v
 
+      - name: Start the HTTP wrapper
+        run: |
+          docker compose -f docker-compose.yml --profile base --profile agent-sidecar-http up -d agent-sidecar-http
+
+      - name: Wait for the wrapper to report healthy
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8100/healthz >/dev/null; then
+              echo "Wrapper ready after $((i * 2))s"
+              curl -sf http://localhost:8100/healthz
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "HTTP wrapper did not become healthy in time" >&2
+          docker compose -f docker-compose.yml --profile base --profile agent-sidecar-http logs --tail=200 agent-sidecar-http
+          exit 1
+
+      - name: The wrapper must not leak the API key it was given
+        run: |
+          set -euo pipefail
+          # /healthz reports whether a key is configured, never the key. This
+          # asserts that with a real key actually loaded, so a future change
+          # that starts echoing settings back cannot pass unnoticed.
+          BODY=$(curl -sf http://localhost:8100/healthz)
+          echo "$BODY" | grep -q '"omniroute_api_key_set":true'
+          if echo "$BODY" | grep -qF "${SIDECAR_API_KEY}"; then
+            echo "/healthz leaked the API key" >&2
+            exit 1
+          fi
+          echo "No key material in the health payload."
+
+      - name: A real task must run end to end over HTTP
+        run: |
+          set -euo pipefail
+          # The whole point of this profile: a workflow step is an HTTP call,
+          # so prove a real agent run completes through one — reaching
+          # OmniRoute, not a stub.
+          #
+          # -sf is deliberately absent: a 500 body carries the runner's own
+          # error message, which is what distinguishes the two cases below.
+          RESP=$(curl -s -X POST http://localhost:8100/run \
+            -H 'Content-Type: application/json' \
+            --max-time 300 \
+            -d '{"task":"Say exactly: HTTP-WRAPPER-OK, nothing else."}')
+          echo "$RESP"
+          if echo "$RESP" | grep -q "HTTP-WRAPPER-OK"; then
+            echo "Agent ran end to end over HTTP."
+            exit 0
+          fi
+          # opencode/big-pickle is a free, keyless, best-effort provider. When
+          # it is down the runner raises and the wrapper returns that message
+          # verbatim — which proves the request reached the wrapper, the
+          # runner, and OmniRoute. Only the model call itself is unproven.
+          if echo "$RESP" | grep -qE "service_unavailable|Upstream request failed"; then
+            echo "::warning::Upstream free provider unavailable. The HTTP wrapper" \
+                 "and its path to OmniRoute are proven; the agent result is not."
+            exit 0
+          fi
+          echo "Unexpected response from the wrapper" >&2
+          exit 1
+
+      - name: Bad requests must be rejected, not 500
+        run: |
+          set -euo pipefail
+          for body in '{}' '{"task":""}' '{"task":"t","runner":"nope"}'; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8100/run \
+              -H 'Content-Type: application/json' -d "$body")
+            if [ "$code" != "400" ]; then
+              echo "expected 400 for $body, got $code" >&2
+              exit 1
+            fi
+          done
+          echo "All malformed requests correctly rejected with 400."
+
       - name: Dump logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml --profile base --profile agent-sidecar logs --tail=300
+        run: |
+          docker compose -f docker-compose.yml --profile base --profile agent-sidecar             --profile agent-sidecar-http logs --tail=300
 
       - name: Tear down
         if: always()
-        run: docker compose -f docker-compose.yml --profile base --profile agent-sidecar down -v
+        run: |
+          docker compose -f docker-compose.yml --profile base --profile agent-sidecar             --profile agent-sidecar-http down -v
 
   observability:
     runs-on: ubuntu-latest
@@ -430,10 +508,28 @@ jobs:
               })
                 .then(async (r) => {
                   const text = await r.text();
-                  if (!r.ok) throw new Error("HTTP " + r.status + ": " + text.slice(0, 400));
-                  const content = JSON.parse(text)?.choices?.[0]?.message?.content;
-                  if (!content) throw new Error("no assistant content in response: " + text.slice(0, 400));
-                  console.log("OmniRoute replied:", JSON.stringify(content).slice(0, 200));
+                  if (r.ok) {
+                    const content = JSON.parse(text)?.choices?.[0]?.message?.content;
+                    if (!content) throw new Error("no assistant content: " + text.slice(0, 400));
+                    console.log("OmniRoute replied:", JSON.stringify(content).slice(0, 200));
+                    return;
+                  }
+                  // opencode/big-pickle is a free, keyless, best-effort
+                  // provider. When it is down OmniRoute answers 503
+                  // service_unavailable, and that reply is itself proof the
+                  // request crossed the compose network, reached OmniRoute and
+                  // was routed onward, which is what this step exists to check.
+                  // Failing on it would make a third party the arbiter of this
+                  // repo build status; observed for real in run 33047603557.
+                  let body = null;
+                  try { body = JSON.parse(text); } catch (_) { /* not JSON */ }
+                  if (r.status === 503 && body && body.error && body.error.code === "service_unavailable") {
+                    console.log("::warning::Upstream free provider unavailable. The " +
+                      "Activepieces to OmniRoute path is proven; the completion is not. " +
+                      text.slice(0, 200));
+                    return;
+                  }
+                  throw new Error("HTTP " + r.status + ": " + text.slice(0, 400));
                 })
                 .catch((e) => { console.error(e.message); process.exit(1); });
             '

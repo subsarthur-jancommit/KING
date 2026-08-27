@@ -142,6 +142,11 @@ cp activepieces/.env.example activepieces/.env   # fill in Neon + Upstash
 docker compose --profile base --profile workflow up -d
 ```
 
+The `agent-sidecar-http` profile completes the loop: it serves the existing
+smolagents and pydantic-ai runners over HTTP (`POST /run`) so a workflow step
+can invoke a real agent, not just a chat completion. It has no authentication
+and runs model-generated code, so it stays loopback-only and is never proxied.
+
 See [`docs/integrations/activepieces-workflow.md`](docs/integrations/activepieces-workflow.md).
 
 ### CI smoke test
