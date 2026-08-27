@@ -5,7 +5,9 @@ on:
     paths:
       - "docker-compose.yml"
       - "agent-sidecar/**"
+      - "activepieces/**"
       - "observability/**"
+      - "caddy/**"
       - "scripts/**"
       - ".github/workflows/stax-smoke.yml"
   workflow_dispatch: {}
@@ -42,6 +44,55 @@ jobs:
           set -euo pipefail
           OH_AGENT_CANVAS_SECRET_KEY="$(openssl rand -base64 32)" \
             ./scripts/stax-preflight.sh openhands
+
+      - name: AP_REDIS_USE_SSL=false must be rejected
+        run: |
+          set -euo pipefail
+          # Upstream #4857: "false" still negotiates TLS — only absence
+          # disables it. If preflight ever stops catching that spelling, an
+          # operator gets a confusing connect-time failure instead.
+          # Written with echo rather than a heredoc on purpose: an unindented
+          # heredoc is not possible at this indentation level, and `lookup` in
+          # the preflight script anchors on ^VAR= — leading spaces would make
+          # every value read as unset and this test would pass for the wrong
+          # reason.
+          mkdir -p activepieces
+          {
+            echo "AP_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef"
+            echo "AP_JWT_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            echo "AP_FRONTEND_URL=https://flows.example.com"
+            echo "AP_POSTGRES_URL=postgres://u:p@ap-postgres:5432/activepieces"
+            echo "AP_REDIS_HOST=ap-redis"
+            echo "AP_REDIS_USE_SSL=false"
+          } > activepieces/.env
+          # Guard against exactly the failure mode described above: prove the
+          # file really parses before trusting what the next assertion means.
+          grep -q '^AP_REDIS_USE_SSL=false$' activepieces/.env
+          if ./scripts/stax-preflight.sh workflow; then
+            echo "preflight accepted AP_REDIS_USE_SSL=false — it must not" >&2
+            exit 1
+          fi
+          echo "Correctly rejected."
+
+      - name: A wrong-length AP_ENCRYPTION_KEY must be rejected
+        run: |
+          set -euo pipefail
+          # Activepieces requires exactly 32 hex chars; a wrong length fails at
+          # boot rather than degrading, so it is worth catching before deploy.
+          sed -i 's|^AP_ENCRYPTION_KEY=.*|AP_ENCRYPTION_KEY=tooshort|' activepieces/.env
+          sed -i '/^AP_REDIS_USE_SSL=/d' activepieces/.env
+          if ./scripts/stax-preflight.sh workflow; then
+            echo "preflight accepted a short AP_ENCRYPTION_KEY — it must not" >&2
+            exit 1
+          fi
+          echo "Correctly rejected."
+
+      - name: A valid workflow config must be accepted
+        run: |
+          set -euo pipefail
+          sed -i "s|^AP_ENCRYPTION_KEY=.*|AP_ENCRYPTION_KEY=$(openssl rand -hex 16)|" activepieces/.env
+          ./scripts/stax-preflight.sh workflow
+          rm -f activepieces/.env
 
       - name: Shell lint
         run: |
@@ -271,3 +322,137 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.yml --profile base --profile openhands down -v
+
+  workflow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Generate CI-only secrets and write omniroute/.env
+        run: |
+          set -euo pipefail
+          cp omniroute/.env.example omniroute/.env
+          JWT_SECRET=$(openssl rand -base64 48)
+          API_KEY_SECRET=$(openssl rand -hex 32)
+          INITIAL_PASSWORD=$(openssl rand -base64 18)
+          echo "::add-mask::${JWT_SECRET}"
+          echo "::add-mask::${API_KEY_SECRET}"
+          echo "::add-mask::${INITIAL_PASSWORD}"
+          sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${JWT_SECRET}|" omniroute/.env
+          sed -i "s|^API_KEY_SECRET=.*|API_KEY_SECRET=${API_KEY_SECRET}|" omniroute/.env
+          sed -i "s|^INITIAL_PASSWORD=.*|INITIAL_PASSWORD=${INITIAL_PASSWORD}|" omniroute/.env
+          sed -i "s|^# OMNIROUTE_DISABLE_BACKGROUND_SERVICES=false|OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true|" omniroute/.env
+
+      - name: Write activepieces/.env pointing at the CI-only Postgres and Redis
+        run: |
+          set -euo pipefail
+          AP_CI_POSTGRES_PASSWORD=$(openssl rand -hex 24)
+          echo "::add-mask::${AP_CI_POSTGRES_PASSWORD}"
+          echo "AP_CI_POSTGRES_PASSWORD=${AP_CI_POSTGRES_PASSWORD}" >> "$GITHUB_ENV"
+          # AP_REDIS_USE_SSL is deliberately ABSENT rather than "false":
+          # upstream #4857 means the literal "false" still negotiates TLS,
+          # which the CI Redis does not speak. This job is therefore also a
+          # live check that the advice in .env.example is the correct advice.
+          {
+            echo "AP_ENCRYPTION_KEY=$(openssl rand -hex 16)"
+            echo "AP_JWT_SECRET=$(openssl rand -hex 32)"
+            echo "AP_FRONTEND_URL=http://localhost:8080"
+            echo "AP_POSTGRES_URL=postgres://activepieces:${AP_CI_POSTGRES_PASSWORD}@ap-postgres:5432/activepieces"
+            echo "AP_REDIS_TYPE=STANDALONE"
+            echo "AP_REDIS_HOST=ap-redis"
+            echo "AP_REDIS_PORT=6379"
+            echo "AP_EXECUTION_MODE=UNSANDBOXED"
+            echo "AP_ENVIRONMENT=prod"
+            echo "AP_TELEMETRY_ENABLED=false"
+          } > activepieces/.env
+
+      - name: Preflight must pass for base + workflow
+        run: ./scripts/stax-preflight.sh base workflow
+
+      - name: Pre-build omniroute:base
+        run: ./scripts/ci-build-omniroute-base.sh
+
+      - name: Start OmniRoute + Activepieces
+        run: |
+          docker compose -f docker-compose.yml -f activepieces/docker-compose.ci.yml \
+            --profile base --profile workflow up -d
+
+      - name: Wait for OmniRoute /healthz
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:20128/healthz >/dev/null; then
+              echo "OmniRoute ready after $((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "OmniRoute did not become healthy in time" >&2
+          exit 1
+
+      - name: Wait for Activepieces API (proves schema migration + DB reachable)
+        run: |
+          set -euo pipefail
+          # /api/v1/flags is unauthenticated and reads from the database, so a
+          # 200 here proves more than "the port is open": it proves the schema
+          # migrated onto Postgres and the API can query it.
+          for i in $(seq 1 150); do
+            if curl -sf http://localhost:8080/api/v1/flags >/dev/null; then
+              echo "Activepieces ready after $((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Activepieces did not become healthy in time" >&2
+          docker compose -f docker-compose.yml -f activepieces/docker-compose.ci.yml \
+            --profile base --profile workflow logs --tail=200 activepieces
+          exit 1
+
+      - name: Activepieces must reach OmniRoute over the compose network
+        run: |
+          set -euo pipefail
+          # This is the path a real "HTTP Request" step in a flow takes, and
+          # the reason the AI Provider base URL is the Docker hostname rather
+          # than localhost. Run from inside the container so it proves the
+          # network route, not the runner's own access.
+          docker compose -f docker-compose.yml -f activepieces/docker-compose.ci.yml \
+            --profile base --profile workflow exec -T activepieces \
+            node -e '
+              fetch("http://omniroute-base:20128/v1/chat/completions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  model: "opencode/big-pickle",
+                  messages: [{ role: "user", content: "Reply with the single word: pong" }],
+                }),
+              })
+                .then(async (r) => {
+                  const text = await r.text();
+                  if (!r.ok) throw new Error("HTTP " + r.status + ": " + text.slice(0, 400));
+                  const content = JSON.parse(text)?.choices?.[0]?.message?.content;
+                  if (!content) throw new Error("no assistant content in response: " + text.slice(0, 400));
+                  console.log("OmniRoute replied:", JSON.stringify(content).slice(0, 200));
+                })
+                .catch((e) => { console.error(e.message); process.exit(1); });
+            '
+
+      - name: Note — the AI Provider wiring is a manual UI step, not covered here
+        run: |
+          echo "This job proves the container boots, migrates, serves its API," \
+               "and can reach OmniRoute over the compose network. The" \
+               "Admin > AI Providers wiring documented in" \
+               "docs/integrations/activepieces-workflow.md is a one-time manual step."
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml -f activepieces/docker-compose.ci.yml \
+            --profile base --profile workflow logs --tail=300
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f activepieces/docker-compose.ci.yml \
+            --profile base --profile workflow down -v

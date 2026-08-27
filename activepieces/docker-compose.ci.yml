@@ -1,0 +1,52 @@
+# CI-only overlay: throwaway Postgres and Redis for the `workflow` profile.
+#
+# A real deployment points AP_POSTGRES_URL and AP_REDIS_HOST at Neon and
+# Upstash (see docs/integrations/activepieces-workflow.md) — that is the whole
+# reason the profile costs one container instead of four. CI has no accounts
+# and no secrets to reach them with, so it stands up local equivalents instead
+# and proves everything else: that the image boots, migrates its schema,
+# serves its API, and can reach OmniRoute over the compose network.
+#
+# Used only by .github/workflows/stax-smoke.yml:
+#   docker compose -f docker-compose.yml -f activepieces/docker-compose.ci.yml \
+#     --profile base --profile workflow up -d
+#
+# The service names are deliberately prefixed `ap-`. Compose merges files by
+# service name, and omniroute/docker-compose.yml already defines one called
+# `redis` — a bare `redis` here would silently merge into OmniRoute's own
+# rate-limiter instance rather than create a second one.
+services:
+  ap-postgres:
+    # Matches the image upstream's own compose uses: Activepieces expects
+    # pgvector to be available, not plain Postgres.
+    image: pgvector/pgvector:0.8.0-pg14
+    environment:
+      - POSTGRES_DB=activepieces
+      - POSTGRES_USER=activepieces
+      - POSTGRES_PASSWORD=${AP_CI_POSTGRES_PASSWORD:-activepieces-ci-only}
+    # No published ports: reachable only from inside the compose network, for
+    # the lifetime of one CI job.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U activepieces -d activepieces"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    profiles:
+      - workflow
+
+  ap-redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    profiles:
+      - workflow
+
+  activepieces:
+    depends_on:
+      ap-postgres:
+        condition: service_healthy
+      ap-redis:
+        condition: service_healthy
