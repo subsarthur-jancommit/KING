@@ -125,6 +125,79 @@ Buat satu flow: trigger manual → aksi **HTTP Request** →
 `opencode/big-pickle` adalah model gratis tanpa kunci, jadi ini membuktikan
 jalur Activepieces → OmniRoute → provider hidup tanpa mengeluarkan biaya.
 
+## Memanggil agent-sidecar dari sebuah flow
+
+Sampai di sini flow bisa memanggil model. Langkah berikutnya membuatnya bisa
+memanggil **agent** — smolagents `CodeAgent` yang bisa menulis dan menjalankan
+kode Python untuk menyelesaikan tugas, bukan sekadar membalas teks.
+
+`agent-sidecar` sebelumnya hanya bisa dijalankan sebagai proses sekali-pakai
+dari shell operator (`docker compose run agent-sidecar ...`), yang tidak bisa
+dipanggil mesin workflow. Profil `agent-sidecar-http` menyajikan runner yang
+**sama persis** lewat HTTP:
+
+```bash
+docker compose --profile base --profile agent-sidecar-http up -d
+```
+
+Tidak ada logika agent yang pindah ke sana — `smol_runner.run` dan
+`pydantic_runner.run_sync` diimpor dan dipanggil apa adanya. Yang berubah
+hanya cara memanggilnya.
+
+Dua endpoint:
+
+| Endpoint | Kegunaan |
+|---|---|
+| `GET /healthz` | Status + konfigurasi efektif (model, base URL, executor). Tidak pernah memuat nilai kunci apa pun. |
+| `POST /run` | `{"task": "...", "runner": "smolagents"}` → `{"result": "...", "runner": "..."}`. `runner` opsional, default `smolagents`, alternatifnya `pydantic-ai`. |
+
+Di dalam flow Activepieces, pakai piece **HTTP Request**:
+
+- Method: `POST`
+- URL: `http://agent-sidecar-http:8100/run`
+- Body (JSON): `{"task": "{{ langkah_sebelumnya.output }}"}`
+
+Karena agent bisa berpikir beberapa menit, naikkan timeout langkah itu
+sewajarnya.
+
+### Peringatan keamanan
+
+Endpoint ini **tidak punya autentikasi**, dan menjalankan kode yang
+dihasilkan model. Seluruh alasan mengapa itu bisa diterima adalah karena
+port-nya loopback-only dan hanya bisa dijangkau dari dalam compose network —
+argumen yang sama dengan `AGENT_SIDECAR_EXECUTOR=local`.
+
+Jangan pernah menaruhnya di belakang `proxy`, dan jangan mengubah
+`AGENT_SIDECAR_HTTP_BIND_HOST`. Kalau suatu saat memang harus dijangkau dari
+luar, ia butuh autentikasi lebih dulu — dan keputusan executor di
+[`vps-hardening.md`](./vps-hardening.md) harus ditinjau ulang pada saat yang
+sama, karena premis "tugas datang dari shell operator" tidak lagi berlaku.
+Preflight memperingatkan kalau bind host-nya diubah:
+
+```bash
+./scripts/stax-preflight.sh base agent-sidecar-http workflow
+```
+
+## MCP dua arah
+
+Ini yang menyambungkan semuanya ke Claude Code Anda.
+
+**Arah masuk** — Activepieces sebagai client MCP: daftarkan MCP server
+OmniRoute (110 tools) lewat **Admin → MCP** sebagai sumber tool. Perhatikan
+bahwa endpoint MCP OmniRoute menuntut kunci ber-scope `manage`/`admin` —
+jauh lebih berprivilese daripada kunci `models,routing,health` di atas.
+Lakukan hanya kalau memang butuh, dengan sadar konsekuensinya
+(lihat [`scalability-system.md`](./scalability-system.md)).
+
+**Arah keluar** — Activepieces sebagai MCP *server*: setiap flow bisa
+diekspos sebagai tool MCP. Karena Claude Code Anda sudah diarahkan ke gateway
+ini lewat `ANTHROPIC_BASE_URL`, hasilnya adalah Claude Code bisa **memicu
+automation multi-langkah** sebagai tool call — bukan sekadar menerima jawaban
+chat. Satu flow bisa memanggil model, memanggil agent-sidecar, menyentuh
+layanan luar, lalu mengembalikan hasilnya.
+
+Keduanya adalah konfigurasi lewat dashboard, bukan perubahan kode.
+
 ## Mengekspos ke publik
 
 Hanya diperlukan kalau butuh trigger dari layanan luar (Slack, GitHub).

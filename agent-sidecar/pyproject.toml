@@ -7,6 +7,12 @@ dependencies = [
     "smolagents[toolkit,mcp]>=1.0.0",
     "pydantic-ai>=1.0.0",
     "httpx>=0.27",
+    # Both already arrive transitively via `mcp`, so declaring them adds no
+    # package to the image — but agent_sidecar.server imports them directly,
+    # and a direct import backed only by someone else's dependency breaks
+    # silently the day that dependency drops it.
+    "starlette>=0.40",
+    "uvicorn>=0.30",
 ]
 
 [dependency-groups]

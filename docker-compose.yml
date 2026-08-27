@@ -143,6 +143,60 @@ services:
     profiles:
       - openhands
 
+  # The same image and the same runners as agent-sidecar above, served over
+  # HTTP so a workflow step can call them. Kept as a separate service rather
+  # than a flag on that one because the two have opposite lifecycles: that one
+  # is a one-shot process an operator runs and watches exit, this one is a
+  # long-lived server. Only one of them needs to exist for a given deployment.
+  #
+  # Unauthenticated on purpose, and therefore loopback-only and never proxied:
+  # it inherits agent-sidecar's threat model, where safety comes from the fact
+  # that only things already inside this compose network can invoke it. If it
+  # ever needs to be reachable from outside, it needs auth first — and the
+  # executor decision in docs/integrations/vps-hardening.md has to be revisited
+  # at the same time, because "tasks arrive from an operator's shell" would no
+  # longer be true.
+  agent-sidecar-http:
+    build: ./agent-sidecar
+    image: king-agent-sidecar:local
+    command:
+      - uv
+      - run
+      - uvicorn
+      - agent_sidecar.server:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8100"
+    env_file:
+      - path: agent-sidecar/.env
+        required: false
+    environment:
+      - OMNIROUTE_BASE_URL=http://omniroute-base:${DASHBOARD_PORT:-20128}
+      - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-local}
+    ports:
+      - "${AGENT_SIDECAR_HTTP_BIND_HOST:-127.0.0.1}:${AGENT_SIDECAR_HTTP_PORT:-8100}:8100"
+    depends_on:
+      omniroute-base:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request;urllib.request.urlopen('http://localhost:8100/healthz')
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
+    cpus: ${AGENT_SIDECAR_CPUS:-1.0}
+    profiles:
+      - agent-sidecar-http
+
   activepieces:
     # Pinned to the version upstream's own docker-compose.yml ships, not the
     # newest tag — that pairing is the one they publish as a working set. See

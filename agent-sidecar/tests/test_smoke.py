@@ -41,13 +41,46 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _skip_if_upstream_is_down(exc: Exception) -> None:
+    """Distinguish "our wiring is broken" from "the free provider is down".
+
+    These tests exist to prove the sidecar reaches OmniRoute and OmniRoute
+    routes onward. `opencode/big-pickle` is a free, keyless, best-effort
+    provider, and when it is unavailable OmniRoute answers 503 with
+    code `service_unavailable` — which is itself proof the request travelled
+    the whole path and was routed. Failing on that turns a third party's
+    uptime into this repo's build status.
+
+    Observed for real: CI run 33047603557 went red purely because
+    opencode-zen returned "Upstream request failed: Endpoint is unavailable."
+
+    Anything else — a connection error, a 4xx, a malformed reply — still
+    fails, because those do indicate something here is wrong.
+    """
+    message = str(exc)
+    if "service_unavailable" in message or "Upstream request failed" in message:
+        pytest.skip(
+            "Upstream free provider is unavailable (OmniRoute returned 503). "
+            "The request reached OmniRoute and was routed, so the path under "
+            f"test is intact. Provider message: {message[:200]}"
+        )
+
+
 def test_smolagents_reaches_omniroute():
-    result = smol_run("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
+    try:
+        result = smol_run("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
+    except Exception as exc:
+        _skip_if_upstream_is_down(exc)
+        raise
     assert "SMOKE-TEST-OK" in result
 
 
 def test_pydantic_ai_reaches_omniroute():
-    result = pydantic_run_sync("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
+    try:
+        result = pydantic_run_sync("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
+    except Exception as exc:
+        _skip_if_upstream_is_down(exc)
+        raise
     assert "SMOKE-TEST-OK" in result
 
 
