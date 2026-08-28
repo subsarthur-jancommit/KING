@@ -132,7 +132,34 @@ cp omniroute/.env.example omniroute/.env
 sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -base64 48)|" omniroute/.env
 sed -i "s|^API_KEY_SECRET=.*|API_KEY_SECRET=$(openssl rand -hex 32)|" omniroute/.env
 sed -i "s|^INITIAL_PASSWORD=.*|INITIAL_PASSWORD=$(openssl rand -base64 18)|" omniroute/.env
-grep -E '^(JWT_SECRET|API_KEY_SECRET|INITIAL_PASSWORD)=' omniroute/.env
+
+# Dua default OmniRoute yang aman di localhost dan berbahaya begitu publik.
+# Keduanya ship sebagai nilai tidak aman — benar untuk aplikasi local-first,
+# salah begitu Caddy menaruhnya di internet.
+sed -i "s|^REQUIRE_API_KEY=.*|REQUIRE_API_KEY=true|" omniroute/.env
+sed -i "s|^AUTH_COOKIE_SECURE=.*|AUTH_COOKIE_SECURE=true|" omniroute/.env
+
+grep -E '^(JWT_SECRET|API_KEY_SECRET|INITIAL_PASSWORD|REQUIRE_API_KEY|AUTH_COOKIE_SECURE)=' omniroute/.env
+```
+
+**`REQUIRE_API_KEY=true` bukan opsional kalau Anda memakai profil `proxy`.**
+Dengan `false`, `/v1/*` melayani siapa pun tanpa kunci — kunci ngawur pun
+diterima. Ditemukan langsung pada deploy pertama 2026-08-28: request tanpa
+header auth sama sekali mengembalikan 200 beserta jawaban model. Hari ini
+kerugiannya kuota free-tier; begitu ada provider berbayar terpasang, siapa pun
+yang menemukan domain Anda bisa membelanjakan uang Anda. `preflight proxy`
+memblokir deploy kalau nilainya bukan `true`.
+
+`AUTH_COOKIE_SECURE=true` disyaratkan oleh `omniroute/.env.example` sendiri
+untuk deployment non-localhost apa pun — tanpa itu cookie sesi admin tidak
+membawa flag `Secure`.
+
+Verifikasi setelah menyala:
+
+```bash
+# 401 = benar. 200 = gerbang Anda terbuka untuk dunia.
+curl -s -o /dev/null -w '%{http_code}
+' -X POST https://DOMAIN_ANDA/v1/chat/completions   -H 'Content-Type: application/json'   -d '{"model":"oc/big-pickle","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 **Catat `INITIAL_PASSWORD`-nya** — itu password login pertama ke dashboard.

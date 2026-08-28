@@ -294,6 +294,33 @@ check_proxy() {
     echo "         who finds the URL can register and run code on this host."
   fi
 
+  # OmniRoute's own two "safe on localhost, unsafe in public" defaults. Both
+  # are documented as such in omniroute/.env.example, and both ship as the
+  # unsafe value — which is correct for a local-first tool and wrong the
+  # moment Caddy puts it on the internet. Blocking, not a warning: publishing
+  # with REQUIRE_API_KEY=false hands every passer-by a free LLM gateway
+  # spending your provider credit. Found live on 2026-08-28 — an invalid key
+  # and no key at all both returned 200 with a real completion.
+  local require_key cookie_secure
+  require_key=$(lookup REQUIRE_API_KEY omniroute/.env)
+  cookie_secure=$(lookup AUTH_COOKIE_SECURE omniroute/.env)
+
+  if [ "$require_key" = "true" ]; then
+    pass "REQUIRE_API_KEY=true — /v1/* rejects unauthenticated callers."
+  else
+    fail "REQUIRE_API_KEY is '${require_key:-unset}'. Publishing with this off means anyone who finds the domain can spend your provider credit."
+    echo "         Set REQUIRE_API_KEY=true in omniroute/.env, then verify:"
+    echo "           curl -s -o /dev/null -w '%{http_code}' -X POST https://YOUR_DOMAIN/v1/chat/completions \\"
+    echo "             -H 'Content-Type: application/json' -d '{\"model\":\"oc/big-pickle\",\"messages\":[]}'"
+    echo "         401 is what you want. 200 means the gateway is open to the world."
+  fi
+
+  if [ "$cookie_secure" = "true" ]; then
+    pass "AUTH_COOKIE_SECURE=true — session cookies carry the Secure flag."
+  else
+    fail "AUTH_COOKIE_SECURE is '${cookie_secure:-unset}'. omniroute/.env.example says it MUST be true in any non-localhost deployment."
+  fi
+
   if [ ! -f caddy/Caddyfile ]; then
     fail "caddy/Caddyfile is missing — the compose file bind-mounts it read-only and Caddy will not start."
   else
