@@ -261,7 +261,21 @@ services:
       # proxy profile. ./scripts/stax-preflight.sh enforces this instead.
       - OMNIROUTE_PUBLIC_DOMAIN=${OMNIROUTE_PUBLIC_DOMAIN:-CHANGEME.example.com}
       - DASHBOARD_PORT=${DASHBOARD_PORT:-20128}
+      # Left unset by default, which the Caddyfile turns into a .localhost
+      # name served by Caddy's internal CA — an unreachable site rather than
+      # a broken config. Set it only when the workflow profile is running and
+      # the DNS record exists; publishing Activepieces relies on it closing
+      # its own registration after the first account (verified, see the
+      # Caddyfile comment).
+      - ACTIVEPIECES_PUBLIC_DOMAIN=${ACTIVEPIECES_PUBLIC_DOMAIN:-}
     volumes:
+      # Bind-mounted as a FILE, so the container holds the inode it was
+      # started with. Editing this file in place is picked up by
+      # `caddy reload`, but anything that REPLACES it — git checkout, git
+      # pull, mv — leaves the container reading the old inode and the reload
+      # silently applies stale config. Recreate the container after those:
+      #   docker compose --profile proxy up -d --force-recreate caddy
+      # Cost a real debugging detour on 2026-08-28.
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config

@@ -34,3 +34,39 @@
 		lb_try_interval 500ms
 	}
 }
+
+# Activepieces, published only when the `workflow` profile is also running.
+# Left out of the `proxy` profile's required set on purpose: someone running
+# just `base` + `proxy` has no activepieces container, and Caddy would fail
+# every request to this name rather than the site simply not existing.
+#
+# Publishing this at all rests on one verified fact: Activepieces closes
+# registration by itself once the first account creates the platform. Probed
+# against this deployment on 2026-08-28 — a second sign-up returns
+# 403 INVITATION_ONLY_SIGN_UP and the user table stays at one row. Re-verify
+# after any upgrade before trusting this name to stay closed; the older
+# AP_SIGN_UP_ENABLED switch was removed upstream and is not available as a
+# fallback.
+#
+# The container listens on 80 internally; 8080 is only the host-side mapping
+# and stays bound to loopback, so this is the single public door.
+# The default is a .localhost name on purpose. An empty site address makes
+# Caddy fail to load the WHOLE config — taking the gateway down with it — and
+# any real-looking placeholder would send Caddy off to ACME for a domain
+# nobody owns, retrying forever. Caddy issues .localhost certificates from its
+# own internal CA without touching the network, so an unset value degrades to
+# a site that simply is not reachable from outside, which is the correct
+# behaviour for someone running base + proxy without the workflow profile.
+{$ACTIVEPIECES_PUBLIC_DOMAIN:activepieces.localhost} {
+	reverse_proxy activepieces:80 {
+		# Flow runs stream progress over websockets, and the worker holds a
+		# long-lived Socket.IO connection. Buffering would stall both.
+		flush_interval -1
+
+		# Same reasoning as OmniRoute above: one upstream, so a restart has
+		# nowhere to fail over to. Shorter here because a webhook sender is
+		# far less patient than an interactive client.
+		lb_try_duration 10s
+		lb_try_interval 500ms
+	}
+}
