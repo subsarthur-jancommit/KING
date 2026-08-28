@@ -18,3 +18,10 @@
 /observability/.env
 /activepieces/.env
 *.graphify-bak
+
+# Gateway plugins are installed at runtime into omniroute/plugins/ so they
+# survive container recreation (see the mount in docker-compose.yml). The
+# directory is tracked; what gets installed into it is not — each plugin
+# carries its own node_modules, and the langfuse one alone is 2 MB.
+omniroute/plugins/*
+!omniroute/plugins/.gitkeep

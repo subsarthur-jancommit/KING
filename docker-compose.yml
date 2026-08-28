@@ -13,6 +13,23 @@ include:
   - path: observability/docker-compose.langfuse.yml
 
 services:
+  # Override on the service that omniroute/docker-compose.yml defines — not a
+  # second copy of it. Compose merges by service name, so this adds one mount
+  # and leaves everything else in the vendored file untouched, which keeps the
+  # `omniroute/ is never edited` rule intact across `git subtree pull`.
+  #
+  # Gateway plugins load from $HOME/.omniroute/plugins
+  # (omniroute/src/lib/plugins/scanner.ts), and HOME is /home/node — outside
+  # the only existing mount (/app/data). Without this, an installed plugin
+  # disappears on the next `up --force-recreate`, silently and with no error,
+  # exactly the way the API keys did before omniroute/data was fixed.
+  #
+  # Empty and unused until someone installs a plugin, so it costs nothing to
+  # carry. See docs/integrations/observability.md.
+  omniroute-base:
+    volumes:
+      - ./omniroute/plugins:/home/node/.omniroute/plugins
+
   agent-sidecar:
     build: ./agent-sidecar
     image: king-agent-sidecar:local

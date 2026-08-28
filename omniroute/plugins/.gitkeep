@@ -1,0 +1,2 @@
+# Gateway plugins live here so they survive container recreation.
+# See docs/integrations/observability.md.
