@@ -15,5 +15,22 @@
 		# a future directive that enables buffering would silently break
 		# streaming for every Claude Code and OpenAI-SDK client.
 		flush_interval -1
+
+		# OmniRoute restarts itself in normal operation — it ships an
+		# auto-restart path (migration 137_auto_restart_adopted) and shuts
+		# down gracefully when it fires: drain in-flight requests, checkpoint
+		# SQLite, exit 0, and let the restart policy bring it back. Observed
+		# once on 2026-08-28 within the first day of running.
+		#
+		# There is only one upstream, so during that gap Caddy has nothing to
+		# fail over to and answers 502 immediately. That turns a few seconds
+		# of planned restart into a hard error for every client — including
+		# Claude Code, which sees a dead gateway rather than a slow one.
+		#
+		# Waiting it out is strictly better than failing fast here: a request
+		# that takes 5s beats one that fails. Caddy only retries when the
+		# connection never succeeded, so a POST cannot be applied twice.
+		lb_try_duration 20s
+		lb_try_interval 500ms
 	}
 }
