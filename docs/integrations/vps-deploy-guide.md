@@ -127,6 +127,23 @@ Kalau repo private, siapkan deploy key atau token GitHub sebelum `clone`.
 
 ### 3.1 OmniRoute (wajib)
 
+Siapkan direktori data lebih dulu. Ini bukan formalitas: OmniRoute menyimpan
+seluruh API key, kredensial provider, dan pengaturannya di SQLite bawah
+`omniroute/data`. Container berjalan sebagai uid 1000, sementara Docker
+membuat direktori bind-mount yang belum ada sebagai `root:root` — sehingga
+`up` pertama di host baru menghasilkan direktori yang **tidak bisa ditulis**
+aplikasinya.
+
+Kegagalannya senyap. Tidak crash, dan pada versi yang dipakai 2026-08-28
+bahkan tidak menulis EACCES ke log sama sekali. Semuanya tampak normal sampai
+container di-restart, lalu seluruh kunci lenyap tanpa jejak. Itu benar-benar
+terjadi pada deployment pertama di sini.
+
+```bash
+mkdir -p omniroute/data
+sudo chown -R 1000:1000 omniroute/data
+```
+
 ```bash
 cp omniroute/.env.example omniroute/.env
 sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -base64 48)|" omniroute/.env

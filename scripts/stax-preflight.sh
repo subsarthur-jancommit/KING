@@ -111,6 +111,34 @@ check_base() {
   check_secret "JWT_SECRET" "$jwt" "$(lookup JWT_SECRET omniroute/.env.example)" 32
   check_secret "API_KEY_SECRET" "$api_key" "$(lookup API_KEY_SECRET omniroute/.env.example)" 32
   check_secret "INITIAL_PASSWORD" "$initial" "$(lookup INITIAL_PASSWORD omniroute/.env.example)" 12
+
+  # OmniRoute keeps everything — API keys, provider credentials, settings — in
+  # SQLite under /app/data, bind-mounted from omniroute/data. The container
+  # runs as uid 1000, and Docker creates a missing bind-mount source as
+  # root:root, so the very first `up` on a fresh host leaves a directory the
+  # app cannot write.
+  #
+  # It does not crash, and on the version deployed 2026-08-28 it did not even
+  # log EACCES — grepping the logs for it returned zero. Everything works
+  # until the container restarts, at which point every key silently vanishes.
+  # That is exactly how a real deployment lost its API key here: created it,
+  # used it, recreated the container for an unrelated config change, and the
+  # key was gone with no error anywhere.
+  local data_uid
+  if [ ! -d omniroute/data ]; then
+    warn "omniroute/data does not exist yet; Docker will create it as root and OmniRoute (uid 1000) will not be able to write."
+    echo "         Create it first:  mkdir -p omniroute/data && sudo chown -R 1000:1000 omniroute/data"
+  elif data_uid=$(stat -c '%u' omniroute/data 2>/dev/null) && [ -n "$data_uid" ]; then
+    if [ "$data_uid" = "1000" ]; then
+      pass "omniroute/data is owned by uid 1000 — OmniRoute can persist its database."
+    else
+      fail "omniroute/data is owned by uid $data_uid but OmniRoute runs as uid 1000. Its SQLite writes fail SILENTLY and every API key is lost on restart."
+      echo "         Fix:  sudo chown -R 1000:1000 omniroute/data"
+      echo "         Then prove it survives a restart:"
+      echo "           docker compose --profile base restart omniroute-base"
+      echo "           # log in, list keys — a key created before the restart must still be there"
+    fi
+  fi
 }
 
 check_agent_sidecar() {
