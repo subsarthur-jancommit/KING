@@ -266,6 +266,34 @@ check_proxy() {
     pass "OMNIROUTE_PUBLIC_DOMAIN is set to $domain."
   fi
 
+  # Optional second site. Unset is a valid, safe state: the Caddyfile falls
+  # back to a .localhost name that Caddy serves from its internal CA, so the
+  # config still loads and the site is simply unreachable from outside.
+  local ap_domain
+  ap_domain=$(lookup ACTIVEPIECES_PUBLIC_DOMAIN .env)
+  if [ -z "$ap_domain" ]; then
+    pass "ACTIVEPIECES_PUBLIC_DOMAIN is unset — Activepieces stays private (SSH tunnel only)."
+  elif [ "${ap_domain#*.}" = "$ap_domain" ]; then
+    fail "ACTIVEPIECES_PUBLIC_DOMAIN=$ap_domain is not a fully-qualified domain name."
+  elif [ "$ap_domain" = "$domain" ]; then
+    # Both sites would claim the same name; Caddy loads whichever it parses
+    # last and the other silently stops answering.
+    fail "ACTIVEPIECES_PUBLIC_DOMAIN and OMNIROUTE_PUBLIC_DOMAIN are both $ap_domain."
+  else
+    pass "ACTIVEPIECES_PUBLIC_DOMAIN is set to $ap_domain."
+    # Publishing the dashboard is only defensible because Activepieces closes
+    # registration itself once the first account exists. That is a property of
+    # the running instance, not of this config, so it cannot be checked here.
+    warn "Activepieces will be reachable from the internet at $ap_domain."
+    echo "         Confirm registration is closed before trusting this:"
+    echo "           curl -sf -o /dev/null -w '%{http_code}' -X POST \\"
+    echo "             https://$ap_domain/api/v1/authentication/sign-up \\"
+    echo "             -H 'Content-Type: application/json' \\"
+    echo "             -d '{\"firstName\":\"x\",\"lastName\":\"x\",\"email\":\"probe@example.invalid\",\"password\":\"Pr0be-Test-99xz\",\"trackEvents\":false,\"newsLetter\":false}'"
+    echo "         403 (INVITATION_ONLY_SIGN_UP) is what you want. 200 means anyone"
+    echo "         who finds the URL can register and run code on this host."
+  fi
+
   if [ ! -f caddy/Caddyfile ]; then
     fail "caddy/Caddyfile is missing — the compose file bind-mounts it read-only and Caddy will not start."
   else
