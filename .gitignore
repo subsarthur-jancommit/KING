@@ -18,3 +18,15 @@
 /observability/.env
 /activepieces/.env
 *.graphify-bak
+
+# Gateway plugins are installed at runtime into omniroute/plugins/ so they
+# survive container recreation (see the mount in docker-compose.yml). The
+# directory is tracked; what gets installed into it is not — each plugin
+# carries its own node_modules, and the langfuse one alone is 2 MB.
+omniroute/plugins/*
+!omniroute/plugins/.gitkeep
+
+# Agent skills installed via `npx skills add` — tooling for whoever is driving
+# Claude Code here, not part of the deployed system.
+.agents/
+.claude/skills/

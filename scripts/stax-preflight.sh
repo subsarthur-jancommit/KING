@@ -364,6 +364,53 @@ check_proxy() {
   echo "         proxy stays the only way in."
 }
 
+check_tracing() {
+  echo "profile: tracing (OTel Collector -> Langfuse)"
+
+  local endpoint auth otel_target
+  endpoint=$(lookup LANGFUSE_OTLP_ENDPOINT .env)
+  auth=$(lookup LANGFUSE_OTLP_AUTH .env)
+  otel_target=$(lookup OMNIROUTE_OTEL_ENDPOINT .env)
+
+  if [ -z "$endpoint" ]; then
+    pass "LANGFUSE_OTLP_ENDPOINT unset — the compose default (Langfuse Cloud EU) applies."
+  elif [ "${endpoint%/api/public/otel}" = "$endpoint" ]; then
+    # The exporter appends /v1/traces itself, so the base URL must stop at
+    # /api/public/otel. A URL that already includes the signal path produces
+    # .../v1/traces/v1/traces and a 404 that looks like an auth problem.
+    warn "LANGFUSE_OTLP_ENDPOINT=$endpoint does not end in /api/public/otel."
+    echo "         The exporter appends /v1/traces itself; include it here and you get a doubled path."
+  else
+    pass "LANGFUSE_OTLP_ENDPOINT is set to $endpoint."
+  fi
+
+  case "$auth" in
+    "" ) fail "LANGFUSE_OTLP_AUTH is unset. Traces would be rejected by Langfuse with 401." ;;
+    CHANGEME-basic-base64 ) fail "LANGFUSE_OTLP_AUTH is still the compose placeholder." ;;
+    Basic\ * ) pass "LANGFUSE_OTLP_AUTH carries a Basic credential." ;;
+    * ) fail "LANGFUSE_OTLP_AUTH must start with 'Basic ' — the collector passes it through verbatim." ;;
+  esac
+  if [ -n "$auth" ] && [ "$auth" != "CHANGEME-basic-base64" ]; then
+    echo "         Build it as:  printf 'Basic %s' \"$(printf '%s' 'pk-lf-...:sk-lf-...' | base64 -w0)\""
+  fi
+
+  # The collector can be perfectly configured and still receive nothing.
+  if [ -z "$otel_target" ]; then
+    fail "OMNIROUTE_OTEL_ENDPOINT is unset, so OmniRoute's exporter stays off and the collector will sit idle."
+    echo "         Set OMNIROUTE_OTEL_ENDPOINT=http://otel-collector:4318 in .env."
+  elif [ "${otel_target#http://otel-collector}" = "$otel_target" ]; then
+    warn "OMNIROUTE_OTEL_ENDPOINT=$otel_target does not point at the collector service."
+  else
+    pass "OMNIROUTE_OTEL_ENDPOINT points at the collector."
+  fi
+
+  if [ ! -f otel-collector/config.yaml ]; then
+    fail "otel-collector/config.yaml is missing — the compose file mounts it read-only and the collector will not start."
+  else
+    pass "otel-collector/config.yaml is present."
+  fi
+}
+
 check_observability() {
   echo "profile: observability (Langfuse)"
   check_secret "NEXTAUTH_SECRET" \
@@ -428,7 +475,8 @@ main() {
 
   if [ "$#" -eq 0 ]; then
     echo "usage: $0 <profile> [profile...]   (base | agent-sidecar | agent-sidecar-http | openhands |
-                                            observability | proxy | workflow)" >&2
+                                            observability | proxy | workflow |
+                                            tracing)" >&2
     echo "       $0 --self-test" >&2
     exit 2
   fi
@@ -446,6 +494,7 @@ main() {
       agent-sidecar-http) check_agent_sidecar_http ;;
       openhands)     check_openhands ;;
       observability) check_observability ;;
+    tracing) check_tracing ;;
       proxy)         check_proxy ;;
       workflow)      check_workflow ;;
       *) fail "unknown profile '$profile'" ;;
