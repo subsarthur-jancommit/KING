@@ -25,3 +25,8 @@
 # carries its own node_modules, and the langfuse one alone is 2 MB.
 omniroute/plugins/*
 !omniroute/plugins/.gitkeep
+
+# Agent skills installed via `npx skills add` — tooling for whoever is driving
+# Claude Code here, not part of the deployed system.
+.agents/
+.claude/skills/

@@ -1,0 +1,60 @@
+# OTel Collector — the auth shim between OmniRoute and Langfuse.
+#
+# OmniRoute ships its own OTLP/HTTP JSON exporter
+# (omniroute/open-sse/services/routing/otel.ts) using GenAI semantic
+# conventions, and it is the only tracing path that sits in the gateway core
+# rather than in the plugin runtime. But it sends exactly one header —
+# `Content-Type: application/json` — and Langfuse requires Basic auth. That one
+# missing header is the whole reason this container exists.
+#
+# It receives OTLP from OmniRoute unauthenticated over the compose network,
+# attaches the credentials, and forwards to Langfuse.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        # Compose-network only. Never published to the host: anything that can
+        # reach this port can write traces into your Langfuse project.
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bounds memory before the batcher, so a burst of spans degrades by dropping
+  # rather than by OOM-killing the container on an 8 GB VPS.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 128
+    spike_limit_mib: 32
+  batch:
+    timeout: 5s
+    send_batch_size: 128
+
+exporters:
+  otlphttp/langfuse:
+    # Signal-specific paths are appended by the exporter, so this is the base
+    # URL without /v1/traces.
+    endpoint: ${env:LANGFUSE_OTLP_ENDPOINT}
+    headers:
+      # Pre-encoded by the operator: base64("pk-lf-...:sk-lf-..."), prefixed
+      # with "Basic ". The collector has no base64 function, so it cannot be
+      # assembled from the two keys here.
+      Authorization: ${env:LANGFUSE_OTLP_AUTH}
+      # Required for the v4 data model; without it ingestion falls back to the
+      # legacy path.
+      x-langfuse-ingestion-version: "4"
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      # Bounded: Langfuse being down must not turn into unbounded memory here.
+      max_elapsed_time: 300s
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/langfuse]

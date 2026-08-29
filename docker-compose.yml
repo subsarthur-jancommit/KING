@@ -29,6 +29,46 @@ services:
   omniroute-base:
     volumes:
       - ./omniroute/plugins:/home/node/.omniroute/plugins
+    environment:
+      # Empty by default, which leaves the exporter disabled (otel.ts gates on
+      # a non-empty value). Set it to http://otel-collector:4318 together with
+      # the `tracing` profile to start emitting.
+      - OMNIROUTE_OTEL_ENDPOINT=${OMNIROUTE_OTEL_ENDPOINT:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-omniroute}
+
+  # Auth shim between OmniRoute and Langfuse, nothing more.
+  #
+  # OmniRoute's built-in OTLP exporter is the only tracing path that lives in
+  # the gateway core rather than the plugin runtime — which matters, because
+  # the plugin runtime does not invoke its hooks in this deployment (the
+  # example Langfuse plugin was proven to work standalone and still never
+  # fired through the gateway). But that exporter sends exactly one header,
+  # `Content-Type: application/json`, and Langfuse requires Basic auth. This
+  # container adds the credentials the exporter cannot.
+  #
+  # Never publish 4318 to the host: anything that reaches it can write traces
+  # into your Langfuse project without authenticating.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.139.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    environment:
+      # Soft defaults, not ${VAR:?err} — the usual reason: a required
+      # variable here is interpolated across the whole merged model before
+      # profile filtering and would break `--profile base up` for anyone who
+      # never asked for tracing. stax-preflight.sh enforces these instead.
+      - LANGFUSE_OTLP_ENDPOINT=${LANGFUSE_OTLP_ENDPOINT:-https://cloud.langfuse.com/api/public/otel}
+      # "Basic " + base64("pk-lf-...:sk-lf-..."). The collector has no base64
+      # function, so this must arrive pre-encoded.
+      - LANGFUSE_OTLP_AUTH=${LANGFUSE_OTLP_AUTH:-CHANGEME-basic-base64}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${OTEL_COLLECTOR_MEM_LIMIT:-256m}
+    cpus: ${OTEL_COLLECTOR_CPUS:-0.5}
+    profiles:
+      - tracing
 
   agent-sidecar:
     build: ./agent-sidecar
