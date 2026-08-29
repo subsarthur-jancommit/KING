@@ -356,8 +356,134 @@ services:
     profiles:
       - proxy
 
+  # Code knowledge graph, built here and served to both the laptop and the
+  # workflow engine over MCP. See docs/integrations/codegraph.md.
+  #
+  # Two services, one image, the way agent-sidecar does it — but unlike that
+  # pair these two share mutable state with an ordering requirement, so serve
+  # deliberately does NOT depend_on build: a `service_completed_successfully`
+  # condition would make every `up` wait out a four-minute extraction, and a
+  # failed build would leave serve down for good. Refreshes are the timer's
+  # job (scripts/codegraph-refresh.sh), not compose's.
+  codegraph-build:
+    build: ./codegraph
+    image: king-codegraph:local
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        graphify extract /src --out /out --code-only --no-cluster \
+          --max-workers ${CODEGRAPH_WORKERS:-2}
+        # Staleness is the failure mode that matters for a graph: it answers
+        # confidently about code as it was, and CLAUDE.md tells agents to
+        # prefer it over grep. Record what it was built from so a checker can
+        # compare against the live HEAD.
+        printf 'commit=%s\nbuilt_at=%s\n' "$${CODEGRAPH_COMMIT:-unknown}" \
+          "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /out/graphify-out/BUILD_INFO
+        echo "--- BUILD_INFO ---"; cat /out/graphify-out/BUILD_INFO
+    environment:
+      - CODEGRAPH_COMMIT=${CODEGRAPH_COMMIT:-unknown}
+    volumes:
+      - ./:/src:ro
+      - codegraph-out:/out
+      # Same masking as openhands, and for a stronger reason: whatever the
+      # extractor reads becomes nodes in a graph that is then served behind a
+      # single static API key. A secret that reaches graph.json is a secret
+      # with a query interface.
+      #
+      # graphify honours .gitignore by default and every one of these is
+      # gitignored, so this list is belt-and-braces — but --no-gitignore is one
+      # flag away, and the cost of being wrong is a secret with a query
+      # interface. Note the root .env, which the openhands mask list omits:
+      # it carries LANGFUSE_OTLP_AUTH and GRAPHIFY_API_KEY.
+      - /dev/null:/src/.env:ro
+      - /dev/null:/src/omniroute/.env:ro
+      - /dev/null:/src/observability/.env:ro
+      - /dev/null:/src/agent-sidecar/.env:ro
+      - /dev/null:/src/activepieces/.env:ro
+      - /dev/null:/src/.claude/settings.local.json:ro
+    # One-shot: `docker compose run --rm codegraph-build`, never `up`.
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    # Measured, not chosen. At 3g the kernel OOM-killed it inside its own
+    # cgroup (anon-rss 3.0 GB) and left a graph.json that was never written;
+    # at 4g it completes. memswap_limit matches so pressure stays a loud,
+    # contained OOM instead of dragging this 7.8 GB host into swap thrash.
+    mem_limit: ${CODEGRAPH_BUILD_MEM_LIMIT:-4g}
+    memswap_limit: ${CODEGRAPH_BUILD_MEM_LIMIT:-4g}
+    cpus: ${CODEGRAPH_BUILD_CPUS:-2.0}
+    logging: *default-logging
+    profiles:
+      - codegraph
+
+  codegraph-serve:
+    build: ./codegraph
+    image: king-codegraph:local
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        # A server that starts against a missing graph answers every query
+        # with nothing, and an agent reads that as "the code does not exist" —
+        # worse than no graph at all. Refuse to start instead.
+        if [ ! -s /out/graphify-out/graph.json ]; then
+          echo "FATAL: /out/graphify-out/graph.json is missing or empty."
+          echo "Run: docker compose --profile codegraph run --rm codegraph-build"
+          exit 1
+        fi
+        exec python -m graphify.serve /out/graphify-out/graph.json \
+          --transport http --host 0.0.0.0 --port 8130 --path /mcp --stateless
+    environment:
+      # graphify reads this itself; passing it as --api-key would put the
+      # secret in the container's argv, visible to anything reading /proc.
+      - GRAPHIFY_API_KEY=${GRAPHIFY_API_KEY:-}
+    volumes:
+      - codegraph-out:/out:ro
+    ports:
+      - "${CODEGRAPH_BIND_HOST:-127.0.0.1}:${CODEGRAPH_PORT:-8130}:8130"
+    healthcheck:
+      # A real MCP `initialize` with the key, not a port probe: it proves the
+      # graph loaded, the transport works, and auth is enforced, all at once.
+      # --stateless above keeps these from accumulating sessions.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import json, os, urllib.request
+          urllib.request.urlopen(urllib.request.Request(
+            "http://localhost:8130/mcp",
+            data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+              "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                         "clientInfo": {"name": "healthcheck", "version": "1"}}}).encode(),
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json, text/event-stream",
+                     "Authorization": "Bearer " + os.environ["GRAPHIFY_API_KEY"]}), timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # on-failure, not unless-stopped: the guard above exits non-zero when the
+    # graph is missing, and `unless-stopped` would turn that into a crashloop
+    # writing log lines forever on a host with 20 GB free.
+    restart: on-failure:3
+    security_opt:
+      - no-new-privileges:true
+    # Measured with the real 82 MB graph: 392 MB anon, 717 MB including the
+    # page cache from reading it. Page cache is reclaimable, so this holds.
+    mem_limit: ${CODEGRAPH_SERVE_MEM_LIMIT:-768m}
+    memswap_limit: ${CODEGRAPH_SERVE_MEM_LIMIT:-768m}
+    cpus: ${CODEGRAPH_SERVE_CPUS:-0.5}
+    logging: *default-logging
+    profiles:
+      - codegraph
+
 volumes:
   openhands-canvas-settings:
   caddy-data:
   caddy-config:
   activepieces-cache:
+  codegraph-out:

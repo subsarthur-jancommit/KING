@@ -25,6 +25,7 @@
 #   ./scripts/stax-preflight.sh base proxy                 # public HTTPS deploy
 #   ./scripts/stax-preflight.sh base proxy workflow        # + Activepieces
 #   ./scripts/stax-preflight.sh base tracing               # + traces to Langfuse
+#   ./scripts/stax-preflight.sh codegraph                  # graphify MCP server
 #   ./scripts/stax-preflight.sh --self-test                # verify this script
 #
 # Exit codes: 0 = safe to deploy, 1 = at least one blocking problem.
@@ -416,6 +417,50 @@ check_tracing() {
   fi
 }
 
+check_codegraph() {
+  echo "profile: codegraph (graphify MCP server)"
+
+  local key free_gb
+  key=$(lookup GRAPHIFY_API_KEY .env)
+
+  # Blocking, not a warning. graphify takes the key from GRAPHIFY_API_KEY, and
+  # an empty value is not "reject everything" — the HTTP transport simply has
+  # no key to require, which publishes a queryable index of the whole codebase
+  # to anything that reaches the port.
+  case "$key" in
+    "" ) fail "GRAPHIFY_API_KEY is unset. The MCP server would serve the code graph with no authentication." ;;
+    CHANGEME* ) fail "GRAPHIFY_API_KEY is still a placeholder." ;;
+    * )
+      if [ "${#key}" -lt 24 ]; then
+        fail "GRAPHIFY_API_KEY is ${#key} characters. Use at least 24 — it is the only thing in front of the graph."
+      else
+        pass "GRAPHIFY_API_KEY is set (${#key} characters)."
+      fi
+      ;;
+  esac
+
+  check_bind_host "CODEGRAPH_BIND_HOST" "$(lookup CODEGRAPH_BIND_HOST .env)" \
+    "Reach it over an SSH tunnel instead (ssh -L 8130:127.0.0.1:8130 vps); the API key is the only control in front of it."
+
+  if [ ! -f codegraph/Dockerfile ]; then
+    fail "codegraph/Dockerfile is missing — both codegraph services build from it."
+  else
+    pass "codegraph/Dockerfile is present."
+  fi
+
+  # The first change to this repo that adds multiple GB of images, and one of
+  # the few things genuinely knowable before `up`. The image is ~400 MB, the
+  # graph ~82 MB, and the build needs room for a 4 GB container besides.
+  if command -v df >/dev/null 2>&1; then
+    free_gb=$(df -BG --output=avail . 2>/dev/null | tail -1 | tr -dc '0-9')
+    if [ -n "$free_gb" ] && [ "$free_gb" -lt 8 ]; then
+      fail "Only ${free_gb}G free on this filesystem. The image, the graph and the build want ~8G of headroom."
+    elif [ -n "$free_gb" ]; then
+      pass "${free_gb}G free on this filesystem."
+    fi
+  fi
+}
+
 check_observability() {
   echo "profile: observability (Langfuse)"
   check_secret "NEXTAUTH_SECRET" \
@@ -499,9 +544,10 @@ main() {
       agent-sidecar-http) check_agent_sidecar_http ;;
       openhands)     check_openhands ;;
       observability) check_observability ;;
-    tracing) check_tracing ;;
+      tracing)       check_tracing ;;
       proxy)         check_proxy ;;
       workflow)      check_workflow ;;
+      codegraph)     check_codegraph ;;
       *) fail "unknown profile '$profile'" ;;
     esac
     echo

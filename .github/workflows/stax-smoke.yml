@@ -8,6 +8,7 @@ on:
       - "activepieces/**"
       - "observability/**"
       - "caddy/**"
+      - "codegraph/**"
       - "scripts/**"
       - ".github/workflows/stax-smoke.yml"
   workflow_dispatch: {}
@@ -276,6 +277,114 @@ jobs:
         if: always()
         run: |
           docker compose -f docker-compose.yml --profile base --profile agent-sidecar             --profile agent-sidecar-http down -v
+
+  # Needs no OmniRoute, so it runs in a couple of minutes rather than behind a
+  # gateway build. It extracts THIS repository, which is also the corpus the
+  # deployment serves, so the assertions below are about real output.
+  codegraph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Preflight rejects an unauthenticated graph, and accepts a real key
+        run: |
+          set -euo pipefail
+          if ./scripts/stax-preflight.sh codegraph; then
+            echo "preflight passed with GRAPHIFY_API_KEY unset — the graph would be served with no auth" >&2
+            exit 1
+          fi
+          echo "GRAPHIFY_API_KEY=$(openssl rand -hex 24)" > .env
+          ./scripts/stax-preflight.sh codegraph
+
+      - name: Plant a canary secret in a gitignored path
+        run: |
+          set -euo pipefail
+          # Asserted after the build. The build mounts the whole repo and the
+          # result is served behind a single static key, so anything the
+          # extractor reads becomes queryable by whoever holds that key.
+          mkdir -p agent-sidecar
+          printf 'SECRET=%s\n' "CODEGRAPH-CANARY-b7f3e91a4c2d" > agent-sidecar/.env
+          git check-ignore -q agent-sidecar/.env  # fails loudly if it is not actually ignored
+
+      - name: Build the graph
+        run: |
+          set -euo pipefail
+          CODEGRAPH_COMMIT="${{ github.sha }}" CODEGRAPH_WORKERS=4 \
+            docker compose --profile codegraph run --rm --build codegraph-build
+
+      - name: Assert the graph is real, and records what it was built from
+        run: |
+          set -euo pipefail
+          read -r nodes edges <<<"$(docker compose --profile codegraph run --rm --no-deps \
+            --entrypoint python codegraph-serve -c \
+            'import json;g=json.load(open("/out/graphify-out/graph.json"));print(len(g["nodes"]),len(g["edges"]))' | tr -d '\r')"
+          echo "nodes=$nodes edges=$edges"
+          # Measured on the VPS at 58,382 nodes. A floor rather than an equality:
+          # the number moves with the code, but halving means a broken extraction.
+          if [ "$nodes" -lt 40000 ]; then
+            echo "only $nodes nodes — extraction is broken, not merely smaller" >&2
+            exit 1
+          fi
+          built=$(docker compose --profile codegraph run --rm --no-deps --entrypoint sh \
+            codegraph-serve -c 'sed -n "s/^commit=//p" /out/graphify-out/BUILD_INFO' | tr -d '\r\n')
+          if [ "$built" != "${{ github.sha }}" ]; then
+            echo "BUILD_INFO says $built, expected ${{ github.sha }} — staleness detection would not work" >&2
+            exit 1
+          fi
+
+      - name: The canary did not reach the graph
+        run: |
+          set -euo pipefail
+          # graphify honours .gitignore, and codegraph-build masks the .env
+          # files with /dev/null besides. This proves the combination holds
+          # rather than assuming it.
+          hits=$(docker compose --profile codegraph run --rm --no-deps --entrypoint sh \
+            codegraph-serve -c "grep -c 'CODEGRAPH-CANARY-b7f3e91a4c2d' /out/graphify-out/graph.json || true" | tr -d '\r')
+          echo "canary occurrences in graph.json: ${hits:-0}"
+          if [ "${hits:-0}" -ne 0 ]; then
+            echo "a gitignored secret was extracted into the served graph" >&2
+            exit 1
+          fi
+          rm -f agent-sidecar/.env
+
+      - name: Serve refuses to start without a graph
+        run: |
+          set -euo pipefail
+          if docker compose --profile codegraph run --rm --no-deps --entrypoint sh codegraph-serve \
+               -c 'test -s /nonexistent/graph.json'; then
+            echo "guard did not fire" >&2; exit 1
+          fi
+          echo "guard fires on a missing graph"
+
+      - name: Serve answers MCP with the key, and refuses without it
+        run: |
+          set -euo pipefail
+          docker compose --profile codegraph up -d codegraph-serve
+          for i in $(seq 1 40); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose --profile codegraph ps -q codegraph-serve)")" = healthy ] && break
+            sleep 3
+          done
+          # The healthcheck passing IS the authenticated-initialize assertion —
+          # it performs a real MCP handshake with the key on every interval.
+          docker inspect -f '{{.State.Health.Status}}' \
+            "$(docker compose --profile codegraph ps -q codegraph-serve)" | grep -qx healthy
+          body='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}'
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8130/mcp \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$body")
+          echo "unauthenticated initialize -> $code"
+          if [ "$code" = "200" ]; then
+            echo "the code graph answered an unauthenticated request" >&2; exit 1
+          fi
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose --profile codegraph logs --tail=300
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile codegraph down -v
 
   observability:
     runs-on: ubuntu-latest
