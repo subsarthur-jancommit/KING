@@ -1,0 +1,23 @@
+[Unit]
+Description=Rebuild the KING code knowledge graph daily
+Documentation=file:%h/KING/docs/integrations/codegraph.md
+
+[Timer]
+# 03:00 local. The rebuild restarts codegraph-serve, which drops any live MCP
+# session a laptop has open — so it belongs at an hour nobody is working.
+OnCalendar=*-*-* 03:00:00
+
+# The three things compose could not have given us.
+#
+# Persistent: a VPS reboots, and a missed daily run should catch up rather than
+# leave the graph a day stale without saying so.
+Persistent=true
+# Spreads the load off an exact-minute spike shared with every other cron-like
+# job on the box.
+RandomizedDelaySec=20min
+# Absolute wall-clock, so a suspended or clock-adjusted host does not fire it
+# repeatedly on resume.
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

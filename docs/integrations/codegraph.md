@@ -82,11 +82,28 @@ memilihnya di atas grep. Karena itu setiap build mencatat commit asalnya:
 ./scripts/codegraph-refresh.sh           # bangun ulang, verifikasi, restart serve
 ```
 
-Jadwalnya milik **systemd timer**, bukan compose. Timer memberi tiga hal yang
-compose tidak bisa: `Persistent=true` (menyusul setelah reboot yang cepat atau
-lambat pasti dialami VPS), jitter, dan tempat menggantung `flock`. Menjadwal di
-dalam compose berarti entrypoint sleep-loop — mengubah one-shot empat menit jadi
-proses yang menahan plafon 4 GB seharian.
+Jadwalnya milik **systemd timer**, bukan compose. Unitnya ada di repo:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp codegraph/codegraph-refresh.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now codegraph-refresh.timer
+sudo loginctl enable-linger "$USER"   # tanpa ini, timer hanya jalan saat login
+```
+
+Unit *user*, bukan system: akun operator sudah ada di grup docker (seluruh stack
+dijalankan tanpa sudo), jadi menjalankannya sebagai root hanya menambah hak
+tanpa alasan.
+
+Timer memberi tiga hal yang compose tidak bisa: `Persistent=true` (menyusul
+setelah reboot yang cepat atau lambat pasti dialami VPS), jitter lewat
+`RandomizedDelaySec`, dan tempat menggantung `flock`. Menjadwal di dalam compose
+berarti entrypoint sleep-loop — mengubah one-shot empat menit jadi proses yang
+menahan plafon 4 GB seharian.
+
+Dijadwalkan 03:00 karena rebuild me-restart `codegraph-serve`, dan itu memutus
+sesi MCP yang sedang terbuka di laptop.
 
 Skrip itu juga **menurunkan model Ollama yang sedang residen** sebelum
 membangun. Build 3,5 GB dan model 2,5 GB tidak muat bersama di mesin ini, dan

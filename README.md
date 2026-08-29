@@ -172,6 +172,32 @@ none of them carrying a resource ceiling.
 
 See [`docs/integrations/observability.md`](docs/integrations/observability.md).
 
+### Code knowledge graph
+
+Answering "where is this function used" across 220K vendored lines by grepping
+spends model tokens on work that is deterministic.
+[graphify](https://github.com/Graphify-Labs/graphify) answers it from a local
+tree-sitter AST — no model call, no API key, no vector store. The `codegraph`
+profile builds that graph on the server and serves it over MCP, so one graph is
+shared by Claude Code on your laptop and by workflow steps on the VPS, instead
+of a per-machine build that nobody actually has:
+
+```bash
+echo "GRAPHIFY_API_KEY=$(openssl rand -hex 24)" >> .env
+./scripts/stax-preflight.sh codegraph
+docker compose --profile codegraph run --rm codegraph-build
+docker compose --profile codegraph up -d codegraph-serve
+```
+
+No wrapper was written: graphify ships its own MCP streamable-HTTP server. The
+build is a one-shot costing ~4.5 minutes and 4 GB, refreshed by a systemd timer
+calling `scripts/codegraph-refresh.sh`, which also refuses to run while a local
+model holds memory. The server itself holds 392 MB and is loopback-only —
+Activepieces reaches it over the Docker network, and a laptop reaches it through
+an SSH tunnel.
+
+See [`docs/integrations/codegraph.md`](docs/integrations/codegraph.md).
+
 ### CI smoke test
 
 [`.github/workflows/omniroute-smoke.yml`](.github/workflows/omniroute-smoke.yml)
