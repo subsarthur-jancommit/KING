@@ -312,12 +312,12 @@ jobs:
         run: |
           set -euo pipefail
           CODEGRAPH_COMMIT="${{ github.sha }}" CODEGRAPH_WORKERS=4 \
-            docker compose --profile codegraph run --rm --build codegraph-build
+            docker compose --profile codegraph run --rm -T --build codegraph-build
 
       - name: Assert the graph is real, and records what it was built from
         run: |
           set -euo pipefail
-          read -r nodes edges <<<"$(docker compose --profile codegraph run --rm --no-deps \
+          read -r nodes edges <<<"$(docker compose --profile codegraph run --rm -T --no-deps \
             --entrypoint python codegraph-serve -c \
             'import json;g=json.load(open("/out/graphify-out/graph.json"));print(len(g["nodes"]),len(g["edges"]))' | tr -d '\r')"
           echo "nodes=$nodes edges=$edges"
@@ -327,7 +327,7 @@ jobs:
             echo "only $nodes nodes — extraction is broken, not merely smaller" >&2
             exit 1
           fi
-          built=$(docker compose --profile codegraph run --rm --no-deps --entrypoint sh \
+          built=$(docker compose --profile codegraph run --rm -T --no-deps --entrypoint sh \
             codegraph-serve -c 'sed -n "s/^commit=//p" /out/graphify-out/BUILD_INFO' | tr -d '\r\n')
           if [ "$built" != "${{ github.sha }}" ]; then
             echo "BUILD_INFO says $built, expected ${{ github.sha }} — staleness detection would not work" >&2
@@ -340,7 +340,7 @@ jobs:
           # graphify honours .gitignore, and codegraph-build masks the .env
           # files with /dev/null besides. This proves the combination holds
           # rather than assuming it.
-          hits=$(docker compose --profile codegraph run --rm --no-deps --entrypoint sh \
+          hits=$(docker compose --profile codegraph run --rm -T --no-deps --entrypoint sh \
             codegraph-serve -c "grep -c 'CODEGRAPH-CANARY-b7f3e91a4c2d' /out/graphify-out/graph.json || true" | tr -d '\r')
           echo "canary occurrences in graph.json: ${hits:-0}"
           if [ "${hits:-0}" -ne 0 ]; then
@@ -352,7 +352,7 @@ jobs:
       - name: Serve refuses to start without a graph
         run: |
           set -euo pipefail
-          if docker compose --profile codegraph run --rm --no-deps --entrypoint sh codegraph-serve \
+          if docker compose --profile codegraph run --rm -T --no-deps --entrypoint sh codegraph-serve \
                -c 'test -s /nonexistent/graph.json'; then
             echo "guard did not fire" >&2; exit 1
           fi

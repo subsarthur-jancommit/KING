@@ -23,8 +23,12 @@ red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 green()  { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 
+# -T on every `docker compose run` below is load-bearing, not cosmetic. Without
+# it compose attaches stdin, and this script then EATS whatever is feeding it —
+# running it over `ssh 'bash -s' <<EOF` silently swallowed the rest of the
+# remote script and looked like the script had simply stopped early.
 graph_commit() {
-  docker compose --profile codegraph run --rm --no-deps --entrypoint sh \
+  docker compose --profile codegraph run --rm -T --no-deps --entrypoint sh \
     codegraph-serve -c 'sed -n "s/^commit=//p" /out/graphify-out/BUILD_INFO 2>/dev/null' \
     2>/dev/null | tr -d '\r\n' || true
 }
@@ -75,12 +79,12 @@ fi
 commit=$(head_commit)
 echo "Building graph from ${commit:0:8}…"
 CODEGRAPH_COMMIT="$commit" \
-  docker compose --profile codegraph run --rm codegraph-build
+  docker compose --profile codegraph run --rm -T codegraph-build
 
 # graphify writes the graph before this script can see it, so the node floor is
 # checked here rather than trusted. A graph that suddenly shrinks by half is a
 # broken extraction, and serving it is worse than serving the previous one.
-nodes=$(docker compose --profile codegraph run --rm --no-deps --entrypoint python \
+nodes=$(docker compose --profile codegraph run --rm -T --no-deps --entrypoint python \
   codegraph-serve -c \
   'import json;print(len(json.load(open("/out/graphify-out/graph.json"))["nodes"]))' \
   2>/dev/null | tr -d '\r\n')
