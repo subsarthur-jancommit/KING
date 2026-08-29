@@ -385,24 +385,21 @@ services:
     environment:
       - CODEGRAPH_COMMIT=${CODEGRAPH_COMMIT:-unknown}
     volumes:
+      # Read-only, and deliberately WITHOUT the /dev/null secret masks that
+      # openhands uses. Those cannot work here: Docker must create the
+      # mountpoint file before it can shadow one, and inside a :ro mount that
+      # fails outright — `make mountpoint "/src/observability/.env":
+      # read-only file system` — for any .env the host does not happen to
+      # have. Tried; it broke the first real build on the VPS.
+      #
+      # :ro is the stronger half of that trade anyway: the extractor cannot
+      # write into the tree at all. For reading, the boundary is .gitignore,
+      # which graphify honours by default and which is the right line — a file
+      # that is NOT gitignored is already committed, so a graph is not where it
+      # leaks. stax-smoke.yml plants a canary in a gitignored .env and asserts
+      # it never reaches graph.json, so this is tested, not assumed.
       - ./:/src:ro
       - codegraph-out:/out
-      # Same masking as openhands, and for a stronger reason: whatever the
-      # extractor reads becomes nodes in a graph that is then served behind a
-      # single static API key. A secret that reaches graph.json is a secret
-      # with a query interface.
-      #
-      # graphify honours .gitignore by default and every one of these is
-      # gitignored, so this list is belt-and-braces — but --no-gitignore is one
-      # flag away, and the cost of being wrong is a secret with a query
-      # interface. Note the root .env, which the openhands mask list omits:
-      # it carries LANGFUSE_OTLP_AUTH and GRAPHIFY_API_KEY.
-      - /dev/null:/src/.env:ro
-      - /dev/null:/src/omniroute/.env:ro
-      - /dev/null:/src/observability/.env:ro
-      - /dev/null:/src/agent-sidecar/.env:ro
-      - /dev/null:/src/activepieces/.env:ro
-      - /dev/null:/src/.claude/settings.local.json:ro
     # One-shot: `docker compose run --rm codegraph-build`, never `up`.
     restart: "no"
     security_opt:
