@@ -24,28 +24,17 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
-  # Override on the service that omniroute/docker-compose.yml defines — not a
-  # second copy of it. Compose merges by service name, so this adds one mount
-  # and leaves everything else in the vendored file untouched, which keeps the
-  # `omniroute/ is never edited` rule intact across `git subtree pull`.
+  # NOTE: this file deliberately declares NO service that omniroute/ already
+  # defines. The Compose spec is explicit that an including file cannot
+  # override an included resource, and a partial `omniroute-base:` override
+  # here — added to mount a plugins directory and pass two OTel variables —
+  # turned every Docker CI job red with
+  # `services.omniroute-base conflicts with imported resource`.
   #
-  # Gateway plugins load from $HOME/.omniroute/plugins
-  # (omniroute/src/lib/plugins/scanner.ts), and HOME is /home/node — outside
-  # the only existing mount (/app/data). Without this, an installed plugin
-  # disappears on the next `up --force-recreate`, silently and with no error,
-  # exactly the way the API keys did before omniroute/data was fixed.
-  #
-  # Empty and unused until someone installs a plugin, so it costs nothing to
-  # carry. See docs/integrations/observability.md.
-  omniroute-base:
-    volumes:
-      - ./omniroute/plugins:/home/node/.omniroute/plugins
-    environment:
-      # Empty by default, which leaves the exporter disabled (otel.ts gates on
-      # a non-empty value). Set it to http://otel-collector:4318 together with
-      # the `tracing` profile to start emitting.
-      - OMNIROUTE_OTEL_ENDPOINT=${OMNIROUTE_OTEL_ENDPOINT:-}
-      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-omniroute}
+  # It went unnoticed because Compose v5.3+ accepts it and the VPS runs v5.5,
+  # so it worked in both places a human looked. Anything OmniRoute needs goes
+  # in omniroute/.env (the vendored file reads it via `env_file: .env`), not
+  # in a redeclaration here.
 
   # Auth shim between OmniRoute and Langfuse, nothing more.
   #

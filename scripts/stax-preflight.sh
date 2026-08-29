@@ -372,7 +372,10 @@ check_tracing() {
   local endpoint auth otel_target
   endpoint=$(lookup LANGFUSE_OTLP_ENDPOINT .env)
   auth=$(lookup LANGFUSE_OTLP_AUTH .env)
-  otel_target=$(lookup OMNIROUTE_OTEL_ENDPOINT .env)
+  # omniroute/.env, not the root .env: the gateway reads its own env_file, and
+  # the root compose file is forbidden from redeclaring omniroute-base to pass
+  # variables in (doing so is what turned every Docker CI job red).
+  otel_target=$(lookup OMNIROUTE_OTEL_ENDPOINT omniroute/.env)
 
   if [ -z "$endpoint" ]; then
     pass "LANGFUSE_OTLP_ENDPOINT unset — the compose default (Langfuse Cloud EU) applies."
@@ -399,7 +402,7 @@ check_tracing() {
   # The collector can be perfectly configured and still receive nothing.
   if [ -z "$otel_target" ]; then
     fail "OMNIROUTE_OTEL_ENDPOINT is unset, so OmniRoute's exporter stays off and the collector will sit idle."
-    echo "         Set OMNIROUTE_OTEL_ENDPOINT=http://otel-collector:4318 in .env."
+    echo "         Set OMNIROUTE_OTEL_ENDPOINT=http://otel-collector:4318 in omniroute/.env."
   elif [ "${otel_target#http://otel-collector}" = "$otel_target" ]; then
     warn "OMNIROUTE_OTEL_ENDPOINT=$otel_target does not point at the collector service."
   else

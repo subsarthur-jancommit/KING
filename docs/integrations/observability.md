@@ -95,16 +95,37 @@ Akun gratis di [cloud.langfuse.com](https://cloud.langfuse.com), lalu
 
 ### Konfigurasi
 
-Di `.env` root:
+Ketiga variabel wajib, tapi **tidak semuanya di file yang sama** — dan salah
+menaruhnya adalah kegagalan senyap: kolektor menyala sempurna dan tidak pernah
+menerima apa pun.
+
+Di `.env` **root** (dibaca Compose, dipakai service `otel-collector`):
 
 ```bash
 LANGFUSE_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
 LANGFUSE_OTLP_AUTH="Basic $(printf '%s:%s' 'pk-lf-...' 'sk-lf-...' | base64 -w0)"
-OMNIROUTE_OTEL_ENDPOINT=http://otel-collector:4318
 ```
 
-Ketiganya wajib. Kolektor yang sempurna tapi `OMNIROUTE_OTEL_ENDPOINT` kosong
-akan menganggur tanpa keluhan — persis mirip pipa yang rusak.
+Di **`omniroute/.env`** (dibaca gateway lewat `env_file: .env` miliknya sendiri):
+
+```bash
+OMNIROUTE_OTEL_ENDPOINT=http://otel-collector:4318
+OTEL_SERVICE_NAME=omniroute
+```
+
+Yang terakhir itu **tidak boleh** diletakkan di `.env` root. Dulu memang bisa,
+lewat override `omniroute-base:` di `docker-compose.yml` root — dan override itu
+melanggar spesifikasi Compose (file yang meng-`include` tidak boleh menimpa
+resource yang di-include). Compose v5.3+ menerimanya dan VPS memakai v5.5,
+jadi ia bekerja di kedua tempat yang diperiksa manusia, sementara **setiap job
+CI yang memakai Docker merah** dengan `services.omniroute-base conflicts with
+imported resource`. Override-nya sudah dihapus.
+
+Konsekuensi kedua dari penghapusan itu: mount `omniroute/plugins` ikut hilang,
+sehingga plugin gateway yang terpasang **tidak lagi bertahan** melewati
+`up --force-recreate`. Tidak ada yang rusak karenanya — satu-satunya plugin yang
+pernah dipasang adalah plugin Langfuse, yang memang tidak bisa bekerja (lihat
+bagian di bawah), dan jalur trace yang nyata adalah eksportir OTLP inti.
 
 Dua jebakan yang sudah dijaga preflight:
 

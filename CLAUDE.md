@@ -7,9 +7,15 @@ edit there is silently reverted by the next `git subtree pull`. If the gateway
 needs different behaviour, do it from the outside — a compose override, an
 environment variable, or a plugin — and write down why.
 
-The one sanctioned exception is the partial `omniroute-base:` override in the
-root `docker-compose.yml`, which adds a mount and two variables by service-name
-merge without copying the vendored definition.
+**And do not reach for a compose override instead.** The root
+`docker-compose.yml` must never declare a service that `omniroute/` already
+defines. The Compose spec forbids an including file from overriding an included
+resource, and a partial `omniroute-base:` override — added to mount a plugins
+directory and pass two OTel variables — turned every Docker CI job red with
+`services.omniroute-base conflicts with imported resource`. It survived because
+Compose v5.3+ accepts it and the VPS runs v5.5, so it worked in both places a
+human looked. Configuration the gateway needs goes in `omniroute/.env`, which
+the vendored file already reads via `env_file: .env`.
 
 ## Compose
 
