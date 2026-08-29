@@ -26,6 +26,7 @@
 #   ./scripts/stax-preflight.sh base proxy workflow        # + Activepieces
 #   ./scripts/stax-preflight.sh base tracing               # + traces to Langfuse
 #   ./scripts/stax-preflight.sh codegraph                  # graphify MCP server
+#   ./scripts/stax-preflight.sh localmodel                 # Ollama behind OmniRoute
 #   ./scripts/stax-preflight.sh --self-test                # verify this script
 #
 # Exit codes: 0 = safe to deploy, 1 = at least one blocking problem.
@@ -448,17 +449,64 @@ check_codegraph() {
     pass "codegraph/Dockerfile is present."
   fi
 
-  # The first change to this repo that adds multiple GB of images, and one of
-  # the few things genuinely knowable before `up`. The image is ~400 MB, the
-  # graph ~82 MB, and the build needs room for a 4 GB container besides.
-  if command -v df >/dev/null 2>&1; then
-    free_gb=$(df -BG --output=avail . 2>/dev/null | tail -1 | tr -dc '0-9')
-    if [ -n "$free_gb" ] && [ "$free_gb" -lt 8 ]; then
-      fail "Only ${free_gb}G free on this filesystem. The image, the graph and the build want ~8G of headroom."
-    elif [ -n "$free_gb" ]; then
-      pass "${free_gb}G free on this filesystem."
-    fi
+  check_disk_gb 8 "the 496 MB image, an 82 MB graph, and room for a 4 GB build container"
+}
+
+# Disk is one of the very few runtime-shaped facts knowable before `up`, and
+# these profiles are the first things in this repo to pull multiple GB.
+check_disk_gb() {
+  local needed="$1" why="$2" free_gb
+  command -v df >/dev/null 2>&1 || return 0
+  free_gb=$(df -BG --output=avail . 2>/dev/null | tail -1 | tr -dc '0-9')
+  [ -n "$free_gb" ] || return 0
+  if [ "$free_gb" -lt "$needed" ]; then
+    fail "Only ${free_gb}G free on this filesystem; ${needed}G wanted for $why."
+    echo "         'docker builder prune -f' is usually the cheapest win — it freed 9.4G here."
+  else
+    pass "${free_gb}G free on this filesystem (${needed}G wanted)."
   fi
+}
+
+check_localmodel() {
+  echo "profile: localmodel (Ollama behind OmniRoute)"
+
+  local model keep_alive guard
+  model=$(lookup OLLAMA_MODEL .env)
+  keep_alive=$(lookup OLLAMA_KEEP_ALIVE .env)
+  guard=$(lookup OMNIROUTE_ALLOW_LOCAL_PROVIDER_URLS omniroute/.env)
+
+  if [ -z "$model" ]; then
+    pass "OLLAMA_MODEL unset — the compose default (qwen2.5:3b-instruct-q4_K_M) applies."
+  else
+    pass "OLLAMA_MODEL is $model."
+  fi
+
+  # The ollama image carries CUDA and ROCm runtimes even with no GPU present:
+  # 8.45 GB measured, roughly double what a slim CPU image would cost. Plus
+  # ~2 GB for a 3B model.
+  check_disk_gb 12 "the 8.45 GB ollama image and a ~2 GB model"
+
+  # Not a hard failure, because it is a legitimate choice — but on this host it
+  # collides with codegraph-build, which needs 4 GB and cannot get it while a
+  # 2.1 GB model sits resident.
+  if [ "$keep_alive" = "-1" ]; then
+    warn "OLLAMA_KEEP_ALIVE=-1 holds ~2.1 GB permanently."
+    echo "         scripts/codegraph-refresh.sh unloads it before building, but budget for it."
+  fi
+
+  # outboundUrlGuardPolicy.ts defaults local provider URLs to allowed. Turning
+  # that off turns a working setup into a guard error that reads like the model
+  # server being down — a wrong diagnosis, which is worse than a clear failure.
+  case "$guard" in
+    ""|true|1 ) : ;;
+    * ) fail "OMNIROUTE_ALLOW_LOCAL_PROVIDER_URLS=$guard blocks the gateway from reaching http://ollama:11434." ;;
+  esac
+
+  echo "         After 'up', register the provider and PROVE it:"
+  echo "           ./scripts/localmodel-register.sh"
+  echo "         A dashboard connection saved without an explicit Base URL keeps"
+  echo "         localDefault http://localhost:11434/v1, which from inside the"
+  echo "         gateway container is the gateway itself."
 }
 
 check_observability() {
@@ -548,6 +596,7 @@ main() {
       proxy)         check_proxy ;;
       workflow)      check_workflow ;;
       codegraph)     check_codegraph ;;
+      localmodel)    check_localmodel ;;
       *) fail "unknown profile '$profile'" ;;
     esac
     echo

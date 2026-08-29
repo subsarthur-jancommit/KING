@@ -478,9 +478,99 @@ services:
     profiles:
       - codegraph
 
+  # Local model, for triage-sized work. See docs/integrations/localmodel.md.
+  #
+  # OmniRoute already knows this provider — omniroute/src/shared/constants/
+  # providers/local.ts defines `ollama-local` with passthroughModels and no
+  # required API key — so nothing here teaches the gateway anything. It only
+  # needs to exist at a URL the gateway can reach.
+  #
+  # No published ports at all: the gateway reaches it at http://ollama:11434/v1
+  # over the compose network. Note that this puts an unauthenticated inference
+  # server on the same default bridge as agent-sidecar, which executes
+  # model-generated Python. That is a deliberate trade, stated rather than
+  # implied: introducing a second network would break the include-based
+  # single-project layout every other service depends on.
+  ollama:
+    image: ollama/ollama:0.33.2
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      # Measured on this host: a triage prompt answers in 12.5 s including a
+      # cold load, and the model holds 2.1 GB while resident.
+      #
+      # 0, not -1, and not 5m. 5m is the worst of both — frequent callers pay
+      # the RAM anyway, infrequent ones pay a cold load anyway, and callers at
+      # roughly five-minute spacing pay load/unload churn. Between the two real
+      # options, RAM is scarcer here than seconds: codegraph-build needs 4 GB
+      # and this host has ~5 GB free, so a permanently resident 2.1 GB model
+      # would collide with it. Set -1 if triage ever becomes frequent enough
+      # that the load cost dominates.
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-0}
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
+      # Default is 512. At ~12 s per request that means the hundredth caller
+      # waits twenty minutes instead of being refused immediately — and a
+      # workflow that retries on timeout is exactly what fills a queue.
+      - OLLAMA_MAX_QUEUE=${OLLAMA_MAX_QUEUE:-2}
+      # KV cache grows linearly with context. Unpinned, mem_limit below is not
+      # a number anyone chose — it is whatever the caller asks for, clamped by
+      # the OOM killer.
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-4096}
+      # Read by the healthcheck below. Must match what ollama-pull fetches, or
+      # the healthcheck asserts a model that was never pulled.
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct-q4_K_M}
+    healthcheck:
+      # Asserts the MODEL, not the port. `ollama serve` answers happily with
+      # zero models pulled, and OmniRoute will then save a connection that
+      # looks healthy and 404s every request — the exact healthy-but-useless
+      # shape this deployment has hit three times.
+      test:
+        - CMD-SHELL
+        - ollama list | grep -q "$${OLLAMA_MODEL%%:*}" || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # Measured: 2.117 GiB resident with qwen2.5:3b-instruct-q4_K_M loaded.
+    mem_limit: ${OLLAMA_MEM_LIMIT:-2560m}
+    memswap_limit: ${OLLAMA_MEM_LIMIT:-2560m}
+    # 1.0, not 1.5. On 2 vCPU, 1.5 leaves 0.5 for the gateway, the workflow
+    # engine, Caddy and dockerd together — and OmniRoute's healthcheck times
+    # out in 5 seconds.
+    cpus: ${OLLAMA_CPUS:-1.0}
+    logging: *default-logging
+    profiles:
+      - localmodel
+
+  # One-shot, run after `up`. Without it Ollama comes up healthy-looking with
+  # no model at all, which is failure L1 in the doc.
+  ollama-pull:
+    image: ollama/ollama:0.33.2
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        until ollama list >/dev/null 2>&1; do sleep 2; done
+        ollama pull "$${OLLAMA_MODEL}"
+        ollama list
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct-q4_K_M}
+    depends_on:
+      - ollama
+    restart: "no"
+    logging: *default-logging
+    profiles:
+      - localmodel
+
 volumes:
   openhands-canvas-settings:
   caddy-data:
   caddy-config:
   activepieces-cache:
   codegraph-out:
+  ollama-models:
