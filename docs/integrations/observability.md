@@ -216,8 +216,15 @@ naik-turun.
 ## Catatan operasional
 
 - `gateway_monitor` berjalan 96 kali sehari, dan tiap eksekusi menulis riwayat
-  ke Postgres Neon yang jatah gratisnya 0,5 GB. `AP_EXECUTION_RETENTION_DAYS`
-  belum diset di mana pun — pantau pertumbuhannya, atau setel retensi.
+  ke Postgres Neon yang jatah gratisnya 0,5 GB. Diukur pada 2026-08-29: satu
+  eksekusi ≈ 6,7 kB, jadi sekitar **19 MB per bulan** — dan Activepieces sudah
+  membatasinya lewat `AP_EXECUTION_DATA_RETENTION_DAYS` yang **default 30
+  hari**, sehingga ukurannya mencapai kondisi tunak, bukan tumbuh terus.
+
+  Yang justru memakan ruang adalah `piece_metadata` — **198 MB dari 211 MB**
+  yang terpakai, yakni katalog 761 piece bawaan Activepieces. Statis, tidak
+  tumbuh, dan tidak ada hubungannya dengan flow Anda. Kalau suatu saat Neon
+  mendekati penuh, di situlah tempat melihat lebih dulu.
 - Token `read` tidak kedaluwarsa, jadi tidak ada rotasi paksa. Kalau dicabut,
   monitor akan diam-diam mengembalikan `ok: false` dengan `monitorError` —
   bukan `breach`, sehingga tidak salah membunyikan alarm.
