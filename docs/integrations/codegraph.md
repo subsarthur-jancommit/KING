@@ -22,10 +22,10 @@ Semua angka di bawah dari VPS ini (2 vCPU, 7,8 GB, tanpa GPU):
 
 | | |
 |---|---|
-| Ukuran image | **~400 MB** — `graphifyy[mcp]` 250 MB, terpasang 26 detik |
+| Ukuran image | **496 MB** (base `python:3.11-slim` 189 MB) — `graphifyy[mcp]` terpasang 26 detik |
 | Durasi ekstraksi | **265 detik**, 10.272 file, 2 worker |
 | Memori build | **butuh 4 GB.** Di 3 GB kernel membunuhnya: `oom-kill:constraint=CONSTRAINT_MEMCG`, anon-rss 3,0 GB |
-| Hasil | `graph.json` **82 MB** — **58.382 node, 163.257 edge** |
+| Hasil | `graph.json` **82 MB** — **58.390 node, 163.274 edge** (`graph_stats` lewat MCP melaporkan 59.301 node; selisihnya node referensi yang tidak ditulis extractor) |
 | Memori serve | **392 MB anon**, 717 MB termasuk page cache → `mem_limit: 768m` |
 
 Angka node itu sekaligus menyelesaikan kontradiksi di
@@ -125,19 +125,46 @@ berstatus *healthy*. Yang berikut ini kelas yang sama:
 | Healthcheck hijau padahal grafik tidak termuat | Port terbuka ≠ grafik siap | Healthcheck melakukan **MCP `initialize` sungguhan dengan kunci** — sekaligus membuktikan grafik termuat, transport jalan, dan auth ditegakkan |
 | Named volume salah kepemilikan | Tulis gagal, mungkin tanpa error — persis cara `omniroute/data` kehilangan semua API key | `/out` dibuat dan di-`chown` **di Dockerfile**, sebelum apa pun di-mount ke sana |
 | Grafik menyusut karena ekstraksi rusak | Grafik cacat menggantikan yang baik | `codegraph-refresh.sh` menolak restart kalau node di bawah 40.000, dan **grafik lama tetap disajikan** |
-| Rahasia repo ikut terindeks | Rahasia dengan antarmuka query, di balik satu kunci statis | graphify menghormati `.gitignore`, **dan** compose me-mask tiap `.env` ke `/dev/null` — termasuk `.env` root, yang daftar mask openhands justru melewatkannya. CI menanam canary di path gitignored dan memastikan ia tidak muncul di grafik |
+| Rahasia repo ikut terindeks | Rahasia dengan antarmuka query, di balik satu kunci statis | Sumber di-mount `:ro`, dan batas bacanya `.gitignore`, yang dihormati graphify. Mask `/dev/null` gaya openhands **sengaja tidak dipakai**: Docker harus membuat mountpoint dulu sebelum bisa menimpanya, dan di dalam mount `:ro` itu gagal total untuk `.env` yang kebetulan tidak ada di host — sudah dicoba, dan itu menggagalkan build pertama di VPS. CI menanam canary di path gitignored dan memastikan ia tidak muncul di grafik |
 | Kunci bocor lewat argv | `ps` menampilkannya | Kunci datang dari `GRAPHIFY_API_KEY`, bukan flag `--api-key` |
+
+## Batasan yang diketahui
+
+`query_graph` mencocokkan node awal secara fuzzy dari pertanyaan bahasa alami,
+dan pencocokan itu bisa meleset: pertanyaan "which classes inherit from
+CloudAgentBase" ikut mengambil `rtl-logical-classes.test.tsx` dan
+`inheritTrustedLocalRateLimitResponse()` sebagai titik awal, hanya karena
+namanya memuat "inherit". Jawabannya tetap benar, tapi anggarannya terbuang.
+
+Untuk pertanyaan yang simpulnya sudah Anda tahu, `get_neighbors` dan `get_node`
+jauh lebih tajam. Sepuluh tool yang tersedia: `query_graph`, `get_node`,
+`get_neighbors`, `shortest_path`, `god_nodes`, `graph_stats`, `get_community`,
+`get_pr_impact`, `list_prs`, `triage_prs`.
 
 ## Status jujur
 
-- **Terbukti live di VPS**: image dibangun, ekstraksi selesai, grafik ditulis.
-- **Terbukti benar**: `graphify explain "CloudAgentBase"` mengembalikan keempat
-  subclass nyata dengan edge `[inherits]` dan file:line yang tepat —
-  `CursorCloudAgent` (cursor.ts:L45), `CodexCloudAgent` (codex.ts:L10),
-  `DevinAgent` (devin.ts:L10), `JulesAgent` (jules.ts:L186). Jawaban benarnya
-  sudah tercatat sebelumnya, jadi jawaban salah tidak akan ambigu.
-- **Diuji di CI**: preflight menolak kunci kosong, build menghasilkan >40.000
-  node, `BUILD_INFO` mencatat commit yang benar, canary tidak bocor, serve
-  menolak start tanpa grafik, dan permintaan MCP tanpa kunci ditolak.
-- **Belum diuji**: systemd timer belum dipasang, dan wiring MCP dari Claude Code
-  di laptop lewat SSH tunnel belum pernah dijalankan ujung ke ujung.
+**Terbukti live di VPS, ujung ke ujung (2026-08-29):**
+
+- Image dibangun (496 MB), ekstraksi selesai, grafik ditulis, `BUILD_INFO`
+  mencatat commit yang benar.
+- `codegraph-serve` healthy dalam 24 detik, memakai **407 MiB dari plafon
+  768 MiB**.
+- **Auth ditegakkan**: `initialize` tanpa kunci dibalas **401**; dengan kunci
+  dibalas handshake MCP valid dari `graphify 0.9.51`.
+- **Jawabannya benar lewat MCP**, bukan hanya lewat CLI:
+  `get_neighbors label=CloudAgentBase relation_filter=inherits` mengembalikan
+  tepat empat subclass dengan file:line yang tepat — `CodexCloudAgent`
+  (codex.ts:L10), `CursorCloudAgent` (cursor.ts:L45), `DevinAgent`
+  (devin.ts:L10), `JulesAgent` (jules.ts:L186). Jawaban benarnya sudah tercatat
+  sebelum grafik ini dibangun, jadi jawaban salah tidak akan ambigu.
+- **Deteksi basi bekerja**: setelah repo maju satu commit, `--check` melaporkan
+  `Graph is STALE: built from 09c1c41c, tree is at 5954ae32` dan exit 1.
+
+**Diuji di CI**: preflight menolak kunci kosong dan menerima kunci nyata, build
+menghasilkan lebih dari 40.000 node, `BUILD_INFO` memuat SHA commit yang benar,
+canary di path gitignored tidak bocor ke grafik, serve menolak start tanpa
+grafik, dan permintaan MCP tanpa kunci ditolak.
+
+**Belum terbukti**: wiring MCP dari Claude Code di laptop lewat SSH tunnel belum
+pernah dijalankan ujung ke ujung — itu langkah Anda, dan perintahnya ada di
+bagian "Memakainya dari Claude Code di laptop" di atas.
