@@ -12,6 +12,17 @@ include:
   - path: omniroute/docker-compose.yml
   - path: observability/docker-compose.langfuse.yml
 
+# Docker's default json-file driver has NO size cap, so a chatty container
+# fills the disk until the host stops working — a failure that arrives as
+# "everything broke at once" rather than as anything pointing at logs. This
+# host has 20 GB free. Every service defined below carries this; the vendored
+# omniroute/ and observability/ files are left alone under the never-edit rule.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # Override on the service that omniroute/docker-compose.yml defines — not a
   # second copy of it. Compose merges by service name, so this adds one mount
@@ -67,6 +78,7 @@ services:
       - no-new-privileges:true
     mem_limit: ${OTEL_COLLECTOR_MEM_LIMIT:-256m}
     cpus: ${OTEL_COLLECTOR_CPUS:-0.5}
+    logging: *default-logging
     profiles:
       - tracing
 
@@ -108,6 +120,7 @@ services:
     # hit real OOM behaviour building this same stack. Bound it explicitly.
     mem_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
     cpus: ${AGENT_SIDECAR_CPUS:-1.0}
+    logging: *default-logging
     profiles:
       - agent-sidecar
 
@@ -151,6 +164,11 @@ services:
       - /dev/null:/projects/king/observability/.env:ro
       - /dev/null:/projects/king/agent-sidecar/.env:ro
       - /dev/null:/projects/king/activepieces/.env:ro
+      # Not a .env, and that is exactly why it was missed. Claude Code appends
+      # `permissions.allow` entries to this file verbatim, so whole commands —
+      # including a live Neon connection string with its password — accumulate
+      # in it in plaintext.
+      - /dev/null:/projects/king/.claude/settings.local.json:ro
       # Deliberately left unmounted, as a settled decision rather than a
       # cautious default. Uncommenting this lets Agent Canvas spawn per-task
       # sandbox containers (upstream's safer runtime), but a container that
@@ -197,6 +215,7 @@ services:
     # Untested hardening that breaks at runtime is worse than none.
     mem_limit: ${OPENHANDS_CANVAS_MEM_LIMIT:-2g}
     cpus: ${OPENHANDS_CANVAS_CPUS:-2.0}
+    logging: *default-logging
     profiles:
       - openhands
 
@@ -251,6 +270,7 @@ services:
       - no-new-privileges:true
     mem_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
     cpus: ${AGENT_SIDECAR_CPUS:-1.0}
+    logging: *default-logging
     profiles:
       - agent-sidecar-http
 
@@ -297,6 +317,7 @@ services:
     cpus: ${AP_CPUS:-1.0}
     volumes:
       - activepieces-cache:/usr/src/app/cache
+    logging: *default-logging
     profiles:
       - workflow
 
@@ -342,6 +363,7 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    logging: *default-logging
     profiles:
       - proxy
 

@@ -26,6 +26,12 @@
 omniroute/plugins/*
 !omniroute/plugins/.gitkeep
 
+# Written by Claude Code itself, per-machine. It accumulates `permissions.allow`
+# entries verbatim — which is how a live Neon connection string ended up sitting
+# in it in plaintext. It was ignored ONLY by the operator's global git config,
+# so on any other machine this file was one `git add -A` from being committed.
+.claude/settings.local.json
+
 # Agent skills installed via `npx skills add` — tooling for whoever is driving
 # Claude Code here, not part of the deployed system.
 .agents/
