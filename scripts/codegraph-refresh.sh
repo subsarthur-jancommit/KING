@@ -23,10 +23,12 @@ red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 green()  { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 
-# -T on every `docker compose run` below is load-bearing, not cosmetic. Without
-# it compose attaches stdin, and this script then EATS whatever is feeding it —
-# running it over `ssh 'bash -s' <<EOF` silently swallowed the rest of the
-# remote script and looked like the script had simply stopped early.
+# `-T` AND `</dev/null` on every `docker compose run` below, both load-bearing.
+# compose otherwise attaches this script's stdin to the container, and the
+# script then EATS whatever is feeding it: run over `ssh 'bash -s' <<EOF` it
+# silently swallowed the rest of the remote script and looked like it had just
+# finished early, exit 0 and all. -T alone did NOT fix it — measured — because
+# -T only disables the pseudo-TTY, not the stdin attachment.
 graph_commit() {
   docker compose --profile codegraph run --rm -T --no-deps --entrypoint sh \
     codegraph-serve -c 'sed -n "s/^commit=//p" /out/graphify-out/BUILD_INFO 2>/dev/null' \
@@ -79,7 +81,7 @@ fi
 commit=$(head_commit)
 echo "Building graph from ${commit:0:8}…"
 CODEGRAPH_COMMIT="$commit" \
-  docker compose --profile codegraph run --rm -T codegraph-build
+  docker compose --profile codegraph run --rm -T codegraph-build </dev/null
 
 # graphify writes the graph before this script can see it, so the node floor is
 # checked here rather than trusted. A graph that suddenly shrinks by half is a
