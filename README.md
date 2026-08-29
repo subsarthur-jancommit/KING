@@ -149,6 +149,29 @@ and runs model-generated code, so it stays loopback-only and is never proxied.
 
 See [`docs/integrations/activepieces-workflow.md`](docs/integrations/activepieces-workflow.md).
 
+### Observability
+
+OmniRoute already records every call it routes to a `call_logs` table, with
+provider, model, status, tokens and the API key's name — no configuration
+needed. Give each consumer its own `/v1` key and `/dashboard/usage` separates
+their traffic for free. The `tracing` profile adds prompt-level traces on top,
+sending OmniRoute's built-in OTLP exporter to Langfuse Cloud's free tier
+through a small collector whose only job is attaching the auth header the
+exporter cannot send:
+
+```bash
+# .env: LANGFUSE_OTLP_AUTH="Basic $(printf '%s:%s' pk-lf-... sk-lf-... | base64 -w0)"
+./scripts/stax-preflight.sh base tracing
+docker compose --profile base --profile tracing up -d
+```
+
+The collector catches the calls Caddy structurally cannot see — Activepieces
+reaches OmniRoute over the Docker network, never through the proxy. The
+self-hosted Langfuse stack under `observability/` stays off: six containers,
+none of them carrying a resource ceiling.
+
+See [`docs/integrations/observability.md`](docs/integrations/observability.md).
+
 ### CI smoke test
 
 [`.github/workflows/omniroute-smoke.yml`](.github/workflows/omniroute-smoke.yml)
