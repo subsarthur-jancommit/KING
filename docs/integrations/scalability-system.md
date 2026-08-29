@@ -25,7 +25,7 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 | Graphify | Local, zero-LLM-cost code knowledge graph (tree-sitter) for AI agents to navigate the 220K-line `omniroute/` codebase without grepping | ✅ installed & validated (58,205 nodes / 139,183 edges / 1,945 communities from 10,343 files; see below) |
 | repomix | Repo-to-context packer + on-demand MCP server (`--mcp`) for direct codebase Q&A | ✅ installed & validated (see below) |
 | [agent-sidecar](../../agent-sidecar/) | Combined smolagents + pydantic-ai Python service, using OmniRoute as both LLM backend and MCP tool source. Runs one-shot from the CLI, or as an HTTP service (`agent-sidecar-http` profile) so a workflow step can invoke the same runners | ✅ installed & live-validated (see below) |
-| [Langfuse](../../observability/) | Self-hosted, framework-agnostic (OpenTelemetry) tracing across every agent runtime in this workspace | ✅ vendored & statically validated (Docker daemon unavailable here — see below) |
+| [Langfuse](./langfuse.md) | LLM tracing. The live path is OmniRoute's own OTLP exporter → a small collector → Langfuse Cloud (`tracing` profile), which captures every call the gateway routes. The self-hosted stack in [`observability/`](../../observability/) stays off — 6 containers, no resource ceilings | ✅ Cloud path live-verified; self-hosted stack vendored & statically validated only (see linked doc) |
 | [OpenHands Agent Canvas](./openhands-agent-canvas.md) | Self-hosted control center to run/monitor multiple coding agents and automations, LLM-configured to route through OmniRoute | ✅ vendored & statically validated (see linked doc) |
 | [Smithery](./smithery.md) | External MCP server registry — pull third-party MCP servers as tools, optionally publish OmniRoute's own MCP server | ✅ CLI verified & skill installed (user-scoped — see linked doc) |
 | [Activepieces](./activepieces-workflow.md) | Workflow orchestration on top of the gateway — triggers, scheduling, branching and run history, with Postgres/Redis offloaded to Neon/Upstash free tiers so it adds only one container | ✅ statically validated (needs a live VPS + Neon/Upstash accounts — see linked doc) |
@@ -422,21 +422,33 @@ the existing `omniroute/docker-compose.yml` pattern (`memory`, `bifrost`,
 |---|---|---|
 | Minimal | `base` | Just OmniRoute itself |
 | + agents | `base agent-sidecar` | + a scriptable Python agent runtime talking to OmniRoute |
-| + observability | `base agent-sidecar observability` | + Langfuse tracing across agent runs (adds Postgres/ClickHouse/Redis — noticeably heavier) |
+| + observability | `base agent-sidecar observability` | + a self-hosted Langfuse stack (6 containers: Postgres, ClickHouse, MinIO, Redis, and two Langfuse services — noticeably heavier, and see the ceiling caveat below) |
 | Full | `base agent-sidecar observability openhands` | + OpenHands Agent Canvas multi-agent control center |
 
 ```bash
 docker compose --profile base --profile agent-sidecar up -d --build
 ```
 
-Every new service also carries a `mem_limit`/`cpus` ceiling (overridable per
-service) so that adding a profile has a bounded cost on a small host rather
+Every STAX-authored service carries a `mem_limit`/`cpus` ceiling (overridable
+per service) so that adding a profile has a bounded cost on a small host rather
 than an open-ended one.
 
-Langfuse's self-hosted stack is resource-heavy for a small workspace; if you
-don't want 4 extra containers, use [Langfuse Cloud's free tier](https://langfuse.com)
-instead and point `agent-sidecar`'s `LANGFUSE_HOST` at it — no compose
-profile needed in that case.
+**The `observability` profile is the exception, and it is the one that matters
+most.** `observability/docker-compose.langfuse.yml` was vendored verbatim from
+upstream and none of its six services carry a ceiling — while being the
+heaviest thing in the repo. Add limits before running it on a small host.
+
+For tracing without that cost, the live path in this deployment sends
+OmniRoute's own OTLP exporter to [Langfuse Cloud's free tier](https://langfuse.com)
+through a small collector — the `tracing` profile. It captures every call the
+gateway routes, including the Activepieces traffic that never reaches Caddy.
+See [observability.md](./observability.md) for the runbook and
+[langfuse.md](./langfuse.md) for why Cloud was chosen over self-hosting.
+
+Earlier revisions of this document suggested pointing `agent-sidecar`'s
+`LANGFUSE_HOST` at Langfuse instead. That advice was wrong on two counts: no
+code in this repo reads that variable, and instrumenting the sidecar would miss
+the Activepieces→OmniRoute calls entirely, since those never pass through it.
 
 ## Secrets
 

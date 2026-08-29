@@ -6,6 +6,12 @@
       "sourceType": "github",
       "skillPath": "skills/langfuse/SKILL.md",
       "computedHash": "8d7fb3c34a2e58839ab6f4d99b555b7a9afa7f72b0639ed3cf8c3966797abc98"
+    },
+    "piece-builder": {
+      "source": "activepieces/activepieces",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/piece-builder/SKILL.md",
+      "computedHash": "1e0a26166a5b21c4591ec94de5922bf79a5b1ff564ba7837da70125c049fe063"
     }
   }
 }

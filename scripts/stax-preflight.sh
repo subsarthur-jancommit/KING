@@ -23,6 +23,8 @@
 #   ./scripts/stax-preflight.sh base agent-sidecar
 #   ./scripts/stax-preflight.sh base openhands observability
 #   ./scripts/stax-preflight.sh base proxy                 # public HTTPS deploy
+#   ./scripts/stax-preflight.sh base proxy workflow        # + Activepieces
+#   ./scripts/stax-preflight.sh base tracing               # + traces to Langfuse
 #   ./scripts/stax-preflight.sh --self-test                # verify this script
 #
 # Exit codes: 0 = safe to deploy, 1 = at least one blocking problem.
