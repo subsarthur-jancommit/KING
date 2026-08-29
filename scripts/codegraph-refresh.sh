@@ -32,7 +32,7 @@ yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 graph_commit() {
   docker compose --profile codegraph run --rm -T --no-deps --entrypoint sh \
     codegraph-serve -c 'sed -n "s/^commit=//p" /out/graphify-out/BUILD_INFO 2>/dev/null' \
-    2>/dev/null | tr -d '\r\n' || true
+    </dev/null 2>/dev/null | tr -d '\r\n' || true
 }
 
 head_commit() { git rev-parse HEAD; }
@@ -89,7 +89,7 @@ CODEGRAPH_COMMIT="$commit" \
 nodes=$(docker compose --profile codegraph run --rm -T --no-deps --entrypoint python \
   codegraph-serve -c \
   'import json;print(len(json.load(open("/out/graphify-out/graph.json"))["nodes"]))' \
-  2>/dev/null | tr -d '\r\n')
+  </dev/null 2>/dev/null | tr -d '\r\n')
 
 if ! [ "${nodes:-0}" -ge "$MIN_NODES" ] 2>/dev/null; then
   red "Graph has ${nodes:-0} nodes, below the floor of $MIN_NODES. Not restarting the server."
