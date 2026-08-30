@@ -471,10 +471,31 @@ check_codegraph() {
 # Disk is one of the very few runtime-shaped facts knowable before `up`, and
 # these profiles are the first things in this repo to pull multiple GB.
 check_disk_gb() {
-  local needed="$1" why="$2" free_gb
-  command -v df >/dev/null 2>&1 || return 0
-  free_gb=$(df -BG --output=avail . 2>/dev/null | tail -1 | tr -dc '0-9')
-  [ -n "$free_gb" ] || return 0
+  local needed="$1" why="$2" free_gb raw
+  # Both of the early returns here used to be bare `return 0`: no output, no
+  # warning, exit 0. An operator reading a clean preflight had no way to tell
+  # "disk was checked and is fine" from "disk was never checked" — in front of
+  # an 8.45 GB image on a host measured dropping to 9.2 GB free. Not being able
+  # to measure is now a failure, because vouching for a number nobody read is
+  # the thing this script exists to prevent.
+  if ! command -v "${DF_CMD:-df}" >/dev/null 2>&1; then
+    fail "'${DF_CMD:-df}' not found, so free disk cannot be measured — refusing to vouch for ${needed}G for $why."
+    return
+  fi
+  # --output is GNU coreutils only. Fall back to POSIX `df -k`, whose available
+  # column is 4, before giving up: without this the fix would turn today's
+  # silent pass into a hard block on Alpine or macOS.
+  raw=$("${DF_CMD:-df}" -BG --output=avail . 2>/dev/null | tail -1) || raw=""
+  free_gb=$(printf '%s' "$raw" | tr -dc '0-9')
+  if [ -z "$free_gb" ]; then
+    raw=$("${DF_CMD:-df}" -k . 2>/dev/null | tail -1) || raw=""
+    free_gb=$(printf '%s' "$raw" | awk '{print int($4 / 1048576)}' 2>/dev/null | tr -dc '0-9')
+  fi
+  if [ -z "$free_gb" ]; then
+    fail "Could not parse free disk from df — refusing to vouch for ${needed}G for $why."
+    echo "         Raw output was: ${raw:-<empty>}"
+    return
+  fi
   if [ "$free_gb" -lt "$needed" ]; then
     fail "Only ${free_gb}G free on this filesystem; ${needed}G wanted for $why."
     echo "         'docker builder prune -f' is usually the cheapest win — it freed 9.4G here."
@@ -564,6 +585,29 @@ self_test() {
   warnings=0; check_bind_host "B" "127.0.0.1" "" >/dev/null; assert_eq "loopback passes" "$warnings" 0
   warnings=0; check_bind_host "B" "" "" >/dev/null;          assert_eq "unset defaults to loopback" "$warnings" 0
   warnings=0; check_bind_host "B" "0.0.0.0" "" >/dev/null;   assert_eq "0.0.0.0 warns" "$warnings" 1
+
+  # Until 2026-08-30 this harness covered only the functions that JUDGE a value
+  # against known inputs, and none that GO AND READ something. Both instruments
+  # that broke that day — a probe whose exit code was eaten by a pipe, and this
+  # very check returning a silent pass — would have gone on passing every test
+  # in the repo. So the acquiring half is stubbed and asserted too: what matters
+  # is that "could not measure" never collapses into "measured fine".
+  echo "self-test: check_disk_gb"
+  local stub; stub=$(mktemp -d)
+  printf '#!/bin/sh\nexit 1\n'                                 > "$stub/df-fails";   chmod +x "$stub/df-fails"
+  printf '#!/bin/sh\nexit 0\n'                                 > "$stub/df-empty";   chmod +x "$stub/df-empty"
+  printf '#!/bin/sh\necho "Avail\\nnot-a-number"\n'            > "$stub/df-garbage"; chmod +x "$stub/df-garbage"
+  printf '#!/bin/sh\necho Avail\necho 99G\n'                   > "$stub/df-roomy";   chmod +x "$stub/df-roomy"
+  printf '#!/bin/sh\necho Avail\necho 2G\n'                    > "$stub/df-tight";   chmod +x "$stub/df-tight"
+
+  errors=0; DF_CMD="$stub/nonexistent" check_disk_gb 8 "t" >/dev/null 2>&1 || true
+  assert_eq "missing df fails, does not silently pass" "$errors" 1
+  errors=0; DF_CMD="$stub/df-fails"   check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "df exiting non-zero fails" "$errors" 1
+  errors=0; DF_CMD="$stub/df-empty"   check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "df returning nothing fails" "$errors" 1
+  errors=0; DF_CMD="$stub/df-garbage" check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "unparseable df output fails" "$errors" 1
+  errors=0; DF_CMD="$stub/df-tight"   check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "too little disk fails" "$errors" 1
+  errors=0; DF_CMD="$stub/df-roomy"   check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "enough disk passes" "$errors" 0
+  rm -rf "$stub"
 
   echo "self-test: lookup"
   local tmp; tmp=$(mktemp)

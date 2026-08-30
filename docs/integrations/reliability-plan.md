@@ -135,7 +135,7 @@ Berurutan. Yang di atas memblokir yang di bawah.
 
 ### S1 — Hentikan pemakaian model lokal di `gateway_monitor`, hitung severity di kode
 
-**Sekarang.** Buang `triage()` dan pemanggilnya dari `step_1`. Ganti dengan tiga
+**SELESAI 2026-08-30.** 12 asersi lolos dalam 70 ms, flow ter-publish, salinan uji dihapus. Buang `triage()` dan pemanggilnya dari `step_1`. Ganti dengan tiga
 predikat atas data yang sudah ada di tangan:
 
 - `CRITICAL` — ada status 401/403, **atau** setiap provider punya `failed === total`
@@ -157,7 +157,7 @@ bergantung pada komponen yang paling mungkin sedang rusak.
 
 ### S2 — Perbaiki tiga instrumen yang berbohong
 
-**Sekarang.** Jangan pernah biarkan "tidak bisa diukur" runtuh menjadi "terukur
+**SELESAI 2026-08-30.** Ditambah lapisan kedua: `MemAvailable` dibaca langsung sebelum build, dan enam self-test baru menutup mode kegagalan instrumen. Jangan pernah biarkan "tidak bisa diukur" runtuh menjadi "terukur
 nol":
 
 - `codegraph-refresh.sh`: perbaiki nama container (`king-ollama-1`, atau lebih
