@@ -31,8 +31,10 @@ def _stub_runners(monkeypatch):
     calls = []
 
     def _fake(name):
-        def _run(task):
-            calls.append((name, task))
+        # Mirrors both real runners: `run(task, settings=None)`. The server
+        # always passes settings now, because the model can be chosen per call.
+        def _run(task, settings=None):
+            calls.append((name, task, getattr(settings, "model_id", None)))
             return f"{name} handled: {task}"
 
         return _run
@@ -64,11 +66,10 @@ def test_run_defaults_to_smolagents(client, _stub_runners):
     resp = client.post("/run", json={"task": "do the thing"})
 
     assert resp.status_code == 200
-    assert resp.json() == {
-        "result": "smolagents handled: do the thing",
-        "runner": "smolagents",
-    }
-    assert _stub_runners == [("smolagents", "do the thing")]
+    body = resp.json()
+    assert body["result"] == "smolagents handled: do the thing"
+    assert body["runner"] == "smolagents"
+    assert [(n, t) for n, t, _ in _stub_runners] == [("smolagents", "do the thing")]
 
 
 def test_run_dispatches_to_pydantic_ai(client, _stub_runners):
@@ -76,7 +77,40 @@ def test_run_dispatches_to_pydantic_ai(client, _stub_runners):
 
     assert resp.status_code == 200
     assert resp.json()["runner"] == "pydantic-ai"
-    assert _stub_runners == [("pydantic-ai", "t")]
+    assert [(n, t) for n, t, _ in _stub_runners] == [("pydantic-ai", "t")]
+
+
+def test_run_uses_the_model_from_the_request(client, _stub_runners, monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_MODEL_ID", "opencode/big-pickle")
+
+    resp = client.post("/run", json={"task": "t", "model": "agy/claude-sonnet-4-6"})
+
+    assert resp.status_code == 200
+    # Echoed back so the caller can tell which model answered. Without this a
+    # silent fall to a weaker model is indistinguishable from success — the
+    # same failure shape that let a web-search combo quietly answer from
+    # training data.
+    assert resp.json()["model"] == "agy/claude-sonnet-4-6"
+    assert _stub_runners[0][2] == "agy/claude-sonnet-4-6"
+
+
+def test_run_falls_back_to_the_configured_model(client, _stub_runners, monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_MODEL_ID", "ollama/qwen2.5:1.5b-instruct-q4_K_M")
+
+    resp = client.post("/run", json={"task": "t"})
+
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "ollama/qwen2.5:1.5b-instruct-q4_K_M"
+
+
+@pytest.mark.parametrize("bad", ["", "   ", 7, [], {}])
+def test_run_rejects_a_non_string_or_empty_model(client, _stub_runners, bad):
+    resp = client.post("/run", json={"task": "t", "model": bad})
+
+    assert resp.status_code == 400
+    assert "model" in resp.json()["error"]
+    # Nothing should have been dispatched.
+    assert _stub_runners == []
 
 
 @pytest.mark.parametrize(
@@ -119,7 +153,7 @@ def test_run_rejects_an_unknown_runner(client):
 
 def test_run_surfaces_the_runner_failure_rather_than_a_bare_500(client, monkeypatch):
     def _boom(runner):
-        def _run(task):
+        def _run(task, settings=None):
             raise RuntimeError("model refused")
 
         return _run
@@ -137,7 +171,7 @@ def test_run_surfaces_the_runner_failure_rather_than_a_bare_500(client, monkeypa
 def test_run_coerces_a_non_string_result(client, monkeypatch):
     # A CodeAgent can legitimately return a number or a list; the response
     # shape must not change depending on what the agent happened to produce.
-    monkeypatch.setattr(server, "_resolve", lambda runner: (lambda task: 42))
+    monkeypatch.setattr(server, "_resolve", lambda runner: (lambda task, settings=None: 42))
 
     resp = client.post("/run", json={"task": "t"})
 

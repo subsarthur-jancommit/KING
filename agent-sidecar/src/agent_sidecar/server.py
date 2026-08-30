@@ -21,6 +21,8 @@ docs/integrations/activepieces-workflow.md.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import anyio
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -95,23 +97,48 @@ async def run(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    # Per-call model. Without it every caller shares one baked-in default, and
+    # the choice that actually matters here — a subscription-quota model that
+    # costs nothing per call, a cheap per-token one for volume, or the local
+    # one for work that must not leave the host — could only be made by
+    # restarting the container. Absent, `load_settings()` keeps its own default.
+    settings = load_settings()
+    model = payload.get("model")
+    if model is not None:
+        if not isinstance(model, str) or not model.strip():
+            return JSONResponse(
+                {"error": "'model' must be a non-empty string when given"},
+                status_code=400,
+            )
+        settings = replace(settings, model_id=model.strip())
+
     func = _resolve(runner)
     try:
-        result = await anyio.to_thread.run_sync(func, task)
+        result = await anyio.to_thread.run_sync(func, task, settings)
     except Exception as exc:
         # The message is returned rather than swallowed because the caller is a
         # workflow step whose only view of this service is the response body;
         # a bare 500 would make every failure look identical. The type name is
         # included for the same reason.
         return JSONResponse(
-            {"error": f"{type(exc).__name__}: {exc}", "runner": runner},
+            {
+                "error": f"{type(exc).__name__}: {exc}",
+                "runner": runner,
+                "model": settings.model_id,
+            },
             status_code=500,
         )
 
     # smolagents returns whatever the agent produced, which is not always a
     # string (a CodeAgent can return a number or a list). Coerce so the
     # response shape is stable for the caller.
-    return JSONResponse({"result": str(result), "runner": runner})
+    #
+    # `model` is echoed because the caller otherwise has no way to tell which
+    # model answered — the same silent-degradation problem that made a web
+    # search combo quietly answer from training data.
+    return JSONResponse(
+        {"result": str(result), "runner": runner, "model": settings.model_id}
+    )
 
 
 app = Starlette(
