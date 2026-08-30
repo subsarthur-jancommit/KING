@@ -229,30 +229,58 @@ Biayanya satu entri cron, dengan konsekuensi satu bagian bergerak di luar proyek
 compose — melanggar tata letak proyek tunggal yang selama ini dipegang repo, dan
 itu memang harga yang dibayar sengaja.
 
-### S5 — Satu percobaan berbatas waktu untuk profil `localmodel`, atau hapus
+### S5 — Percobaan berbatas waktu: model lokal sebagai cadangan, bukan sebagai penilai
 
-**Berikutnya.** Setelah S1, profil ini tidak punya konsumen terbukti. Biayanya
-nyata: image **8,45 GB** (dugaan awal 3–4 GB) yang membawa CUDA dan ROCm di host
-tanpa GPU, di disk 18 GB, dengan preflight yang harus menuntut 12 GB bebas.
+**TERPASANG 2026-08-30. Tinjau 2026-09-13.**
 
-Satu pemakaian yang argumennya jujur: **fallback untuk `ask_free_model` ketika
-semua provider gratis membalas `service_unavailable`** — celah yang CI memang
-sudah amati dan toleransi secara eksplisit. Pemakaian itu tahan latensi (panggilan
-tool MCP dengan Claude di dalam loop, sehingga jawaban salah langsung terlihat)
-dan tidak punya amplifikasi alert fatigue.
+Setelah S1, profil ini tidak punya konsumen terbukti. Satu pemakaian yang
+argumennya jujur adalah **cadangan saat semua provider gratis tumbang** — celah
+yang CI memang sudah amati dan toleransi secara eksplisit. Berbeda dari triage,
+tugas ini tahan latensi, hasilnya dibaca manusia sehingga jawaban lemah langsung
+terlihat, dan tidak punya amplifikasi alert fatigue.
 
-Kalau dalam jangka waktu yang Anda tetapkan itu tidak dipasang dan dijalankan,
-hapus profilnya dan reklamasi ~10 GB. Bukti yang akan mengubah kesimpulan ini:
-tingkat keberhasilan di atas 95% lewat OmniRoute setelah S3 dibereskan, atau satu
-insiden tercatat di mana semua provider gratis tumbang bersamaan.
+**Dan ternyata tidak butuh kode sama sekali.** Sebelum menulis logika fallback di
+flow, prinsip repo ini menuntut pengecekan: apakah gateway sudah
+menyelesaikannya. Sudah — `POST /api/combos` dengan `strategy: "priority"` dan
+daftar model berurutan, yang dokumentasi OmniRoute sebut persis sebagai cara
+"fall back between them".
 
-### S6 — Kecilkan yang tersisa
+Jadi fallback-nya jadi konfigurasi gateway, bukan kode flow, dan berlaku untuk
+**setiap** konsumen:
 
-**Nanti.** `ollama list | grep -q "$${OLLAMA_MODEL}"` tanpa pemotongan tag, atau
-`ollama show "$${OLLAMA_MODEL}"` yang menegaskan model persis — verifikasi dulu
-terhadap keluaran `ollama list` sungguhan, karena grep eksak bisa mengubah
-false-healthy jadi false-unhealthy. Dan satukan angka node yang ter-drift ke satu
-sumber.
+```
+combo free-then-local (priority)
+  1. opencode/big-pickle
+  2. ollama/qwen2.5:1.5b-instruct-q4_K_M
+```
+
+`ask_free_model` diarahkan ke combo itu, diuji, dan sudah ter-publish.
+
+**Terbukti, bukan diasumsikan.** Saya tidak bisa memaksa `opencode` gagal sesuka
+hati, jadi saya buat combo probe yang entri pertamanya dijamin tidak ada:
+
+| | hasil |
+|---|---|
+| probe (entri 1 pasti gagal) | jatuh ke `qwen2.5:1.5b`, jawab `OK.` dalam **1,1 detik** |
+| `free-then-local`, jalur normal | memakai `big-pickle`, **1,1 detik**, dua kali |
+| `ask_free_model` ujung ke ujung | `WORKING` dalam **3,7 detik** |
+
+Combo probe dihapus setelah membuktikan mekanismenya.
+
+Sekalian model 3B dihapus (**1,9 GB** kembali) karena hanya 1,5B yang dipakai.
+
+#### Kriteria tinjauan 2026-09-13
+
+Pertanyaannya bukan "apakah masih jalan", melainkan **apakah pernah terpakai**.
+Periksa `call_logs` OmniRoute: adakah permintaan nyata yang dilayani `ollama/*`
+lewat combo, bukan lewat pengujian?
+
+- **Pernah** — asuransinya diklaim, profilnya berbayar sendiri, pertahankan.
+- **Tidak pernah** — free tier tidak pernah tumbang dalam dua minggu itu. Yang
+  tersisa adalah asuransi seharga **9,5 GB disk** (image 8,45 GB + model 986 MB)
+  dan **1,126 GiB RAM permanen**, dan keputusannya jadi soal seberapa mahal
+  ketenangan itu. Menghapusnya murah: `docker compose --profile localmodel down -v`,
+  dan skrip serta dokumennya tetap di repo.
 
 ---
 

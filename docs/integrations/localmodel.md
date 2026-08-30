@@ -141,7 +141,28 @@ yang tersembunyi.
   menyentuh anggaran 4 GB milik `codegraph-build`.
 - Sesudahnya: RAM 4,0 dari 7,8 GiB terpakai, 3,7 GiB tersedia; disk 18 GB sisa.
 
-**Belum terbukti**: belum ada flow Activepieces yang benar-benar memanggil
-`ollama/*`. `gateway_monitor` masih memakai ambang statis — memindahkan
-penilaiannya ke model lokal adalah langkah berikutnya yang wajar, dan itulah
-alasan profil ini ada.
+**Konsumennya, sejak 2026-08-30**: combo OmniRoute `free-then-local`
+(`strategy: priority`) yang mencoba `opencode/big-pickle` lebih dulu dan jatuh ke
+`ollama/qwen2.5:1.5b-instruct-q4_K_M` bila gratisannya tidak tersedia.
+`ask_free_model` memakainya.
+
+Fallback itu **konfigurasi gateway, bukan kode flow** — `POST /api/combos`
+sudah menyediakannya, jadi tidak ada yang ditulis dari nol, dan ia berlaku untuk
+setiap konsumen. Dibuktikan dengan combo probe yang entri pertamanya dijamin
+gagal: jatuh ke model lokal dan menjawab dalam 1,1 detik. Probe-nya dihapus
+setelah itu.
+
+**Yang masih harus dibuktikan, dan tanggalnya sudah ditetapkan.** Profil ini
+dipasang sebagai percobaan berbatas waktu dengan tinjauan **2026-09-13**.
+Pertanyaannya bukan apakah ia masih jalan, melainkan apakah ia pernah **terpakai**
+— yaitu adakah permintaan nyata yang dilayani `ollama/*` lewat combo, bukan lewat
+pengujian. Kalau tidak pernah dalam dua minggu, yang tersisa adalah asuransi
+seharga 9,5 GB disk dan 1,126 GiB RAM permanen, dan itu keputusan yang harus
+diambil sadar. Lihat [`reliability-plan.md`](./reliability-plan.md).
+
+**Bukan untuk menilai alert.** `gateway_monitor` sempat dirancang memakai model
+ini untuk triage dan itu dibatalkan setelah diukur: 2 dari 4 benar, kedua
+kegagalannya naik-kelas, dan aturannya sendiri sudah ditulis tangan ke dalam
+prompt sebelum model mana pun melihatnya. Severity kini dihitung di kode dalam
+70 ms. Aturan umumnya: model layak dipakai hanya kalau pemetaan input ke output
+tidak bisa dituliskan lebih dulu.
