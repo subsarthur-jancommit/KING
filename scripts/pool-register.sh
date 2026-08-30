@@ -85,8 +85,8 @@ if [ "$mode" != "dry" ]; then
   PROBE_KEY_ID=$(printf '%s' "$key_json" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id") or d.get("apiKey",{}).get("id",""))')
 fi
 
-printf '%-22s %-10s %-12s %s\n' "PROVIDER" "KUNCI" "DAFTAR" "BUKTI"
-printf '%-22s %-10s %-12s %s\n' "----------------------" "----------" "------------" "----------------------------"
+printf '%-22s %-12s %-12s %s\n' "PROVIDER" "PRA-CEK" "DAFTAR" "BUKTI"
+printf '%-22s %-12s %-12s %s\n' "----------------------" "------------" "------------" "----------------------------"
 
 failed=0
 count=0
@@ -100,22 +100,42 @@ while IFS='=' read -r provider key; do
 
   valid="-"; registered="-"; proof="-"
 
-  # 1. Does the key work at the provider at all? Asking them first means a typo
-  #    is reported as a typo rather than as a mysterious routing failure later.
+  # 1. Catch a mistyped provider id, and nothing more.
+  #
+  #    /api/providers/validate looked like a key check and is not one. Measured
+  #    2026-08-30: a deliberately invalid OpenRouter key came back HTTP 200 with
+  #    {"valid":true,"method":null} - `method: null` being the tell that no
+  #    validation ran, after which it defaults to true. Reading only the HTTP
+  #    status made this script report a junk key as ok: the exact false pass
+  #    this repo keeps finding.
+  #
+  #    What it DOES do reliably is reject an unknown provider id with HTTP 400
+  #    and "unsupported": true. Worth keeping, because a typo here would
+  #    otherwise surface much later as a routing mystery. Everything else is
+  #    settled by the completion in step 3.
   if [ "$mode" != "prove" ]; then
     body=$(mktemp)
     printf '{"provider":"%s","apiKey":%s}' "$provider" "$(printf '%s' "$key" | json_str)" > "$body"
-    if curl -sf -b "$COOKIES" -X POST "$BASE/api/providers/validate" \
-         -H 'Content-Type: application/json' --data-binary "@$body" >/dev/null 2>&1; then
-      valid="ok"
-    else
-      valid="DITOLAK"
-    fi
+    vr=$(curl -s -b "$COOKIES" -X POST "$BASE/api/providers/validate"       -H 'Content-Type: application/json' --data-binary "@$body" 2>/dev/null || true)
     rm -f "$body"
+    valid=$(printf '%s' "$vr" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('tak terbaca'); raise SystemExit
+if d.get('unsupported'):
+    print('ID SALAH')
+elif d.get('valid') is False:
+    print('DITOLAK')
+elif d.get('method'):
+    print('diuji')
+else:
+    print('tak diuji')
+" 2>/dev/null) || valid="tak terbaca"
   fi
-
   # 2. Register, unless this is a dry run or the key was rejected outright.
-  if [ "$mode" = "full" ] && [ "$valid" = "ok" ]; then
+  if [ "$mode" = "full" ] && [ "$valid" != "DITOLAK" ] && [ "$valid" != "ID SALAH" ]; then
     body=$(mktemp)
     printf '{"provider":"%s","apiKey":%s,"name":"%s"}' \
       "$provider" "$(printf '%s' "$key" | json_str)" "$provider" > "$body"
@@ -134,7 +154,7 @@ while IFS='=' read -r provider key; do
 
   # 3. The only step that counts. Find a model this provider actually serves,
   #    then send a real completion through the gateway and require content back.
-  if [ "$mode" != "dry" ] && [ "$registered" != "GAGAL" ] && [ "$valid" != "DITOLAK" ]; then
+  if [ "$mode" != "dry" ] && [ "$registered" != "GAGAL" ] && [ "$valid" != "DITOLAK" ] && [ "$valid" != "ID SALAH" ]; then
     model=$(curl -sf -b "$COOKIES" "$BASE/api/models?limit=500" 2>/dev/null | python3 -c "
 import sys, json
 prov = sys.argv[1]
@@ -183,8 +203,8 @@ print((c or '').strip().replace(chr(10), ' ')[:18])
 
   # if, not `A && B`: under set -e a false test in a && list can end the run
   # without a word. Same shape shellcheck flagged as SC2015 elsewhere here.
-  if [ "$valid" = "DITOLAK" ]; then failed=$((failed + 1)); fi
-  printf '%-22s %-10s %-12s %s\n' "$provider" "$valid" "$registered" "$proof"
+  case "$valid" in DITOLAK|"ID SALAH") failed=$((failed + 1)) ;; esac
+  printf '%-22s %-12s %-12s %s\n' "$provider" "$valid" "$registered" "$proof"
 done < "$KEYFILE"
 
 echo
