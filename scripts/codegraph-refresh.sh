@@ -70,12 +70,78 @@ fi
 # together do not fit — so the build refuses rather than letting the kernel
 # choose a victim by RSS, which on this host would be Activepieces or the
 # gateway, not this process.
-if docker ps --format '{{.Names}}' | grep -qx ollama; then
-  loaded=$(docker exec ollama ollama ps 2>/dev/null | tail -n +2 | wc -l || echo 0)
-  if [ "${loaded:-0}" -gt 0 ]; then
-    yellow "Ollama is holding a model resident; unloading it before the build."
-    docker exec ollama sh -c 'OLLAMA_KEEP_ALIVE=0 ollama stop $(ollama ps --format "{{.Name}}" 2>/dev/null | head -1)' 2>/dev/null || true
+#
+# This block did nothing at all until 2026-08-30. It matched `docker ps` output
+# against the literal name `ollama` with `grep -qx`, which needs the whole line;
+# the container is `king-ollama-1`, so the condition was never once true. Two
+# documents cited it as the safety property that made the collision impossible.
+# Resolve the container through compose instead, which cannot drift from the
+# service name.
+ollama_cid=$(docker compose --profile localmodel ps -q ollama 2>/dev/null || true)
+if [ -n "$ollama_cid" ]; then
+  # `|| echo 0` used to live on this line. When `docker exec` failed, `loaded`
+  # became the two-line string "0\n0", the numeric test below errored with
+  # 'integer expected', and — because it is an `if` condition, where `set -e`
+  # does not apply — the script carried straight on to a 4 GB build believing
+  # nothing was resident. An instrument that cannot read must say so, not
+  # answer zero.
+  if ! raw=$(docker exec "$ollama_cid" ollama ps 2>&1); then
+    red "Cannot read Ollama state: $raw"
+    red "Refusing to start a 4 GB build without knowing whether a model is resident."
+    exit 1
   fi
+  loaded=$(printf '%s\n' "$raw" | tail -n +2 | grep -c . || true)
+  case "$loaded" in
+    '' | *[!0-9]*)
+      red "Unparseable 'ollama ps' output, refusing to guess:"
+      printf '%s\n' "$raw" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$loaded" -gt 0 ]; then
+    yellow "Ollama is holding $loaded model(s) resident; unloading before the build."
+    # Names come from the output already read above, not from a second call:
+    # one read, no race with a request that loads a model in between.
+    #
+    # Do NOT reach for `ollama ps --format` here. That is Docker's syntax, not
+    # Ollama's — `ollama ps` takes no flags but -h, and the earlier version of
+    # this line died with `unknown flag: --format`, silently unloading nothing
+    # while printing the message above. Same mistake as the container name it
+    # replaced: a plausible-looking command nobody ran.
+    printf '%s\n' "$raw" | tail -n +2 | awk 'NF {print $1}' | while read -r model; do
+      docker exec "$ollama_cid" ollama stop "$model" \
+        || yellow "  could not stop $model"
+    done
+
+    # Verify rather than assume. The message above was printed for a day by a
+    # command that did nothing.
+    still=$(docker exec "$ollama_cid" ollama ps 2>/dev/null | tail -n +2 | grep -c . || true)
+    case "$still" in
+      0) green "  unloaded; nothing resident." ;;
+      *) yellow "  $still model(s) still resident after the unload — the memory check below is what protects the build." ;;
+    esac
+  fi
+fi
+
+# Second, independent layer. The unload above can be skipped (no localmodel
+# profile), can fail, or can race a request that reloads the model — so the one
+# number that actually decides the outcome is read directly, immediately before
+# the build. 3584 MB is the measured peak, not the 4096 MB ceiling: MemAvailable
+# is a conservative kernel estimate and a floor at the ceiling would refuse
+# builds that would have succeeded.
+min_avail=${CODEGRAPH_MIN_AVAIL_MB:-3584}
+avail_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || true)
+if [ -z "$avail_kb" ]; then
+  yellow "Cannot read MemAvailable from /proc/meminfo; proceeding without the memory check."
+else
+  avail_mb=$((avail_kb / 1024))
+  if [ "$avail_mb" -lt "$min_avail" ]; then
+    red "Only ${avail_mb} MB available; the build has measured a ${min_avail} MB peak."
+    red "Refusing rather than letting the kernel pick a victim by RSS."
+    docker stats --no-stream --format '  {{.Name}}  {{.MemUsage}}' 2>/dev/null | sort -k2 -h -r | head -5 >&2 || true
+    exit 1
+  fi
+  green "${avail_mb} MB available (need ${min_avail} MB)."
 fi
 
 commit=$(head_commit)
