@@ -100,9 +100,26 @@ if [ -n "$ollama_cid" ]; then
   esac
   if [ "$loaded" -gt 0 ]; then
     yellow "Ollama is holding $loaded model(s) resident; unloading before the build."
-    docker exec "$ollama_cid" sh -c \
-      'ollama ps --format "{{.Name}}" 2>/dev/null | while read -r m; do [ -n "$m" ] && ollama stop "$m"; done' \
-      || yellow "Unload command failed; the memory check below is what actually protects the build."
+    # Names come from the output already read above, not from a second call:
+    # one read, no race with a request that loads a model in between.
+    #
+    # Do NOT reach for `ollama ps --format` here. That is Docker's syntax, not
+    # Ollama's — `ollama ps` takes no flags but -h, and the earlier version of
+    # this line died with `unknown flag: --format`, silently unloading nothing
+    # while printing the message above. Same mistake as the container name it
+    # replaced: a plausible-looking command nobody ran.
+    printf '%s\n' "$raw" | tail -n +2 | awk 'NF {print $1}' | while read -r model; do
+      docker exec "$ollama_cid" ollama stop "$model" \
+        || yellow "  could not stop $model"
+    done
+
+    # Verify rather than assume. The message above was printed for a day by a
+    # command that did nothing.
+    still=$(docker exec "$ollama_cid" ollama ps 2>/dev/null | tail -n +2 | grep -c . || true)
+    case "$still" in
+      0) green "  unloaded; nothing resident." ;;
+      *) yellow "  $still model(s) still resident after the unload — the memory check below is what protects the build." ;;
+    esac
   fi
 fi
 
