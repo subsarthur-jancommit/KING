@@ -199,8 +199,11 @@ except Exception:
 ch = (d.get('choices') or [{}])[0]
 msg = ch.get('message') or {}
 c = (msg.get('content') or '').strip()
-# A reasoning model that ran out of budget produced text, just not in `content`.
-# Count it: it proves the route works, which is what this step is for.
+# A reasoning model that ran out of budget produced text, just not under
+# the content key. Count it: it proves the route works, which is the job
+# of this step. Note: no backticks anywhere inside these python3 -c blocks --
+# they sit in a double-quoted bash string, so bash runs them as command
+# substitution. That printed 'content: command not found' for a while.
 if not c and (msg.get('reasoning') or '').strip():
     c = '[reasoning]'
 print(c.replace(chr(10), ' ')[:18])
