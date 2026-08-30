@@ -28,10 +28,11 @@ Trigger.dev, Temporal, Kestra, Camunda, dan Botpress:
 
 ## Postgres dan Redis ada di luar VPS
 
-Ini keputusan yang membuat profil ini hanya menambah **satu** container.
+Ini keputusan yang membuat profil ini hanya menambah **dua** container.
 Compose resmi Activepieces menjalankan app + 5 worker + Postgres + Redis;
-di sini Postgres diarahkan ke [Neon](https://neon.com) dan Redis ke
-[Upstash](https://upstash.com), keduanya tier gratis tanpa kartu kredit.
+di sini Postgres diarahkan ke [Neon](https://neon.com) tier gratis, sementara
+Redis berjalan lokal sebagai `ap-redis` — lihat di bawah kenapa Redis tidak
+bisa ikut dipindah ke tier gratis.
 
 Satu container sudah cukup karena `AP_CONTAINER_TYPE` secara default bernilai
 `WORKER_AND_APP` — pemisahan app/worker upstream adalah pola horizontal-scale
@@ -48,14 +49,35 @@ Catatan: Neon auto-suspend setelah ±5 menit idle, jadi query pertama setelah
 menganggur kena cold start beberapa ratus milidetik sampai ~2 detik. Untuk
 beban workflow ini tidak masalah.
 
-### Upstash
+### Redis — lokal, dan kenapa bukan Upstash
 
-Buat database Redis, salin host, port, dan password. Upstash berbicara
-protokol RESP standar sehingga dipakai langsung tanpa SDK khusus.
+Redis berjalan sebagai container `ap-redis` di profil `workflow`. Biayanya
+**4,3 MB RAM** dan ia tidak bisa kehabisan apa pun.
 
-Kuota gratisnya dihitung **per command**, bukan per volume data. Flow yang
-sangat sering polling bisa menghabiskannya lebih cepat dari dugaan — pantau
-lewat dashboard Upstash kalau mulai banyak flow terjadwal.
+Sebelumnya ia diarahkan ke Upstash, dan itu **menjatuhkan seluruh mesin
+workflow selama 14 jam pada 2026-08-29**. Bagian yang paling layak dipelajari:
+dokumen ini **sudah menuliskan penyebabnya** sebelum kejadian — bahwa kuota
+Upstash dihitung per command dan flow yang sering polling bisa
+menghabiskannya — lalu menyimpulkan "pantau dashboard-nya". Kesimpulan itu
+salah dua kali: tidak ada yang memantau, dan yang mem-polling bukan flow Anda
+melainkan **worker BullMQ**, terus-menerus, ada flow yang jalan atau tidak.
+
+Angkanya: 500.000 request sebulan ≈ **11,5 perintah per menit**. Sebuah
+worker antrean yang menganggur pun melewatinya. Jadi batas itu bukan fungsi
+dari seberapa banyak Anda memakainya — tercapainya hanya soal waktu.
+
+Saat tercapai, tidak ada yang terlihat rusak: semua flow berhenti, tapi
+container tetap `healthy` selama 39 jam karena healthcheck-nya menjawab dari
+API, dan API tidak butuh antrean. 454.605 baris error identik mengisi log
+sampai 376 MB.
+
+**Aturan yang bisa dibawa ke keputusan berikutnya: offload yang ditagih per
+UKURAN, bukan yang ditagih per PANGGILAN.** Neon tetap dipakai justru karena
+batasnya penyimpanan — sesuatu yang dikonsumsi mesin workflow dengan lambat
+(211 MB dari 500 MB setelah berminggu-minggu). Preflight sekarang memberi
+peringatan kalau `AP_REDIS_HOST` bukan `ap-redis`; peringatan, bukan
+kegagalan, karena Redis terkelola **berbayar** adalah pilihan yang baik —
+yang tidak sanggup memegang antrean adalah tier gratisnya.
 
 ## Konfigurasi
 
@@ -230,7 +252,7 @@ opsional.
   saat melakukannya. Pengerasan yang belum teruji dan rusak saat runtime lebih
   buruk daripada tidak sama sekali.
 - `activepieces/.env` ikut dimask (`/dev/null`) di mount OpenHands Canvas,
-  karena berisi kredensial Neon dan Upstash.
+  karena berisi kredensial Neon.
 
 ## Menaikkan versi
 
@@ -243,8 +265,7 @@ verifikasi di atas.
 
 ## Belum diverifikasi
 
-Konfigurasi ini divalidasi secara statis (`docker compose config` terhadap
-model gabungan, dan setiap jalur `check_workflow()` di preflight diuji satu
-per satu). Yang **belum** dibuktikan karena butuh VPS hidup dengan akun Neon
-dan Upstash sungguhan: boot pertama, migrasi skema Activepieces ke Neon, dan
-langkah manual AI Provider di atas.
+Semuanya sudah terbukti live di VPS, bukan sekadar divalidasi statis: boot,
+migrasi skema ke Neon, eksekusi flow, dan pemulihan setelah Redis dipindah ke
+lokal (container sehat dalam 35 detik, nol error Upstash, flow uji SUCCEEDED
+dalam 34,9 detik).
