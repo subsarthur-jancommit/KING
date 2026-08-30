@@ -1,0 +1,37 @@
+# Dead-man's switch for gateway_monitor. Paired with monitor-deadman.timer.
+#
+# Deliberately NOT an Activepieces flow. A third flow watching the other two
+# would share their fate — and their fate, on 2026-08-29, was 14 hours 19
+# minutes of silence that nobody saw. This reads Postgres, which is external to
+# every container here, so it survives the engine being gone.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/monitor-deadman.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now monitor-deadman.timer
+#   sudo loginctl enable-linger "$USER"
+#
+# When it fires, the unit FAILS. That is the signal of last resort:
+#   systemctl --user --failed
+#   journalctl --user -u monitor-deadman -n 30
+#   cat ~/.king-monitor-deadman
+
+[Unit]
+Description=Check that gateway_monitor is still running
+Documentation=file:%h/KING/docs/integrations/reliability-plan.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/KING
+ExecStart=%h/KING/scripts/monitor-deadman.sh --quiet
+
+# Set these to also post to the gateway_alerts webhook, which reaches you when
+# the flow has stopped but Activepieces is still serving. It cannot help when
+# the engine itself is down, which is why the failing unit above is the
+# primary signal rather than this.
+#   Environment=MONITOR_ALERT_URL=https://flows.arject.co/api/v1/webhooks/...
+#   Environment=MONITOR_ALERT_SECRET=...
+
+TimeoutStartSec=3min
+Nice=5

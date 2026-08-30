@@ -542,17 +542,25 @@ services:
     volumes:
       - ollama-models:/root/.ollama
     environment:
-      # Measured on this host: a triage prompt answers in 12.5 s including a
-      # cold load, and the model holds 2.1 GB while resident.
+      # -1, reversing the 0 this shipped with for a day. The reasoning behind 0
+      # was that RAM is scarcer here than seconds; measurement showed seconds
+      # were not the cost either way, and that 0 made the model unusable.
       #
-      # 0, not -1, and not 5m. 5m is the worst of both — frequent callers pay
-      # the RAM anyway, infrequent ones pay a cold load anyway, and callers at
-      # roughly five-minute spacing pay load/unload churn. Between the two real
-      # options, RAM is scarcer here than seconds: codegraph-build needs 4 GB
-      # and this host has ~5 GB free, so a permanently resident 2.1 GB model
-      # would collide with it. Set -1 if triage ever becomes frequent enough
-      # that the load cost dominates.
-      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-0}
+      # With the model RESIDENT, 12 calls through OmniRoute measured a median of
+      # 2.1 s and a maximum of 2.2 s. With KEEP_ALIVE=0 the same calls took
+      # 11.6-12.5 s warm and 29 s cold, against OmniRoute's 15 s
+      # RATE_LIMIT_MAX_WAIT_MS — so every call was one queue hiccup from a 504,
+      # and cold ones were impossible rather than merely slow.
+      #
+      # Note what that also corrects: the 9-second gap between "direct to
+      # Ollama" and "through the gateway" was never gateway overhead. It was the
+      # model being loaded from disk on each call. The gateway adds almost
+      # nothing.
+      #
+      # Not 5m, which remains the worst of the three: frequent callers pay the
+      # RAM anyway, infrequent ones pay the load anyway, and callers spaced near
+      # five minutes pay load/unload churn.
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
       - OLLAMA_MAX_LOADED_MODELS=1
       - OLLAMA_NUM_PARALLEL=1
       # Default is 512. At ~12 s per request that means the hundredth caller
@@ -565,7 +573,11 @@ services:
       - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-4096}
       # Read by the healthcheck below. Must match what ollama-pull fetches, or
       # the healthcheck asserts a model that was never pulled.
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct-q4_K_M}
+      # 1.5b, not 3b. The 3b answered in 13 s direct but returned 504 through
+      # the gateway twice, and its accuracy on the one task this was built for
+      # was no better. 1.5b holds 1.126 GB resident against 3b's 2.1 GB, which
+      # is what makes coexistence with the 4 GB codegraph build tolerable.
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:1.5b-instruct-q4_K_M}
     healthcheck:
       # Asserts the MODEL, not the port. `ollama serve` answers happily with
       # zero models pulled, and OmniRoute will then save a connection that
@@ -573,7 +585,14 @@ services:
       # shape this deployment has hit three times.
       test:
         - CMD-SHELL
-        - ollama list | grep -q "$${OLLAMA_MODEL%%:*}" || exit 1
+        # The exact tag. This used to strip everything after the colon, so
+        # `qwen2.5:3b-instruct-q4_K_M` became the literal `qwen2.5` and matched
+        # ANY qwen2.5 tag — with two pulled on this host, pointing OLLAMA_MODEL
+        # at a tag that was never fetched would have produced a healthy
+        # container that 404s every request. Exactly the shape the line exists
+        # to prevent. Verified against real `ollama list` output, which prints
+        # the tag unmodified.
+        - ollama list | grep -q "$${OLLAMA_MODEL}" || exit 1
       interval: 30s
       timeout: 10s
       retries: 3
@@ -581,9 +600,11 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
-    # Measured: 2.117 GiB resident with qwen2.5:3b-instruct-q4_K_M loaded.
-    mem_limit: ${OLLAMA_MEM_LIMIT:-2560m}
-    memswap_limit: ${OLLAMA_MEM_LIMIT:-2560m}
+    # Measured: 1.126 GiB resident with qwen2.5:1.5b-instruct-q4_K_M loaded and
+    # KEEP_ALIVE=-1. 1536m leaves roughly a third in hand for the KV cache at
+    # the pinned 4096 context.
+    mem_limit: ${OLLAMA_MEM_LIMIT:-1536m}
+    memswap_limit: ${OLLAMA_MEM_LIMIT:-1536m}
     # 1.0, not 1.5. On 2 vCPU, 1.5 leaves 0.5 for the gateway, the workflow
     # engine, Caddy and dockerd together — and OmniRoute's healthcheck times
     # out in 5 seconds.
