@@ -1,0 +1,15 @@
+[Unit]
+Description=Check every 15 minutes that gateway_monitor is still running
+Documentation=file:%h/KING/docs/integrations/reliability-plan.md
+
+[Timer]
+# Every 15 minutes, offset from the monitor's own schedule so a check never
+# lands in the same instant as the run it is checking for.
+OnCalendar=*:07,22,37,52
+# A missed check after a reboot must catch up: a reboot is one of the ways the
+# thing being watched stops.
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

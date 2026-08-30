@@ -187,26 +187,39 @@ nol":
 - Aturan umum yang berlaku ke depan: perintah yang mengukur tidak boleh berada di
   hulu pipe yang menelan exit code-nya.
 
-### S3 — Naikkan batas yang membuat model lokal mustahil, atau akui ia tidak terpakai
+### S3 — Buat model lokal benar-benar terpakai: residen, dan 1,5B
 
-**Berikutnya.** Ini prasyarat untuk **pemakaian model lokal apa pun** lewat
-gateway, bukan detail `gateway_monitor`. Pilih secara sadar:
+**SELESAI 2026-08-30, dan lebih murah dari kedua opsi yang saya tawarkan.**
 
-- naikkan `RATE_LIMIT_MAX_WAIT_MS` ke 60000 **dan** setel `OLLAMA_KEEP_ALIVE=-1`
-  supaya tidak ada cold load — dengan konsekuensi 2,1 GB residen permanen, yang
-  bertabrakan langsung dengan 4 GB milik `codegraph-build` dan menjadikan guard
-  di S2 wajib, bukan sekadar rapi; **atau**
-- terima bahwa `ollama/*` hanya cocok untuk pemanggil yang tahan angka 504 tinggi.
+Rencana ini menawarkan dua pilihan: naikkan `RATE_LIMIT_MAX_WAIT_MS` ke 60000,
+atau akui `ollama/*` tidak terpakai. Pengukuran menunjukkan **tidak satu pun
+diperlukan.**
 
-**Jangan** ambil opsi ketiga — memintas OmniRoute langsung ke `http://ollama:11434`.
-Itu memang memangkas ~9 detik, tapi satu-satunya alasan kegagalan model lokal
-pernah terlihat adalah sembilan 504-nya mendarat di `call_logs`, yang dibaca
-`gateway_monitor`. Memintasnya berarti tidak ada baris `call_logs`, tidak ada span
-Langfuse, dan tidak ada atribusi `api_key_name`.
+Dengan model **residen** (`OLLAMA_KEEP_ALIVE=-1`), 12 panggilan lewat OmniRoute
+dengan prompt yang berbeda-beda menghasilkan **median 2,1 detik, maksimum 2,2
+detik** — margin tujuh kali lipat terhadap batas 15 detik. Tidak ada satu pun
+yang gagal.
+
+Itu sekaligus **membatalkan klaim saya sendiri** bahwa OmniRoute menambah ~9
+detik. Selisih antara "langsung ke Ollama" dan "lewat gateway" yang saya
+laporkan bukan overhead gateway sama sekali — itu model yang dimuat ulang dari
+disk pada setiap panggilan, karena `KEEP_ALIVE=0`. Gateway-nya nyaris tidak
+menambah apa pun, dan memintasnya tidak akan membeli apa-apa.
+
+Perubahannya: model **1,5B** (bukan 3B, yang 504 dua kali lewat gateway dan
+tidak lebih akurat), `KEEP_ALIVE=-1`, `mem_limit` turun dari 2560m ke **1536m**
+karena residennya terukur **1,126 GiB**, bukan 2,1 GB.
+
+Satu instrumen hampir menipu saya lagi di sini. Pengukuran pertama memakai
+prompt identik dua belas kali dan melaporkan median **0,0 detik** — itu cache
+OmniRoute menjawab, bukan model. Angka di atas dari prompt yang seluruhnya unik.
+
+Yang **tidak** berubah: keduabelas jawabannya tetap `CRITICAL`. Kecepatan
+beres; akurasi tidak, dan itu independen. Lihat S5.
 
 ### S4 — Dead-man's switch untuk monitor
 
-**Berikutnya.** `gateway_monitor` menulis heartbeat setiap run, dan sesuatu **di
+**SELESAI 2026-08-30.** Membaca Postgres, bukan Activepieces. `gateway_monitor` menulis heartbeat setiap run, dan sesuatu **di
 luar Activepieces** — cron host — memberi tahu kalau heartbeat lebih tua dari
 ~35 menit.
 

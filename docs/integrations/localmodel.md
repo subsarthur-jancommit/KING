@@ -33,9 +33,9 @@ Semua dari VPS ini (2 vCPU AMD EPYC 7B12, 7,8 GB, tanpa GPU):
 
 | | |
 |---|---|
-| Latensi prompt triage nyata | **12,5 detik**, sudah termasuk cold load. Jawabannya benar. |
-| Memori saat model residen | **2,117 GiB** → `mem_limit: 2560m` |
-| Ukuran model | 1,9 GB (`qwen2.5:3b-instruct-q4_K_M`) |
+| Latensi, model **residen** | **median 2,1 detik**, maks 2,2 (12 panggilan, prompt unik) |
+| Memori saat model residen | **1,126 GiB** (1,5B) → `mem_limit: 1536m` |
+| Ukuran model | 986 MB (`qwen2.5:1.5b-instruct-q4_K_M`) |
 | Waktu tarik model | 17 detik |
 | **Ukuran image ollama** | **8,45 GB** |
 
@@ -48,9 +48,20 @@ jadi ini muat — tapi build cache tumbuh lagi setiap kali OmniRoute dibangun.
 Karena itu preflight untuk profil ini menuntut **12 GB** dan menyebutkan
 perintah itu.
 
-Latensi 12,5 detik jauh lebih baik dari perkiraan awal saya (55–60 detik dari
-aritmetika token/detik). Aritmetika itu mengabaikan bahwa prompt triage pendek
-dan jawabannya satu kata — prefill-lah yang dominan, bukan generasi.
+Dua koreksi terhadap angka yang pernah saya tulis di dokumen ini.
+
+Perkiraan awal 55–60 detik (dari aritmetika token/detik) mengabaikan bahwa prompt
+triage pendek dan jawabannya satu kata — prefill yang dominan, bukan generasi.
+
+Lalu saya melaporkan "~9 detik overhead OmniRoute", dari selisih 2,9 detik
+langsung ke Ollama versus 11,6–12,5 detik lewat gateway. **Itu salah.** Selisih
+itu adalah model yang dimuat ulang dari disk setiap panggilan karena
+`KEEP_ALIVE=0`. Dengan model residen, lewat gateway justru **2,1 detik** —
+gateway-nya nyaris tidak menambah apa pun.
+
+Satu instrumen hampir menipu saya saat mengukurnya: dua belas panggilan dengan
+prompt identik melaporkan median 0,0 detik, karena cache OmniRoute yang
+menjawab. Angka di atas dari prompt yang seluruhnya unik.
 
 ## Menjalankan
 
@@ -88,7 +99,7 @@ Kunci sementara yang dipakainya dihapus bahkan saat gagal.
 
 | Setelan | Nilai | Alasan |
 |---|---|---|
-| `OLLAMA_KEEP_ALIVE` | **`0`** | Bukan `-1`, dan sangat bukan `5m`. `5m` adalah nilai terburuk: pemanggil sering tetap membayar RAM, pemanggil jarang tetap membayar cold load, dan pemanggil berjarak ~5 menit membayar churn load/unload. Antara dua pilihan jujur, di host ini RAM lebih langka daripada detik — `codegraph-build` butuh 4 GB sementara sisa RAM ~5 GB, jadi model residen 2,1 GB akan bertabrakan. Setel `-1` kalau triage jadi cukup sering sehingga biaya load mendominasi. |
+| `OLLAMA_KEEP_ALIVE` | **`-1`** | Membalik `0` yang sempat dipakai sehari. Alasan `0` adalah RAM lebih langka daripada detik; pengukuran menunjukkan detik bukan biayanya juga, dan `0` justru membuat modelnya **tidak terpakai**: setiap panggilan dingin (29 detik) melawan batas 15 detik OmniRoute. Residen = 2,1 detik. Tetap bukan `5m`, yang terburuk dari ketiganya. Biaya: 1,126 GiB permanen selama profil ini menyala. |
 | `OLLAMA_MAX_QUEUE` | **`2`** | Default 512. Pada ~12 detik per permintaan, antrean 512 berarti pemanggil ke-100 menunggu 20 menit alih-alih ditolak cepat — dan flow yang retry saat timeout persis yang mengisi antrean. |
 | `OLLAMA_CONTEXT_LENGTH` | **`4096`** | KV cache tumbuh linear terhadap konteks. Tanpa dipin, `mem_limit` bukan angka yang dipilih siapa pun, melainkan apa pun yang diminta pemanggil, dibatasi OOM killer. |
 | `cpus` | **`1.0`** | Bukan 1.5. Di 2 vCPU, 1.5 menyisakan 0,5 untuk gateway, Activepieces, Caddy, dan dockerd bersama-sama — sementara healthcheck OmniRoute timeout dalam 5 detik. |
