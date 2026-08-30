@@ -626,7 +626,12 @@ services:
         ollama list
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct-q4_K_M}
+      # MUST match the `ollama` service default above. It did not: this said
+      # 3b while the server said 1.5b, and with OLLAMA_MODEL unset in .env a
+      # fresh deploy would pull 3b, then fail a healthcheck that greps for
+      # 1.5b — forever, having spent 2 GB of a disk that is already 62% full.
+      # The running host never showed it because 1.5b was pulled by hand.
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:1.5b-instruct-q4_K_M}
     depends_on:
       - ollama
     restart: "no"
