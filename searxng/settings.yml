@@ -38,13 +38,44 @@ search:
   safe_search: 0
 
 engines:
-  # Engines that demand an API key of their own, or that block datacentre IPs
-  # outright, would each add a failing upstream to every query and slow the
-  # whole search to their timeout. DuckDuckGo is disabled for exactly the
-  # reason this file exists: it answers this VPS with a CAPTCHA challenge
-  # ("select all squares containing a duck"), measured, not assumed.
+  # Which engines answer a datacentre IP is not a matter of opinion, so each
+  # line below is a measured result, not a preference. Surveyed 2026-08-30 by
+  # querying every engine individually from inside this container:
+  #
+  #   answered  : brave 20, github 30, stackoverflow 10, bing 10, yahoo 7
+  #   CAPTCHA   : google (plain), duckduckgo, startpage, qwant
+  #   refused   : mojeek ("access denied")
+  #
+  # A blocked engine is not free to leave enabled: every query waits on it
+  # until `request_timeout`, and SearXNG then suspends it, which is why the
+  # first survey wrongly showed brave as permanently dead when it works fine.
+  #
+  # Note `google cse` — Google Programmable Search, which does answer — is a
+  # different engine from plain `google` scraping, which does not.
   - name: duckduckgo
     disabled: true
+  - name: google
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: qwant
+    disabled: true
+  - name: mojeek
+    disabled: true
+
+  # The working set. Keeping several matters more than picking the best one:
+  # before this, every result came from a single engine, so one more block
+  # would have taken web search out entirely.
+  - name: brave
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: github
+    disabled: false
+  - name: stackoverflow
+    disabled: false
   - name: wikidata
     disabled: false
 
