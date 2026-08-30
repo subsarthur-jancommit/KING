@@ -296,6 +296,8 @@ services:
     depends_on:
       omniroute-base:
         condition: service_healthy
+      ap-redis:
+        condition: service_healthy
     restart: unless-stopped
     # Deliberately no `no-new-privileges`, for the same reason it is absent on
     # openhands-agent-canvas: this is a third-party image that installs piece
@@ -355,6 +357,50 @@ services:
     logging: *default-logging
     profiles:
       - proxy
+
+  # Activepieces' job queue. Local, because a hosted free tier cannot hold it.
+  #
+  # This profile originally pointed AP_REDIS_HOST at Upstash, on the reasoning
+  # that offloading Postgres and Redis made the profile cost one container
+  # instead of four. Half of that reasoning was wrong, and it failed in
+  # production on 2026-08-29: Upstash's free tier caps total REQUESTS at
+  # 500,000 per month — about 11.5 commands a minute — while a BullMQ worker
+  # polls its queue continuously whether or not any flow is running. The cap
+  # was reached, every flow stopped, and the container went on reporting
+  # `healthy` for 14 hours while logging 454,605 identical errors.
+  #
+  # Neon stays: its free tier limits storage, not requests, and storage is
+  # something a workflow engine uses slowly (211 MB of 500 MB after weeks).
+  # The distinction is the whole lesson — offload what is billed by size, not
+  # what is billed by call.
+  #
+  # Measured cost of running it here: 4.3 MB of RAM.
+  ap-redis:
+    image: redis:8.6.5-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # No persistence on purpose. This holds an in-flight job queue, not state:
+    # the schedule that matters re-fires every 15 minutes, and durable queue
+    # history already lives in Postgres. Persistence would buy disk churn.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    # No published ports: reachable only from inside the compose network.
+    # Deliberately NOT named `redis` — omniroute/docker-compose.yml already
+    # defines a service by that name, and compose merges by service name, so a
+    # bare `redis` here would silently graft onto OmniRoute's rate limiter
+    # instead of creating a second instance.
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${AP_REDIS_MEM_LIMIT:-256m}
+    memswap_limit: ${AP_REDIS_MEM_LIMIT:-256m}
+    cpus: ${AP_REDIS_CPUS:-0.5}
+    logging: *default-logging
+    profiles:
+      - workflow
 
   # Code knowledge graph, built here and served to both the laptop and the
   # workflow engine over MCP. See docs/integrations/codegraph.md.

@@ -133,14 +133,23 @@ OmniRoute serves a native Anthropic Messages API at `/v1/messages`. See
 OmniRoute routes model calls; it does not schedule anything or react to
 outside events. The `workflow` profile adds [Activepieces](https://www.activepieces.com)
 (MIT) for that — triggers, branching, retries and run history — with OmniRoute
-still the only path out to a model. Its Postgres and Redis point at Neon and
-Upstash free tiers, so it costs one container rather than four:
+still the only path out to a model. Postgres points at Neon's free tier and
+Redis runs locally, so it costs two containers rather than four:
 
 ```bash
-cp activepieces/.env.example activepieces/.env   # fill in Neon + Upstash
+cp activepieces/.env.example activepieces/.env   # fill in Neon
 ./scripts/stax-preflight.sh base workflow
 docker compose --profile base --profile workflow up -d
 ```
+
+Redis is local for a reason worth borrowing: **offload what is billed by size,
+not what is billed by call.** Redis originally pointed at Upstash's free tier,
+which caps total requests at 500k/month — about 11.5 commands a minute — while
+a BullMQ worker polls its queue continuously whether or not a flow is running.
+It ran out, every flow stopped for 14 hours, and the container reported
+`healthy` throughout because its healthcheck answers from the API and the API
+does not need the queue. Neon stays because its limit is storage, which a
+workflow engine consumes slowly.
 
 The `agent-sidecar-http` profile completes the loop: it serves the existing
 smolagents and pydantic-ai runners over HTTP (`POST /run`) so a workflow step

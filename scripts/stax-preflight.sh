@@ -247,10 +247,26 @@ check_workflow() {
     pass "AP_POSTGRES_URL is set."
   fi
 
-  if [ -z "$(lookup AP_REDIS_HOST activepieces/.env)" ]; then
-    fail "AP_REDIS_HOST is unset — point it at your Upstash database."
+  local redis_host
+  redis_host=$(lookup AP_REDIS_HOST activepieces/.env)
+  if [ -z "$redis_host" ]; then
+    fail "AP_REDIS_HOST is unset — point it at the local ap-redis service."
+  elif [ "$redis_host" = "ap-redis" ]; then
+    pass "AP_REDIS_HOST points at the local ap-redis service."
   else
-    pass "AP_REDIS_HOST is set."
+    # Learned the expensive way on 2026-08-29. Upstash's free tier caps total
+    # REQUESTS at 500,000 a month — about 11.5 commands a minute — and a BullMQ
+    # worker polls its queue continuously whether or not a flow is running. The
+    # cap was hit, every flow stopped for 14 hours, and the container reported
+    # `healthy` throughout while logging 454,605 identical errors.
+    #
+    # This is a warning rather than a failure because a PAID hosted Redis is a
+    # perfectly good choice. It is the free tiers that cannot hold a job queue.
+    warn "AP_REDIS_HOST=$redis_host is not the local ap-redis service."
+    echo "         A request-capped free tier cannot hold a BullMQ queue: the worker polls"
+    echo "         continuously, and 500k requests/month is ~11.5 per minute. When it runs"
+    echo "         out, flows stop silently and the container still reports healthy."
+    echo "         Offload what is billed by SIZE (Neon/Postgres), not by CALL (Redis)."
   fi
 
   # Upstream issue #4857: AP_REDIS_USE_SSL=false still negotiates TLS. Only

@@ -1,11 +1,16 @@
 # CI-only overlay: throwaway Postgres and Redis for the `workflow` profile.
 #
-# A real deployment points AP_POSTGRES_URL and AP_REDIS_HOST at Neon and
-# Upstash (see docs/integrations/activepieces-workflow.md) — that is the whole
-# reason the profile costs one container instead of four. CI has no accounts
-# and no secrets to reach them with, so it stands up local equivalents instead
-# and proves everything else: that the image boots, migrates its schema,
-# serves its API, and can reach OmniRoute over the compose network.
+# A real deployment points AP_POSTGRES_URL at Neon (see
+# docs/integrations/activepieces-workflow.md). CI has no account and no secret
+# to reach it with, so it stands up a local equivalent and proves everything
+# else: that the image boots, migrates its schema, serves its API, and can
+# reach OmniRoute over the compose network.
+#
+# Redis is NOT here any more. It used to be, back when a real deployment
+# pointed AP_REDIS_HOST at Upstash and only CI needed a local one. Upstash's
+# free tier caps total requests rather than storage, which a continuously
+# polling BullMQ worker exhausts, so the root compose file now runs ap-redis
+# for every deployment — CI included.
 #
 # Used only by .github/workflows/stax-smoke.yml:
 #   docker compose -f docker-compose.yml -f activepieces/docker-compose.ci.yml \
@@ -28,16 +33,6 @@ services:
     # the lifetime of one CI job.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U activepieces -d activepieces"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    profiles:
-      - workflow
-
-  ap-redis:
-    image: redis:7-alpine
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 20
