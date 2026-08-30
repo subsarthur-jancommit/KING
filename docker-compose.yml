@@ -12,29 +12,29 @@ include:
   - path: omniroute/docker-compose.yml
   - path: observability/docker-compose.langfuse.yml
 
+# Docker's default json-file driver has NO size cap, so a chatty container
+# fills the disk until the host stops working — a failure that arrives as
+# "everything broke at once" rather than as anything pointing at logs. This
+# host has 20 GB free. Every service defined below carries this; the vendored
+# omniroute/ and observability/ files are left alone under the never-edit rule.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
-  # Override on the service that omniroute/docker-compose.yml defines — not a
-  # second copy of it. Compose merges by service name, so this adds one mount
-  # and leaves everything else in the vendored file untouched, which keeps the
-  # `omniroute/ is never edited` rule intact across `git subtree pull`.
+  # NOTE: this file deliberately declares NO service that omniroute/ already
+  # defines. The Compose spec is explicit that an including file cannot
+  # override an included resource, and a partial `omniroute-base:` override
+  # here — added to mount a plugins directory and pass two OTel variables —
+  # turned every Docker CI job red with
+  # `services.omniroute-base conflicts with imported resource`.
   #
-  # Gateway plugins load from $HOME/.omniroute/plugins
-  # (omniroute/src/lib/plugins/scanner.ts), and HOME is /home/node — outside
-  # the only existing mount (/app/data). Without this, an installed plugin
-  # disappears on the next `up --force-recreate`, silently and with no error,
-  # exactly the way the API keys did before omniroute/data was fixed.
-  #
-  # Empty and unused until someone installs a plugin, so it costs nothing to
-  # carry. See docs/integrations/observability.md.
-  omniroute-base:
-    volumes:
-      - ./omniroute/plugins:/home/node/.omniroute/plugins
-    environment:
-      # Empty by default, which leaves the exporter disabled (otel.ts gates on
-      # a non-empty value). Set it to http://otel-collector:4318 together with
-      # the `tracing` profile to start emitting.
-      - OMNIROUTE_OTEL_ENDPOINT=${OMNIROUTE_OTEL_ENDPOINT:-}
-      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-omniroute}
+  # It went unnoticed because Compose v5.3+ accepts it and the VPS runs v5.5,
+  # so it worked in both places a human looked. Anything OmniRoute needs goes
+  # in omniroute/.env (the vendored file reads it via `env_file: .env`), not
+  # in a redeclaration here.
 
   # Auth shim between OmniRoute and Langfuse, nothing more.
   #
@@ -67,6 +67,7 @@ services:
       - no-new-privileges:true
     mem_limit: ${OTEL_COLLECTOR_MEM_LIMIT:-256m}
     cpus: ${OTEL_COLLECTOR_CPUS:-0.5}
+    logging: *default-logging
     profiles:
       - tracing
 
@@ -108,6 +109,7 @@ services:
     # hit real OOM behaviour building this same stack. Bound it explicitly.
     mem_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
     cpus: ${AGENT_SIDECAR_CPUS:-1.0}
+    logging: *default-logging
     profiles:
       - agent-sidecar
 
@@ -151,6 +153,11 @@ services:
       - /dev/null:/projects/king/observability/.env:ro
       - /dev/null:/projects/king/agent-sidecar/.env:ro
       - /dev/null:/projects/king/activepieces/.env:ro
+      # Not a .env, and that is exactly why it was missed. Claude Code appends
+      # `permissions.allow` entries to this file verbatim, so whole commands —
+      # including a live Neon connection string with its password — accumulate
+      # in it in plaintext.
+      - /dev/null:/projects/king/.claude/settings.local.json:ro
       # Deliberately left unmounted, as a settled decision rather than a
       # cautious default. Uncommenting this lets Agent Canvas spawn per-task
       # sandbox containers (upstream's safer runtime), but a container that
@@ -197,6 +204,7 @@ services:
     # Untested hardening that breaks at runtime is worse than none.
     mem_limit: ${OPENHANDS_CANVAS_MEM_LIMIT:-2g}
     cpus: ${OPENHANDS_CANVAS_CPUS:-2.0}
+    logging: *default-logging
     profiles:
       - openhands
 
@@ -251,6 +259,7 @@ services:
       - no-new-privileges:true
     mem_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
     cpus: ${AGENT_SIDECAR_CPUS:-1.0}
+    logging: *default-logging
     profiles:
       - agent-sidecar-http
 
@@ -297,6 +306,7 @@ services:
     cpus: ${AP_CPUS:-1.0}
     volumes:
       - activepieces-cache:/usr/src/app/cache
+    logging: *default-logging
     profiles:
       - workflow
 
@@ -342,11 +352,225 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    logging: *default-logging
     profiles:
       - proxy
+
+  # Code knowledge graph, built here and served to both the laptop and the
+  # workflow engine over MCP. See docs/integrations/codegraph.md.
+  #
+  # Two services, one image, the way agent-sidecar does it — but unlike that
+  # pair these two share mutable state with an ordering requirement, so serve
+  # deliberately does NOT depend_on build: a `service_completed_successfully`
+  # condition would make every `up` wait out a four-minute extraction, and a
+  # failed build would leave serve down for good. Refreshes are the timer's
+  # job (scripts/codegraph-refresh.sh), not compose's.
+  codegraph-build:
+    build: ./codegraph
+    image: king-codegraph:local
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        graphify extract /src --out /out --code-only --no-cluster \
+          --max-workers ${CODEGRAPH_WORKERS:-2}
+        # Staleness is the failure mode that matters for a graph: it answers
+        # confidently about code as it was, and CLAUDE.md tells agents to
+        # prefer it over grep. Record what it was built from so a checker can
+        # compare against the live HEAD.
+        printf 'commit=%s\nbuilt_at=%s\n' "$${CODEGRAPH_COMMIT:-unknown}" \
+          "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /out/graphify-out/BUILD_INFO
+        echo "--- BUILD_INFO ---"; cat /out/graphify-out/BUILD_INFO
+    environment:
+      - CODEGRAPH_COMMIT=${CODEGRAPH_COMMIT:-unknown}
+    volumes:
+      # Read-only, and deliberately WITHOUT the /dev/null secret masks that
+      # openhands uses. Those cannot work here: Docker must create the
+      # mountpoint file before it can shadow one, and inside a :ro mount that
+      # fails outright — `make mountpoint "/src/observability/.env":
+      # read-only file system` — for any .env the host does not happen to
+      # have. Tried; it broke the first real build on the VPS.
+      #
+      # :ro is the stronger half of that trade anyway: the extractor cannot
+      # write into the tree at all. For reading, the boundary is .gitignore,
+      # which graphify honours by default and which is the right line — a file
+      # that is NOT gitignored is already committed, so a graph is not where it
+      # leaks. stax-smoke.yml plants a canary in a gitignored .env and asserts
+      # it never reaches graph.json, so this is tested, not assumed.
+      - ./:/src:ro
+      - codegraph-out:/out
+    # One-shot: `docker compose run --rm codegraph-build`, never `up`.
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    # Measured, not chosen. At 3g the kernel OOM-killed it inside its own
+    # cgroup (anon-rss 3.0 GB) and left a graph.json that was never written;
+    # at 4g it completes. memswap_limit matches so pressure stays a loud,
+    # contained OOM instead of dragging this 7.8 GB host into swap thrash.
+    mem_limit: ${CODEGRAPH_BUILD_MEM_LIMIT:-4g}
+    memswap_limit: ${CODEGRAPH_BUILD_MEM_LIMIT:-4g}
+    cpus: ${CODEGRAPH_BUILD_CPUS:-2.0}
+    logging: *default-logging
+    profiles:
+      - codegraph
+
+  codegraph-serve:
+    build: ./codegraph
+    image: king-codegraph:local
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        # A server that starts against a missing graph answers every query
+        # with nothing, and an agent reads that as "the code does not exist" —
+        # worse than no graph at all. Refuse to start instead.
+        if [ ! -s /out/graphify-out/graph.json ]; then
+          echo "FATAL: /out/graphify-out/graph.json is missing or empty."
+          echo "Run: docker compose --profile codegraph run --rm codegraph-build"
+          exit 1
+        fi
+        exec python -m graphify.serve /out/graphify-out/graph.json \
+          --transport http --host 0.0.0.0 --port 8130 --path /mcp --stateless
+    environment:
+      # graphify reads this itself; passing it as --api-key would put the
+      # secret in the container's argv, visible to anything reading /proc.
+      - GRAPHIFY_API_KEY=${GRAPHIFY_API_KEY:-}
+    volumes:
+      - codegraph-out:/out:ro
+    ports:
+      - "${CODEGRAPH_BIND_HOST:-127.0.0.1}:${CODEGRAPH_PORT:-8130}:8130"
+    healthcheck:
+      # A real MCP `initialize` with the key, not a port probe: it proves the
+      # graph loaded, the transport works, and auth is enforced, all at once.
+      # --stateless above keeps these from accumulating sessions.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import json, os, urllib.request
+          urllib.request.urlopen(urllib.request.Request(
+            "http://localhost:8130/mcp",
+            data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+              "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                         "clientInfo": {"name": "healthcheck", "version": "1"}}}).encode(),
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json, text/event-stream",
+                     "Authorization": "Bearer " + os.environ["GRAPHIFY_API_KEY"]}), timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # on-failure, not unless-stopped: the guard above exits non-zero when the
+    # graph is missing, and `unless-stopped` would turn that into a crashloop
+    # writing log lines forever on a host with 20 GB free.
+    restart: on-failure:3
+    security_opt:
+      - no-new-privileges:true
+    # Measured with the real 82 MB graph: 392 MB anon, 717 MB including the
+    # page cache from reading it. Page cache is reclaimable, so this holds.
+    mem_limit: ${CODEGRAPH_SERVE_MEM_LIMIT:-768m}
+    memswap_limit: ${CODEGRAPH_SERVE_MEM_LIMIT:-768m}
+    cpus: ${CODEGRAPH_SERVE_CPUS:-0.5}
+    logging: *default-logging
+    profiles:
+      - codegraph
+
+  # Local model, for triage-sized work. See docs/integrations/localmodel.md.
+  #
+  # OmniRoute already knows this provider — omniroute/src/shared/constants/
+  # providers/local.ts defines `ollama-local` with passthroughModels and no
+  # required API key — so nothing here teaches the gateway anything. It only
+  # needs to exist at a URL the gateway can reach.
+  #
+  # No published ports at all: the gateway reaches it at http://ollama:11434/v1
+  # over the compose network. Note that this puts an unauthenticated inference
+  # server on the same default bridge as agent-sidecar, which executes
+  # model-generated Python. That is a deliberate trade, stated rather than
+  # implied: introducing a second network would break the include-based
+  # single-project layout every other service depends on.
+  ollama:
+    image: ollama/ollama:0.33.2
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      # Measured on this host: a triage prompt answers in 12.5 s including a
+      # cold load, and the model holds 2.1 GB while resident.
+      #
+      # 0, not -1, and not 5m. 5m is the worst of both — frequent callers pay
+      # the RAM anyway, infrequent ones pay a cold load anyway, and callers at
+      # roughly five-minute spacing pay load/unload churn. Between the two real
+      # options, RAM is scarcer here than seconds: codegraph-build needs 4 GB
+      # and this host has ~5 GB free, so a permanently resident 2.1 GB model
+      # would collide with it. Set -1 if triage ever becomes frequent enough
+      # that the load cost dominates.
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-0}
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
+      # Default is 512. At ~12 s per request that means the hundredth caller
+      # waits twenty minutes instead of being refused immediately — and a
+      # workflow that retries on timeout is exactly what fills a queue.
+      - OLLAMA_MAX_QUEUE=${OLLAMA_MAX_QUEUE:-2}
+      # KV cache grows linearly with context. Unpinned, mem_limit below is not
+      # a number anyone chose — it is whatever the caller asks for, clamped by
+      # the OOM killer.
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-4096}
+      # Read by the healthcheck below. Must match what ollama-pull fetches, or
+      # the healthcheck asserts a model that was never pulled.
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct-q4_K_M}
+    healthcheck:
+      # Asserts the MODEL, not the port. `ollama serve` answers happily with
+      # zero models pulled, and OmniRoute will then save a connection that
+      # looks healthy and 404s every request — the exact healthy-but-useless
+      # shape this deployment has hit three times.
+      test:
+        - CMD-SHELL
+        - ollama list | grep -q "$${OLLAMA_MODEL%%:*}" || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # Measured: 2.117 GiB resident with qwen2.5:3b-instruct-q4_K_M loaded.
+    mem_limit: ${OLLAMA_MEM_LIMIT:-2560m}
+    memswap_limit: ${OLLAMA_MEM_LIMIT:-2560m}
+    # 1.0, not 1.5. On 2 vCPU, 1.5 leaves 0.5 for the gateway, the workflow
+    # engine, Caddy and dockerd together — and OmniRoute's healthcheck times
+    # out in 5 seconds.
+    cpus: ${OLLAMA_CPUS:-1.0}
+    logging: *default-logging
+    profiles:
+      - localmodel
+
+  # One-shot, run after `up`. Without it Ollama comes up healthy-looking with
+  # no model at all, which is failure L1 in the doc.
+  ollama-pull:
+    image: ollama/ollama:0.33.2
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        until ollama list >/dev/null 2>&1; do sleep 2; done
+        ollama pull "$${OLLAMA_MODEL}"
+        ollama list
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct-q4_K_M}
+    depends_on:
+      - ollama
+    restart: "no"
+    logging: *default-logging
+    profiles:
+      - localmodel
 
 volumes:
   openhands-canvas-settings:
   caddy-data:
   caddy-config:
   activepieces-cache:
+  codegraph-out:
+  ollama-models:

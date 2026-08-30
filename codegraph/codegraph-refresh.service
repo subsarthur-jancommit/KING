@@ -1,0 +1,38 @@
+# Rebuild the code knowledge graph. Paired with codegraph-refresh.timer.
+#
+# A systemd *user* unit, not a system one: the operator account is already in
+# the docker group (the whole stack is driven without sudo), so running this as
+# root would be privilege for its own sake. It does need lingering, or it only
+# runs while someone is logged in:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp codegraph/codegraph-refresh.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now codegraph-refresh.timer
+#   sudo loginctl enable-linger "$USER"
+#
+#   systemctl --user list-timers codegraph-refresh.timer
+#   journalctl --user -u codegraph-refresh -n 50
+
+[Unit]
+Description=Rebuild the KING code knowledge graph
+Documentation=file:%h/KING/docs/integrations/codegraph.md
+# Docker is a system service, so this only expresses "not before the network";
+# the script itself tolerates a daemon that is not up yet by failing loudly.
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/KING
+ExecStart=%h/KING/scripts/codegraph-refresh.sh
+
+# The extraction is ~4.5 minutes on 2 vCPU and the image build can precede it.
+# Well clear of that, but bounded — a hung build must not hold the flock and
+# silently block every later run.
+TimeoutStartSec=45min
+
+# Nice and IOSchedulingClass matter more here than the memory ceiling, which
+# compose already sets: this competes for 2 vCPU with the gateway and the
+# workflow engine, whose healthchecks time out in 5 seconds.
+Nice=10
+IOSchedulingClass=idle

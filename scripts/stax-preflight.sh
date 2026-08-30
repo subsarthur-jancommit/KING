@@ -25,6 +25,8 @@
 #   ./scripts/stax-preflight.sh base proxy                 # public HTTPS deploy
 #   ./scripts/stax-preflight.sh base proxy workflow        # + Activepieces
 #   ./scripts/stax-preflight.sh base tracing               # + traces to Langfuse
+#   ./scripts/stax-preflight.sh codegraph                  # graphify MCP server
+#   ./scripts/stax-preflight.sh localmodel                 # Ollama behind OmniRoute
 #   ./scripts/stax-preflight.sh --self-test                # verify this script
 #
 # Exit codes: 0 = safe to deploy, 1 = at least one blocking problem.
@@ -372,7 +374,10 @@ check_tracing() {
   local endpoint auth otel_target
   endpoint=$(lookup LANGFUSE_OTLP_ENDPOINT .env)
   auth=$(lookup LANGFUSE_OTLP_AUTH .env)
-  otel_target=$(lookup OMNIROUTE_OTEL_ENDPOINT .env)
+  # omniroute/.env, not the root .env: the gateway reads its own env_file, and
+  # the root compose file is forbidden from redeclaring omniroute-base to pass
+  # variables in (doing so is what turned every Docker CI job red).
+  otel_target=$(lookup OMNIROUTE_OTEL_ENDPOINT omniroute/.env)
 
   if [ -z "$endpoint" ]; then
     pass "LANGFUSE_OTLP_ENDPOINT unset — the compose default (Langfuse Cloud EU) applies."
@@ -399,7 +404,7 @@ check_tracing() {
   # The collector can be perfectly configured and still receive nothing.
   if [ -z "$otel_target" ]; then
     fail "OMNIROUTE_OTEL_ENDPOINT is unset, so OmniRoute's exporter stays off and the collector will sit idle."
-    echo "         Set OMNIROUTE_OTEL_ENDPOINT=http://otel-collector:4318 in .env."
+    echo "         Set OMNIROUTE_OTEL_ENDPOINT=http://otel-collector:4318 in omniroute/.env."
   elif [ "${otel_target#http://otel-collector}" = "$otel_target" ]; then
     warn "OMNIROUTE_OTEL_ENDPOINT=$otel_target does not point at the collector service."
   else
@@ -411,6 +416,97 @@ check_tracing() {
   else
     pass "otel-collector/config.yaml is present."
   fi
+}
+
+check_codegraph() {
+  echo "profile: codegraph (graphify MCP server)"
+
+  local key free_gb
+  key=$(lookup GRAPHIFY_API_KEY .env)
+
+  # Blocking, not a warning. graphify takes the key from GRAPHIFY_API_KEY, and
+  # an empty value is not "reject everything" — the HTTP transport simply has
+  # no key to require, which publishes a queryable index of the whole codebase
+  # to anything that reaches the port.
+  case "$key" in
+    "" ) fail "GRAPHIFY_API_KEY is unset. The MCP server would serve the code graph with no authentication." ;;
+    CHANGEME* ) fail "GRAPHIFY_API_KEY is still a placeholder." ;;
+    * )
+      if [ "${#key}" -lt 24 ]; then
+        fail "GRAPHIFY_API_KEY is ${#key} characters. Use at least 24 — it is the only thing in front of the graph."
+      else
+        pass "GRAPHIFY_API_KEY is set (${#key} characters)."
+      fi
+      ;;
+  esac
+
+  check_bind_host "CODEGRAPH_BIND_HOST" "$(lookup CODEGRAPH_BIND_HOST .env)" \
+    "Reach it over an SSH tunnel instead (ssh -L 8130:127.0.0.1:8130 vps); the API key is the only control in front of it."
+
+  if [ ! -f codegraph/Dockerfile ]; then
+    fail "codegraph/Dockerfile is missing — both codegraph services build from it."
+  else
+    pass "codegraph/Dockerfile is present."
+  fi
+
+  check_disk_gb 8 "the 496 MB image, an 82 MB graph, and room for a 4 GB build container"
+}
+
+# Disk is one of the very few runtime-shaped facts knowable before `up`, and
+# these profiles are the first things in this repo to pull multiple GB.
+check_disk_gb() {
+  local needed="$1" why="$2" free_gb
+  command -v df >/dev/null 2>&1 || return 0
+  free_gb=$(df -BG --output=avail . 2>/dev/null | tail -1 | tr -dc '0-9')
+  [ -n "$free_gb" ] || return 0
+  if [ "$free_gb" -lt "$needed" ]; then
+    fail "Only ${free_gb}G free on this filesystem; ${needed}G wanted for $why."
+    echo "         'docker builder prune -f' is usually the cheapest win — it freed 9.4G here."
+  else
+    pass "${free_gb}G free on this filesystem (${needed}G wanted)."
+  fi
+}
+
+check_localmodel() {
+  echo "profile: localmodel (Ollama behind OmniRoute)"
+
+  local model keep_alive guard
+  model=$(lookup OLLAMA_MODEL .env)
+  keep_alive=$(lookup OLLAMA_KEEP_ALIVE .env)
+  guard=$(lookup OMNIROUTE_ALLOW_LOCAL_PROVIDER_URLS omniroute/.env)
+
+  if [ -z "$model" ]; then
+    pass "OLLAMA_MODEL unset — the compose default (qwen2.5:3b-instruct-q4_K_M) applies."
+  else
+    pass "OLLAMA_MODEL is $model."
+  fi
+
+  # The ollama image carries CUDA and ROCm runtimes even with no GPU present:
+  # 8.45 GB measured, roughly double what a slim CPU image would cost. Plus
+  # ~2 GB for a 3B model.
+  check_disk_gb 12 "the 8.45 GB ollama image and a ~2 GB model"
+
+  # Not a hard failure, because it is a legitimate choice — but on this host it
+  # collides with codegraph-build, which needs 4 GB and cannot get it while a
+  # 2.1 GB model sits resident.
+  if [ "$keep_alive" = "-1" ]; then
+    warn "OLLAMA_KEEP_ALIVE=-1 holds ~2.1 GB permanently."
+    echo "         scripts/codegraph-refresh.sh unloads it before building, but budget for it."
+  fi
+
+  # outboundUrlGuardPolicy.ts defaults local provider URLs to allowed. Turning
+  # that off turns a working setup into a guard error that reads like the model
+  # server being down — a wrong diagnosis, which is worse than a clear failure.
+  case "$guard" in
+    ""|true|1 ) : ;;
+    * ) fail "OMNIROUTE_ALLOW_LOCAL_PROVIDER_URLS=$guard blocks the gateway from reaching http://ollama:11434." ;;
+  esac
+
+  echo "         After 'up', register the provider and PROVE it:"
+  echo "           ./scripts/localmodel-register.sh"
+  echo "         A dashboard connection saved without an explicit Base URL keeps"
+  echo "         localDefault http://localhost:11434/v1, which from inside the"
+  echo "         gateway container is the gateway itself."
 }
 
 check_observability() {
@@ -496,9 +592,11 @@ main() {
       agent-sidecar-http) check_agent_sidecar_http ;;
       openhands)     check_openhands ;;
       observability) check_observability ;;
-    tracing) check_tracing ;;
+      tracing)       check_tracing ;;
       proxy)         check_proxy ;;
       workflow)      check_workflow ;;
+      codegraph)     check_codegraph ;;
+      localmodel)    check_localmodel ;;
       *) fail "unknown profile '$profile'" ;;
     esac
     echo

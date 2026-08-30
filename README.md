@@ -172,6 +172,60 @@ none of them carrying a resource ceiling.
 
 See [`docs/integrations/observability.md`](docs/integrations/observability.md).
 
+### Code knowledge graph
+
+Answering "where is this function used" across 220K vendored lines by grepping
+spends model tokens on work that is deterministic.
+[graphify](https://github.com/Graphify-Labs/graphify) answers it from a local
+tree-sitter AST — no model call, no API key, no vector store. The `codegraph`
+profile builds that graph on the server and serves it over MCP, so one graph is
+shared by Claude Code on your laptop and by workflow steps on the VPS, instead
+of a per-machine build that nobody actually has:
+
+```bash
+echo "GRAPHIFY_API_KEY=$(openssl rand -hex 24)" >> .env
+./scripts/stax-preflight.sh codegraph
+docker compose --profile codegraph run --rm codegraph-build
+docker compose --profile codegraph up -d codegraph-serve
+```
+
+No wrapper was written: graphify ships its own MCP streamable-HTTP server. The
+build is a one-shot costing ~4.5 minutes and 4 GB, refreshed by a systemd timer
+calling `scripts/codegraph-refresh.sh`, which also refuses to run while a local
+model holds memory. The server itself holds 392 MB and is loopback-only —
+Activepieces reaches it over the Docker network, and a laptop reaches it through
+an SSH tunnel.
+
+See [`docs/integrations/codegraph.md`](docs/integrations/codegraph.md).
+
+### Local model
+
+Free tiers go down — CI here has watched `opencode/big-pickle` return
+`service_unavailable`, and tolerates it explicitly. The `localmodel` profile
+closes that last gap with an Ollama container behind the same gateway. It is not
+smarter than any free model; it is simply always there, has no quota, and sends
+nothing off the box:
+
+```bash
+./scripts/stax-preflight.sh localmodel
+docker compose --profile localmodel up -d ollama
+docker compose --profile localmodel run --rm -T ollama-pull
+./scripts/localmodel-register.sh
+```
+
+OmniRoute already ships the `ollama-local` provider, so nothing here teaches the
+gateway anything. Measured on a 2 vCPU host with no GPU: a real triage prompt
+answers in 12 seconds, the model holds 2.1 GB while loaded and 178 MB when idle.
+That is the size of work it is for — triage, classification, branch decisions.
+Code review is not on the list and will not be.
+
+`localmodel-register.sh` exists because the dashboard equivalent has a trap:
+a connection saved without an explicit Base URL keeps `localhost:11434`, which
+inside the gateway container is the gateway. The script sets it and then refuses
+to succeed without a real completion coming back.
+
+See [`docs/integrations/localmodel.md`](docs/integrations/localmodel.md).
+
 ### CI smoke test
 
 [`.github/workflows/omniroute-smoke.yml`](.github/workflows/omniroute-smoke.yml)

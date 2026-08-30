@@ -22,7 +22,7 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 
 | Component | What it does | Status |
 |---|---|---|
-| Graphify | Local, zero-LLM-cost code knowledge graph (tree-sitter) for AI agents to navigate the 220K-line `omniroute/` codebase without grepping | ✅ installed & validated (58,205 nodes / 139,183 edges / 1,945 communities from 10,343 files; see below) |
+| [Graphify](./codegraph.md) | Local, zero-LLM-cost code knowledge graph (tree-sitter) for AI agents to navigate the 220K-line `omniroute/` codebase without grepping | ✅ **live on the VPS as an MCP server** (`codegraph` profile) — 58,382 nodes / 163,257 edges from 10,272 files, `--code-only`. Previously a per-machine CLI install, which meant it existed on no machine at all; see linked doc |
 | repomix | Repo-to-context packer + on-demand MCP server (`--mcp`) for direct codebase Q&A | ✅ installed & validated (see below) |
 | [agent-sidecar](../../agent-sidecar/) | Combined smolagents + pydantic-ai Python service, using OmniRoute as both LLM backend and MCP tool source. Runs one-shot from the CLI, or as an HTTP service (`agent-sidecar-http` profile) so a workflow step can invoke the same runners | ✅ installed & live-validated (see below) |
 | [Langfuse](./langfuse.md) | LLM tracing. The live path is OmniRoute's own OTLP exporter → a small collector → Langfuse Cloud (`tracing` profile), which captures every call the gateway routes. The self-hosted stack in [`observability/`](../../observability/) stays off — 6 containers, no resource ceilings | ✅ Cloud path live-verified; self-hosted stack vendored & statically validated only (see linked doc) |
@@ -32,38 +32,34 @@ root. Keeping STAX entirely outside `omniroute/` avoids both problems.
 
 ## Graphify — status
 
-Installed project-scoped for Claude Code (`graphify claude install` — writes
-the usage rules into this file's sibling `CLAUDE.md` at repo root, plus a
-non-destructive `PreToolUse` hook in `.claude/settings.json` alongside the
-existing `ecc@ecc` plugin config). Graph built with:
+Now a **service, not a per-machine install**. See
+[`codegraph.md`](./codegraph.md) for the runbook; this section records only what
+changed and why.
 
-```bash
-graphify extract . --code-only --no-cluster   # local tree-sitter AST only, zero LLM cost, ~4 min
-graphify cluster-only . --no-viz --no-label   # local Leiden clustering, zero LLM cost, ~1 min
-```
+It used to be installed project-scoped for Claude Code, with `graphify claude
+install` writing rules into `CLAUDE.md` and a `PreToolUse` hook into
+`.claude/settings.json`. Two things went wrong with that:
 
-Result: 58,205 nodes / 139,183 edges / 1,945 communities across 10,343 files.
-Known gap: 157 `.sql` migration files under `omniroute/src/lib/db/migrations/`
-are not indexed (`tree_sitter_sql` extra not installed — low value relative to
-the cost of a second full extraction pass; revisit with
-`uv tool install --reinstall graphifyy[sql]` if migration-schema graph
-queries become a real need). `graph.html` was skipped (`--no-viz`) since the
-graph exceeds the ~5,000-node threshold where the interactive viz gets
-unwieldy — use `graphify query`/`explain`/`path` instead.
+- The hook was committed pointing at `/root/.local/bin/graphify` — a path that
+  existed on no machine anyone used, so every clone paid a failed exec on every
+  `Bash|Grep` and every `Read|Glob`.
+- `graphify-out/` is generated build output and gitignored, so nothing shipped
+  it. By 2026-08-29 the binary was installed neither on the VPS nor on the
+  laptop, while `CLAUDE.md` still told every agent to query the graph. The
+  figures previously reported here (58,205 / 139,183 from 10,343 files, later
+  129,621 / 219,980 from 11,993) came from a sandbox that no longer exists and
+  could not be reproduced.
 
-Validated end-to-end with `graphify explain "CloudAgentBase"`, which
-correctly resolved all 4 real subclasses
-(`CursorCloudAgent`/`CodexCloudAgent`/`DevinAgent`/`JulesAgent`) and their
-exact file:line locations under `omniroute/src/lib/cloudAgent/`.
+The `codegraph` profile replaces that with one graph built on the VPS and served
+over MCP streamable HTTP to both the laptop and Activepieces. Measured there:
+**58,382 nodes / 163,257 edges from 10,272 files**, an 82 MB `graph.json`, 265
+seconds of extraction, and a build that needs 4 GB — at 3 GB the kernel
+OOM-killed it inside its own cgroup.
 
-`graphify-out/` (graph.json, GRAPH_REPORT.md, cache/, manifest) is generated
-build output — gitignored, not committed. Regenerate anytime with
-`graphify update .` (incremental, AST-only, no API cost). Re-run after every
-STAX phase landed (now covering `agent-sidecar/`, docs, and configs too, not
-just `--code-only` source): 129,621 nodes / 219,980 edges / 9,584
-communities from 11,993 files — verified the update respected `.gitignore`
-correctly (zero nodes sourced from `agent-sidecar/.venv/` or `node_modules/`,
-both of which exist on disk in this workspace by this point).
+That figure also settles the contradiction above: **58k is the `--code-only`
+number**, and 129k is what you get when documentation is indexed too. The
+container produces the former. 157 `.sql` files still contribute nothing without
+the `[sql]` extra, which remains not worth the image size.
 
 ## repomix — status
 
