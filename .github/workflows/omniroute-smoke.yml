@@ -3,7 +3,7 @@ name: OmniRoute smoke test
 on:
   push:
     branches:
-      - claude/ecc-install-validation-33xduy # default branch: post-merge validation only
+      - main # post-merge validation on the branch work actually lands on
     paths:
       - "omniroute/**"
       - "docker-compose.yml"
