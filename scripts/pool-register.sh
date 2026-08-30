@@ -88,7 +88,7 @@ fi
 printf '%-22s %-12s %-12s %s\n' "PROVIDER" "PRA-CEK" "DAFTAR" "BUKTI"
 printf '%-22s %-12s %-12s %s\n' "----------------------" "------------" "------------" "----------------------------"
 
-failed=0
+proved=0
 count=0
 
 while IFS='=' read -r provider key; do
@@ -194,16 +194,15 @@ print((c or '').strip().replace(chr(10), ' ')[:18])
 " 2>/dev/null || true)
       if [ -n "$content" ]; then
         proof="MENJAWAB (${model##*/})"
+        proved=$((proved + 1))
       else
         proof="DIAM"
-        failed=$((failed + 1))
       fi
     fi
   fi
 
   # if, not `A && B`: under set -e a false test in a && list can end the run
   # without a word. Same shape shellcheck flagged as SC2015 elsewhere here.
-  case "$valid" in DITOLAK|"ID SALAH") failed=$((failed + 1)) ;; esac
   printf '%-22s %-12s %-12s %s\n' "$provider" "$valid" "$registered" "$proof"
 done < "$KEYFILE"
 
@@ -213,11 +212,21 @@ if [ "$count" -eq 0 ]; then
   exit 1
 fi
 if [ "$mode" = "dry" ]; then
-  dim "Dry run: tidak ada yang didaftarkan."
+  dim "Pra-cek saja; tidak ada yang didaftarkan dan tidak ada yang dibuktikan."
+  dim "Kolom PRA-CEK tidak memvouch kuncinya — hanya jalankan penuh yang bisa."
   exit 0
 fi
-if [ "$failed" -gt 0 ]; then
-  red "$failed dari $count provider tidak menjawab. Yang 'dibuat' tapi 'DIAM' tersimpan di gerbang dan tidak berguna — periksa atau hapus."
-  exit 1
+
+# Success is counted, never inferred. An earlier version tallied failure modes
+# by name and let "tak ada model" slip through as a pass, announcing that every
+# provider had answered when none had.
+if [ "$proved" -eq "$count" ]; then
+  green "$proved dari $count provider menjawab lewat gerbang. Kolam bertambah."
+  exit 0
 fi
-green "Ketiga tahap lolos untuk $count provider: kunci diterima, koneksi dibuat, dan setiap satunya menjawab."
+red "Hanya $proved dari $count provider yang benar-benar menjawab."
+echo "  Baris yang tidak bertanda MENJAWAB tidak berguna, termasuk yang berhasil"
+echo "  didaftarkan. Koneksi yang tersimpan tapi diam persis bentuk kegagalan yang"
+echo "  sudah tiga kali menggigit deployment ini — hapus atau perbaiki, jangan"
+echo "  dibiarkan menumpuk di gerbang."
+exit 1
