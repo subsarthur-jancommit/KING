@@ -161,7 +161,19 @@ services:
       - observability
 
   minio:
-    image: cgr.dev/chainguard/minio
+    # Pinned by digest, and it was the only image in this file with no tag at
+    # all — so every pull resolved `:latest` against a live registry lookup.
+    # That made this the flakiest job in CI: `cgr.dev` reset the connection
+    # mid-pull twice on 2026-08-30, failing the whole job while nothing was
+    # wrong with the code. A CI job that fails at random teaches people to skim
+    # past CI, which is how two PRs were merged over a red build here.
+    #
+    # Chainguard's free tier publishes only `:latest`, so a digest is the only
+    # way to pin. This is RELEASE.2026-07-17T12-07-51Z, resolved 2026-08-30.
+    # To refresh: docker pull cgr.dev/chainguard/minio:latest &&
+    #   docker image inspect cgr.dev/chainguard/minio:latest \
+    #     --format '{{index .RepoDigests 0}}'
+    image: cgr.dev/chainguard/minio@sha256:9c4c0a5b47563e679bf0e90ff104f5ae8fb0d51c95d9a82f53480ab57137ac01
     restart: always
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'

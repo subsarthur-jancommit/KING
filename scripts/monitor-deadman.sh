@@ -51,13 +51,18 @@ fail_out() {
     body=$(printf '{"event":"monitor.deadman","timestamp":"%s","data":{"reason":%s}}' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s' "$*" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')")
     sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$MONITOR_ALERT_SECRET" -r | cut -d' ' -f1)
-    curl -sf -m 15 -X POST "$MONITOR_ALERT_URL" \
-      -H 'Content-Type: application/json' \
-      -H 'x-webhook-event: monitor.deadman' \
-      -H "x-webhook-signature: sha256=$sig" \
-      -d "$body" >/dev/null 2>&1 \
-      && yellow "  alert posted to gateway_alerts" \
-      || yellow "  could not post the alert either — Activepieces may be down, which is the point"
+    # if/then/else rather than `A && B || C`: in that form C also runs when A
+    # succeeded but B failed, so a failing printf would report the post as
+    # failed. Benign here and still wrong, and shellcheck says so (SC2015).
+    if curl -sf -m 15 -X POST "$MONITOR_ALERT_URL" \
+         -H 'Content-Type: application/json' \
+         -H 'x-webhook-event: monitor.deadman' \
+         -H "x-webhook-signature: sha256=$sig" \
+         -d "$body" >/dev/null 2>&1; then
+      yellow "  alert posted to gateway_alerts"
+    else
+      yellow "  could not post the alert either — Activepieces may be down, which is the point"
+    fi
   fi
   exit 1
 }
