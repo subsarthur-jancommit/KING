@@ -43,14 +43,16 @@ case "${1:-}" in
   *) red "Unknown argument: $1"; exit 1 ;;
 esac
 
-[ -f "$KEYFILE" ] || {
-  red "$KEYFILE not found."
-  echo "  cp providers.env.example $KEYFILE   # then fill in the keys you have"
+if [ ! -f "$KEYFILE" ]; then
+  red "$KEYFILE tidak ada."
+  echo "  cp providers.env.example $KEYFILE   # lalu isi kunci yang Anda punya"
   exit 1
-}
+fi
 
 COOKIES=$(mktemp)
 PROBE_KEY_ID=""
+# shellcheck disable=SC2317  # invoked by `trap` below, which shellcheck
+# cannot see, so it reports the whole body as unreachable.
 cleanup() {
   # The throwaway /v1 key goes even on failure — a failed run must not leave a
   # live credential behind.
