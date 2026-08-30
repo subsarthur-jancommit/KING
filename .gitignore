@@ -26,6 +26,10 @@
 omniroute/plugins/*
 !omniroute/plugins/.gitkeep
 
+# Kunci provider untuk kolam free tier, dibaca scripts/pool-register.sh.
+# Hanya ada di host; contohnya ada di providers.env.example.
+/providers.env
+
 # Written by Claude Code itself, per-machine. It accumulates `permissions.allow`
 # entries verbatim — which is how a live Neon connection string ended up sitting
 # in it in plaintext. It was ignored ONLY by the operator's global git config,
