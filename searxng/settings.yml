@@ -1,0 +1,55 @@
+# SearXNG for KING — a retrieval layer, not a website.
+#
+# Nothing here is meant to be browsed by a human. OmniRoute reaches it at
+# http://searxng:8080 over the Docker network, asks for JSON, and hands the
+# results to a model for synthesis. Two settings below are what make that work
+# at all; the defaults would silently return nothing useful.
+
+use_default_settings: true
+
+server:
+  # Replaced at container start by the entrypoint using $SEARXNG_SECRET.
+  # Leave the placeholder — the image greps for this exact string.
+  secret_key: "ultrasecretkey"
+
+  # SearXNG's limiter is bot detection aimed at public instances: it inspects
+  # headers and request rhythm and returns 429 to anything that looks
+  # automated. Every request here IS automated and arrives from one container
+  # on a private bridge, so the limiter can only ever produce false positives.
+  # This instance publishes no port, so the thing the limiter defends against
+  # cannot reach it.
+  limiter: false
+
+  # No browser ever loads these results, so proxying images would burn
+  # bandwidth and memory for output nobody renders.
+  image_proxy: false
+
+search:
+  # THE line that makes this usable. SearXNG serves HTML only by default —
+  # a JSON request against a default install returns 403, which reads
+  # identically to "the instance is down" from the caller's side.
+  formats:
+    - html
+    - json
+
+  # Results are fed to a model with a token budget, not to a human who
+  # scrolls. One page is what fits.
+  default_lang: "all"
+  safe_search: 0
+
+engines:
+  # Engines that demand an API key of their own, or that block datacentre IPs
+  # outright, would each add a failing upstream to every query and slow the
+  # whole search to their timeout. DuckDuckGo is disabled for exactly the
+  # reason this file exists: it answers this VPS with a CAPTCHA challenge
+  # ("select all squares containing a duck"), measured, not assumed.
+  - name: duckduckgo
+    disabled: true
+  - name: wikidata
+    disabled: false
+
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 20
+  pool_maxsize: 10
