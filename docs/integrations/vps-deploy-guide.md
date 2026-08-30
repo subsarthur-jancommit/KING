@@ -116,8 +116,11 @@ atas dan pakai SSH tunnel di Langkah 8 — juga untuk OmniRoute.
 ```bash
 git clone https://github.com/subsarthur-jancommit/KING.git
 cd KING
-git checkout claude/ecc-install-validation-33xduy   # atau branch/tag produksi Anda
 ```
+
+`clone` sudah mendarat di `main`, yang merupakan default branch dan tempat
+setiap PR di-merge. Baris `git checkout` yang dulu ada di sini menunjuk branch
+lama yang kini sudah dihapus — mengikutinya akan menggagalkan deploy baru.
 
 Kalau repo private, siapkan deploy key atau token GitHub sebelum `clone`.
 
