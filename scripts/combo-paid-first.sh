@@ -101,7 +101,7 @@ total=0
 steps=""
 for model in $TIERS; do
   total=$((total + 1))
-  printf '{"model":"%s","max_tokens":64,"temperature":0,"messages":[{"role":"user","content":"Reply with one word: OK."}]}' \
+  printf '{"model":"%s","max_tokens":400,"temperature":0,"messages":[{"role":"user","content":"Reply with one word: OK."}]}' \
     "$model" > "$WORK/probe.json"
   if out=$(curl -s -m 120 -X POST "$BASE/v1/chat/completions" \
              -H 'Content-Type: application/json' -H "Authorization: Bearer $TMPKEY" \
@@ -165,7 +165,7 @@ fi
 # The only check that means anything: route a real request at the combo name and
 # require text back. Everything above this line can pass on a broken combo.
 echo "Proving $COMBO with a real completion …"
-printf '{"model":"%s","max_tokens":64,"temperature":0,"messages":[{"role":"user","content":"What is 2+2? Answer with just the number."}]}' \
+printf '{"model":"%s","max_tokens":400,"temperature":0,"messages":[{"role":"user","content":"What is 2+2? Answer with just the number."}]}' \
   "$COMBO" > "$WORK/prove.json"
 out=$(curl -s -m 180 -X POST "$BASE/v1/chat/completions" \
   -H 'Content-Type: application/json' -H "Authorization: Bearer $TMPKEY" \
