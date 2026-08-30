@@ -157,7 +157,25 @@ bergantung pada komponen yang paling mungkin sedang rusak.
 
 ### S2 — Perbaiki tiga instrumen yang berbohong
 
-**SELESAI 2026-08-30.** Ditambah lapisan kedua: `MemAvailable` dibaca langsung sebelum build, dan enam self-test baru menutup mode kegagalan instrumen. Jangan pernah biarkan "tidak bisa diukur" runtuh menjadi "terukur
+**SELESAI 2026-08-30**, terbukti live di VPS dengan model yang sengaja dibuat residen:
+deteksi bekerja, `unloaded; nothing resident.`, `residen SESUDAH = 0`.
+
+Butuh dua percobaan. Percobaan pertama **mendeteksi** model residen dengan benar
+lalu tidak menghentikan apa pun: ia memanggil `ollama ps --format`, yang sintaks
+Docker — `ollama ps` tidak menerima flag selain `-h` dan menjawab
+`unknown flag: --format`, sehingga loop-nya mengiterasi nol item sambil mencetak
+"unloading before the build". Terukur: `sebelum=1, sesudah=1`. Kelas yang sama
+dengan bug nama container yang baru diperbaiki di blok yang sama — perintah yang
+terlihat masuk akal dan tidak pernah dijalankan siapa pun, dua kali dalam satu
+file dalam satu hari.
+
+Karena itu perbaikannya kini **memverifikasi** hasilnya, bukan mengumumkannya.
+
+Ditambah lapisan kedua yang tidak berbagi mekanisme dengan yang pertama:
+`MemAvailable` dibaca langsung sebelum build, tolak di bawah 3584 MB terukur.
+Selama percobaan yang gagal itu, lapisan inilah yang menjaga build tetap aman
+(`4249 MB available`) — argumen untuk keberadaannya terbukti pada hari yang sama
+ia ditulis. Dan enam self-test baru menutup mode kegagalan instrumen. Jangan pernah biarkan "tidak bisa diukur" runtuh menjadi "terukur
 nol":
 
 - `codegraph-refresh.sh`: perbaiki nama container (`king-ollama-1`, atau lebih
