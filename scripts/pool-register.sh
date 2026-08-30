@@ -168,11 +168,22 @@ try:
 except Exception:
     sys.exit(0)
 ms = d.get('data', d.get('models', d if isinstance(d, list) else []))
-cand = []
-for m in ms:
-    mid = m.get('id') or m.get('model') or '' if isinstance(m, dict) else str(m)
-    if mid.startswith(prov + '/'):
-        cand.append(mid)
+# Models are listed under the provider's ALIAS, not its id: opencode appears as
+# oc/, cloudflare-playground as cfp/, duckduckgo-web as ddgw/. Matching on the id
+# alone reported 'no models' for seven working providers in a row, and nearly got
+# them blocked. Try the id first, then fall back to any prefix whose models the
+# gateway will actually route.
+cand = [m.get('id') or m.get('model') or '' if isinstance(m, dict) else str(m) for m in ms]
+cand = [c for c in cand if c]
+exact = [c for c in cand if c.startswith(prov + '/')]
+if not exact:
+    # An alias is a prefix of, or shares a stem with, the provider id often
+    # enough to be worth trying before giving up.
+    stem = prov.split('-')[0]
+    exact = [c for c in cand
+             if c.split('/')[0] == stem
+             or (len(c.split('/')[0]) >= 2 and prov.startswith(c.split('/')[0]))]
+cand = exact
 # OpenRouter meters free models with a :free suffix; prefer those so a proof
 # never spends credit.
 free = [c for c in cand if c.endswith(':free')]
