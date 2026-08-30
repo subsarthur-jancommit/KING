@@ -40,3 +40,12 @@ omniroute/plugins/*
 # Claude Code here, not part of the deployed system.
 .agents/
 .claude/skills/
+
+# Every .env VARIANT, not just the exact paths listed above. A backup named
+# `activepieces/.env.bak-upstash-20260830` — three live secrets in it — sat
+# untracked-but-committable for a day, and was also readable by the OpenHands
+# mount, because both the rules above and the /dev/null masks in
+# docker-compose.yml match exact filenames and nothing else. Templates stay
+# tracked via the negation below.
+**/.env.*
+!**/.env.example
