@@ -155,14 +155,17 @@ else:
   # 3. The only step that counts. Find a model this provider actually serves,
   #    then send a real completion through the gateway and require content back.
   if [ "$mode" != "dry" ] && [ "$registered" != "GAGAL" ] && [ "$valid" != "DITOLAK" ] && [ "$valid" != "ID SALAH" ]; then
-    model=$(curl -sf -b "$COOKIES" "$BASE/api/models?limit=500" 2>/dev/null | python3 -c "
+    # /v1/models, not /api/models. The latter is a curated management list and
+    # returned exactly one openrouter entry while the gateway could actually
+    # route 888 of them. Needs the probe key rather than the session cookie.
+    model=$(curl -sf -H "Authorization: Bearer $PROBE_KEY" "$BASE/v1/models" 2>/dev/null | python3 -c "
 import sys, json
 prov = sys.argv[1]
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
-ms = d.get('models', d if isinstance(d, list) else [])
+ms = d.get('data', d.get('models', d if isinstance(d, list) else []))
 cand = []
 for m in ms:
     mid = m.get('id') or m.get('model') or '' if isinstance(m, dict) else str(m)
@@ -178,7 +181,11 @@ print((free or cand or [''])[0])
       proof="tak ada model"
     else
       body=$(mktemp)
-      printf '{"model":"%s","max_tokens":8,"temperature":0,"messages":[{"role":"user","content":"Reply with one word: OK"}]}' "$model" > "$body"
+      # 400 tokens, not 8. Most free models on OpenRouter are reasoning models:
+      # with a small budget they spend all of it thinking, return content null
+      # with finish_reason "length", and a probe that only reads content calls a
+      # working model dead.
+      printf '{"model":"%s","max_tokens":400,"temperature":0,"messages":[{"role":"user","content":"What is 2+2? Answer with just the number."}]}' "$model" > "$body"
       out=$(curl -s -m 120 -X POST "$BASE/v1/chat/completions" \
         -H 'Content-Type: application/json' -H "Authorization: Bearer $PROBE_KEY" \
         --data-binary "@$body" 2>/dev/null || true)
@@ -189,8 +196,14 @@ try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
-c = (d.get('choices') or [{}])[0].get('message', {}).get('content')
-print((c or '').strip().replace(chr(10), ' ')[:18])
+ch = (d.get('choices') or [{}])[0]
+msg = ch.get('message') or {}
+c = (msg.get('content') or '').strip()
+# A reasoning model that ran out of budget produced text, just not in `content`.
+# Count it: it proves the route works, which is what this step is for.
+if not c and (msg.get('reasoning') or '').strip():
+    c = '[reasoning]'
+print(c.replace(chr(10), ' ')[:18])
 " 2>/dev/null || true)
       if [ -n "$content" ]; then
         proof="MENJAWAB (${model##*/})"
