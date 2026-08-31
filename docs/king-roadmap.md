@@ -45,6 +45,41 @@ workflow engine agentic.** Both were measured and both refuse.
 
 ---
 
+## 2a. Status — Phase 1 done, 2026-08-31
+
+`agent-sidecar-http` is deployed and healthy. `/healthz` reports
+`max_steps: 8`, `executor_type: local`, `mcp_tools_enabled: false`.
+
+Measured against §4.1 and §4.3:
+
+| Check | Result |
+|---|---|
+| `POST /run` on `agy/claude-sonnet-4-6` | **3 s**, correct: *391, not prime* |
+| `POST /run` on `agy/gemini-3.7-flash-high` | **2 s**, correct |
+| `POST /run` on `ollama/qwen2.5:1.5b`, `max_steps: 2` | **66 s**, correct: *391* |
+| Model echoed in the response | yes, all three |
+| Test suite in the built image | 48 passed, 3 skipped |
+
+**Two things this phase established that the plan did not know.**
+
+*The local model cannot drive an agent loop.* Unbounded, it produced malformed
+code blobs, smolagents rejected each one and retried, and the run was still on
+step 5 after the caller had timed out at 300 s and disconnected. It converged
+only once a step ceiling forced it to. Phase 4's line "confidential → ollama
+local" therefore holds for single-call classification, **not** for agents.
+
+*A caller giving up does not stop an agent.* The bound has to live in the
+service, which is why `max_steps` now exists: default 8, per-call override
+allowed to lower it and never to raise it.
+
+**§4.2 is deliberately incomplete.** The operator path (`curl`) is proven; the
+Activepieces and Claude Code paths are not wired, and must not be until Phase 2
+lands. Wiring a flow to `/run` while `executor_type` is `local` is precisely
+the thing the line in §7 forbids — an unattended trigger reaching an
+unauthenticated endpoint that executes model-written Python on this host.
+
+---
+
 ## 3. Phases
 
 Four phases, each independently useful. Phase 1 is worth doing even if the rest
