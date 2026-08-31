@@ -15,9 +15,25 @@ from starlette.testclient import TestClient
 from agent_sidecar import server
 
 
+TOKEN = "test-token-not-a-real-secret"
+
+
+@pytest.fixture(autouse=True)
+def _auth_configured(monkeypatch):
+    """/run fails closed without a token, so every test needs one configured.
+
+    Autouse because the alternative — remembering to set it per test — would
+    have every /run test quietly asserting against a 503 instead of the
+    behaviour it names.
+    """
+    monkeypatch.setenv("AGENT_SIDECAR_AUTH_TOKEN", TOKEN)
+
+
 @pytest.fixture
 def client():
-    return TestClient(server.app)
+    # The header is attached to every request so the tests below stay about
+    # the wrapper's own contract; the auth tests set their own headers.
+    return TestClient(server.app, headers={"Authorization": f"Bearer {TOKEN}"})
 
 
 @pytest.fixture
@@ -60,6 +76,62 @@ def test_healthz_reports_config_without_leaking_secrets(client, monkeypatch):
     # The point of the booleans: the key must never appear anywhere in the
     # payload, including inside a nested value.
     assert "super-secret-value" not in resp.text
+
+
+def test_run_refuses_everything_when_no_token_is_configured(
+    _stub_runners, monkeypatch
+):
+    monkeypatch.delenv("AGENT_SIDECAR_AUTH_TOKEN", raising=False)
+    bare = TestClient(server.app)
+
+    resp = bare.post("/run", json={"task": "t"})
+
+    # 503, not 401: an unset token is a deployment fault, and the distinction
+    # tells an operator to fix the config rather than hunt for a credential.
+    assert resp.status_code == 503
+    assert "AGENT_SIDECAR_AUTH_TOKEN" in resp.json()["error"]
+    assert _stub_runners == []
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Authorization": ""},
+        {"Authorization": "Bearer"},
+        {"Authorization": "Bearer "},
+        {"Authorization": TOKEN},  # no scheme
+        {"Authorization": f"Basic {TOKEN}"},
+        {"Authorization": "Bearer wrong-token"},
+    ],
+)
+def test_run_rejects_a_bad_or_missing_token(_stub_runners, headers):
+    bare = TestClient(server.app)
+
+    resp = bare.post("/run", json={"task": "secret task text"}, headers=headers)
+
+    assert resp.status_code == 401
+    # The task must not come back in the rejection — a rejected caller learns
+    # nothing about what was sent, and the body is never parsed at all.
+    assert "secret task text" not in resp.text
+    assert _stub_runners == []
+
+
+def test_run_accepts_a_case_insensitive_bearer_scheme(_stub_runners):
+    bare = TestClient(server.app)
+
+    resp = bare.post(
+        "/run", json={"task": "t"}, headers={"Authorization": f"bearer {TOKEN}"}
+    )
+
+    assert resp.status_code == 200
+
+
+def test_healthz_reports_whether_auth_is_configured(client):
+    body = client.get("/healthz").json()
+
+    assert body["auth_configured"] is True
+    assert TOKEN not in client.get("/healthz").text
 
 
 def test_run_defaults_to_smolagents(client, _stub_runners):

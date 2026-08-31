@@ -27,6 +27,13 @@ class Settings:
     # not appropriate the moment untrusted input can reach this service.
     # See docs/integrations/vps-hardening.md.
     executor_type: str
+    # Bearer token required by POST /run. Fails CLOSED: when this is unset the
+    # endpoint refuses every request rather than accepting them. It has to,
+    # because /run executes the Python a model writes, and the loopback port
+    # binding protects nothing from the Docker bridge — every container on it,
+    # including the one that runs model-authored code, reaches
+    # http://agent-sidecar-http:8100 directly.
+    auth_token: str | None
     # Hard ceiling on agent iterations. A loop is the one thing in this stack
     # that can spend without bound, and it does: a 1.5B model driving a
     # CodeAgent produced malformed code blobs, smolagents rejected each one and
@@ -71,5 +78,6 @@ def load_settings() -> Settings:
             "OMNIROUTE_MCP_URL", f"{base_url}/api/mcp/stream"
         ),
         executor_type=executor_type,
+        auth_token=os.environ.get("AGENT_SIDECAR_AUTH_TOKEN") or None,
         max_steps=max_steps,
     )

@@ -21,6 +21,7 @@ docs/integrations/activepieces-workflow.md.
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import replace
 
 import anyio
@@ -66,13 +67,52 @@ async def health(_request: Request) -> JSONResponse:
             # unauthenticated (see the module docstring in docs) and its whole
             # job is to be safe to curl.
             "omniroute_api_key_set": settings.omniroute_api_key is not None,
+            # False here means /run is refusing everything, which is a
+            # deployment fault worth seeing from the outside.
+            "auth_configured": settings.auth_token is not None,
             "mcp_tools_enabled": settings.omniroute_mcp_api_key is not None,
             "runners": sorted(RUNNERS),
         }
     )
 
 
+def _authorise(request: Request, settings) -> JSONResponse | None:
+    """Return a rejection response, or None when the caller may proceed.
+
+    Checked before the body is read, so a rejected request never has its task
+    parsed, logged, or echoed back.
+    """
+    if settings.auth_token is None:
+        # Fail closed. An unset token is a misconfiguration, and the safe
+        # reading of "no token configured" for an endpoint that executes
+        # model-written Python is "nobody may call this" — not "anybody may".
+        return JSONResponse(
+            {
+                "error": "AGENT_SIDECAR_AUTH_TOKEN is not configured; "
+                "/run is refusing all requests"
+            },
+            status_code=503,
+        )
+
+    header = request.headers.get("authorization", "")
+    scheme, _, presented = header.partition(" ")
+    if scheme.lower() != "bearer" or not presented:
+        return JSONResponse({"error": "missing bearer token"}, status_code=401)
+
+    # Constant-time: a plain `==` leaks the shared secret one byte at a time to
+    # anyone who can measure the response.
+    if not secrets.compare_digest(presented, settings.auth_token):
+        return JSONResponse({"error": "invalid bearer token"}, status_code=401)
+
+    return None
+
+
 async def run(request: Request) -> JSONResponse:
+    settings = load_settings()
+    rejection = _authorise(request, settings)
+    if rejection is not None:
+        return rejection
+
     try:
         payload = await request.json()
     except Exception:
@@ -103,7 +143,6 @@ async def run(request: Request) -> JSONResponse:
     # costs nothing per call, a cheap per-token one for volume, or the local
     # one for work that must not leave the host — could only be made by
     # restarting the container. Absent, `load_settings()` keeps its own default.
-    settings = load_settings()
     model = payload.get("model")
     if model is not None:
         if not isinstance(model, str) or not model.strip():
