@@ -146,8 +146,25 @@ and its final answer presented that as a real fetch, complete with a fake
 `Output:` line and the code it had *not* been able to run.
 
 An agent that cannot do a thing and reports that it did is worse than one that
-fails. This is now the largest open risk in the agentic layer, ahead of the
-sandbox, and nothing in §4 currently tests for it.
+fails.
+
+**Closed, as far as it can be from this side.** Both runners now return
+`{result, steps, step_errors}` taken from the agent's own step records —
+evidence the model does not author — and `/run` surfaces a `degraded` boolean
+alongside the answer. Re-running the same two probes:
+
+| Task | `degraded` | `steps` | `step_errors` |
+|---|---|---|---|
+| fetch a URL (blocked by the sandbox) | **true** | 2 | `InterpreterError: Import of urllib.request` |
+| arithmetic (nothing blocked) | false | 1 | — |
+
+The model still produced confident prose in the first case. It is now
+*labelled*, which is the part a caller can act on. This does not stop
+fabrication; it stops fabrication arriving unmarked.
+
+**A caller must treat `degraded: true` as "do not trust this answer".** Nothing
+enforces that, and it should become an acceptance criterion of its own rather
+than a convention.
 
 ### 2c — off-host execution: **blocked on an account**
 

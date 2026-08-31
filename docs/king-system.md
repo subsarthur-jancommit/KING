@@ -226,6 +226,76 @@ variants show their reasoning in ~108.
 
 ---
 
+## 5a. The agentic layer
+
+Live since 2026-09-01 as the `agent-sidecar-http` profile: a smolagents
+`CodeAgent` reachable over HTTP, running on whichever model the caller names.
+
+```bash
+curl -s -X POST http://127.0.0.1:8100/run \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $AGENT_TOKEN" \
+  -d '{"task":"…","model":"agy/claude-sonnet-4-6","max_steps":4}'
+```
+
+```json
+{"result": "…", "runner": "smolagents", "model": "agy/claude-sonnet-4-6",
+ "steps": 2, "step_errors": [], "degraded": false}
+```
+
+**Why it works where two other routes did not.** smolagents drives the loop
+itself and issues plain completion calls, so the provider never carries
+multi-turn tool state. `agy`'s own `web_search` tool loop returns 502 on round
+two and drags the credential into a cooldown that breaks unrelated traffic;
+Activepieces' `run_agent` returns 404 because it calls an internal service
+absent from a self-hosted install. Neither is usable. This is.
+
+| Measured | Result |
+|---|---|
+| `agy/claude-sonnet-4-6`, 2-step task | 3 s, correct |
+| `agy/gemini-3.7-flash-high` | 2 s, correct |
+| `ollama/qwen2.5:1.5b`, `max_steps: 2` | 66 s, correct |
+| Test suite in the built image | 61 passed, 3 skipped |
+
+**The local model cannot drive an agent loop.** Unbounded it never converged —
+malformed code blobs, rejected and retried, still running after the caller had
+disconnected at 300 s. It is a single-call worker, not an agent. That is also
+why `max_steps` exists: a caller giving up does not stop an agent, so the
+ceiling lives in the service (default 8, a caller may lower it, never raise).
+
+### Read `degraded` before you read `result`
+
+The agent fabricates when the sandbox stops it. Blocked from fetching a URL, it
+wrote `print("HTTP Status Code: 200")` and returned that as a real fetch, with
+a fabricated `Output:` line and the code it had not been able to run.
+
+`step_errors` comes from the agent's own step records rather than its prose, so
+`degraded: true` means at least one step failed and the answer was produced
+despite it. **Treat that as "do not trust this answer".**
+
+### What contains it, and what does not
+
+`/run` requires a bearer token and fails closed without one configured — 503,
+not open access. That check matters on the Docker bridge, not the loopback
+binding: every container shares `king_default`, and from inside `activepieces`
+`/healthz` returns 200 while `/run` without a token returns 401.
+
+The container drops every capability and carries equal memory and swap limits.
+
+`executor_type` is still `local`. The AST allowlist held against four distinct
+bypass attempts — `open()`, `pathlib`, `builtins` to recover `open`, and
+`urllib` — but smolagents documents it as **not a security boundary**, and this
+only proves it stops the obvious routes. Egress is unrestricted, and
+`read_only: true` is impossible while the command is `uv run`, which syncs the
+virtualenv on start.
+
+**So no unattended trigger may reach `/run`.** Activepieces and Claude Code are
+deliberately not wired to it. That waits on off-host execution — `e2b`,
+`modal`, or `blaxel`, never `docker` — which needs an account this deployment
+does not have.
+
+---
+
 ## 6. The code graph
 
 `codegraph-serve` holds the repository as a graph and exposes ten tools over MCP:
