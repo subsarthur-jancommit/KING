@@ -189,8 +189,26 @@ async def run(request: Request) -> JSONResponse:
     # `model` is echoed because the caller otherwise has no way to tell which
     # model answered — the same silent-degradation problem that made a web
     # search combo quietly answer from training data.
+    #
+    # `step_errors` matters more. Blocked from fetching a URL, an agent wrote
+    # `print("HTTP Status Code: 200")` and presented it as a real fetch with a
+    # fabricated Output: line. The prose lied; the step records did not. A
+    # caller that only reads `result` cannot tell the two apart, so the
+    # evidence the model did not author travels with the answer.
+    outcome = result if isinstance(result, dict) else {"result": result}
+    step_errors = outcome.get("step_errors") or []
     return JSONResponse(
-        {"result": str(result), "runner": runner, "model": settings.model_id}
+        {
+            "result": str(outcome.get("result")),
+            "runner": runner,
+            "model": settings.model_id,
+            "steps": outcome.get("steps"),
+            "step_errors": step_errors,
+            # A single boolean the caller can branch on without parsing
+            # anything: true means at least one step failed, so the answer was
+            # produced despite something not working.
+            "degraded": bool(step_errors),
+        }
     )
 
 

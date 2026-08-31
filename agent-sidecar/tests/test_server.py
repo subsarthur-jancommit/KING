@@ -288,6 +288,63 @@ def test_run_coerces_a_non_string_result(client, monkeypatch):
     assert resp.json()["result"] == "42"
 
 
+def test_run_surfaces_step_errors_and_flags_the_answer_as_degraded(
+    client, monkeypatch
+):
+    # The case this exists for: the agent answered, but a step failed, so the
+    # answer was produced despite something not working. Measured in the wild —
+    # blocked from fetching a URL, an agent printed a hardcoded status code and
+    # presented it as a real fetch. `result` alone cannot show that.
+    monkeypatch.setattr(
+        server,
+        "_resolve",
+        lambda runner: (
+            lambda task, settings=None: {
+                "result": "The HTTP status code is 200.",
+                "steps": 3,
+                "step_errors": ["step 2: InterpreterError: Import of urllib not allowed"],
+            }
+        ),
+    )
+
+    body = client.post("/run", json={"task": "t"}).json()
+
+    assert body["result"] == "The HTTP status code is 200."
+    assert body["steps"] == 3
+    assert body["degraded"] is True
+    assert "urllib" in body["step_errors"][0]
+
+
+def test_run_is_not_degraded_when_every_step_succeeded(client, monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_resolve",
+        lambda runner: (
+            lambda task, settings=None: {"result": "391", "steps": 2, "step_errors": []}
+        ),
+    )
+
+    body = client.post("/run", json={"task": "t"}).json()
+
+    assert body["degraded"] is False
+    assert body["step_errors"] == []
+    assert body["steps"] == 2
+
+
+def test_run_still_accepts_a_runner_that_returns_a_bare_value(client, monkeypatch):
+    # pydantic-ai and the stubs predate the dict shape; a bare return must not
+    # break the wrapper, and must report as not-degraded rather than unknown.
+    monkeypatch.setattr(
+        server, "_resolve", lambda runner: (lambda task, settings=None: 42)
+    )
+
+    body = client.post("/run", json={"task": "t"}).json()
+
+    assert body["result"] == "42"
+    assert body["degraded"] is False
+    assert body["steps"] is None
+
+
 def test_resolve_maps_every_advertised_runner_to_a_real_callable():
     """The only test that exercises the real mapping.
 

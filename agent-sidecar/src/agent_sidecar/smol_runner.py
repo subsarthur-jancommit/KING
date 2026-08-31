@@ -17,19 +17,59 @@ def build_agent(settings: Settings | None = None) -> CodeAgent:
         # Empty allowlist: nothing beyond smolagents' own safe builtins is
         # importable by generated code. This is an AST-level restriction, not
         # an OS sandbox — see settings.executor_type for the real boundary.
+        #
+        # Measured to hold: asked to read /etc/passwd and to fetch a URL, an
+        # agent tried open(), pathlib, builtins (to recover open) and urllib,
+        # and every one was refused.
         additional_authorized_imports=[],
         executor_type=settings.executor_type,
         max_steps=settings.max_steps,
     )
 
 
-def run(task: str, settings: Settings | None = None) -> str:
+def _diagnostics(agent: CodeAgent) -> dict:
+    """Structural evidence about the run, taken from the agent's own memory.
+
+    This exists because the answer text cannot be trusted on its own. Blocked
+    from fetching a URL, an agent wrote `print("HTTP Status Code: 200")` and
+    presented that as a real fetch, complete with a fabricated `Output:` line
+    and the code it had NOT been able to run. The prose lied; the step records
+    did not. A caller needs something the model does not author.
+    """
+    steps = list(getattr(getattr(agent, "memory", None), "steps", []) or [])
+    errors: list[str] = []
+    counted = 0
+    for step in steps:
+        # TaskStep and PlanningStep carry no `error` attribute; only action
+        # steps do, so this both filters and collects in one pass.
+        if not hasattr(step, "error"):
+            continue
+        counted += 1
+        err = step.error
+        if err:
+            errors.append(f"step {getattr(step, 'step_number', counted)}: {err}")
+    return {"steps": counted, "step_errors": errors}
+
+
+def run(task: str, settings: Settings | None = None) -> dict:
+    """Run the agent and return its answer alongside what actually happened.
+
+    Returns a dict rather than a bare string so the caller sees `step_errors`.
+    An agent that could not do the thing and says it did is worse than one that
+    fails, and this is the only signal that distinguishes them.
+    """
     agent = build_agent(settings)
-    return agent.run(task)
+    result = agent.run(task)
+    return {"result": result, **_diagnostics(agent)}
 
 
 if __name__ == "__main__":
     import sys
 
     task = " ".join(sys.argv[1:]) or "Say OK"
-    print(run(task))
+    outcome = run(task)
+    print(outcome["result"])
+    if outcome["step_errors"]:
+        print(f"\n[{len(outcome['step_errors'])} step(s) errored]", file=sys.stderr)
+        for line in outcome["step_errors"]:
+            print(f"  {line}", file=sys.stderr)

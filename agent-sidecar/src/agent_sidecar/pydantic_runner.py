@@ -14,14 +14,22 @@ def build_agent(settings: Settings | None = None):
     return Agent(model)
 
 
-def run_sync(task: str, settings: Settings | None = None) -> str:
+def run_sync(task: str, settings: Settings | None = None) -> dict:
+    """Same return shape as smol_runner.run, so the HTTP wrapper needs no
+    special-casing.
+
+    `steps` is None rather than 0: this runner is a single typed call with no
+    iteration to count, and reporting 0 would read as "ran nothing" instead of
+    "does not apply". `step_errors` is empty because a failure here raises
+    rather than being recorded and continued past.
+    """
     agent = build_agent(settings)
     result = agent.run_sync(task)
-    return result.output
+    return {"result": result.output, "steps": None, "step_errors": []}
 
 
 if __name__ == "__main__":
     import sys
 
     task = " ".join(sys.argv[1:]) or "Say OK"
-    print(run_sync(task))
+    print(run_sync(task)["result"])
