@@ -27,6 +27,13 @@ class Settings:
     # not appropriate the moment untrusted input can reach this service.
     # See docs/integrations/vps-hardening.md.
     executor_type: str
+    # Hard ceiling on agent iterations. A loop is the one thing in this stack
+    # that can spend without bound, and it does: a 1.5B model driving a
+    # CodeAgent produced malformed code blobs, smolagents rejected each one and
+    # retried, and the loop was still running at step 5 after the caller had
+    # already given up and disconnected at 300 s. A caller timing out does not
+    # stop the agent, so the bound has to live here.
+    max_steps: int
 
 
 # Mirrors smolagents.CodeAgent's own Literal for executor_type (verified
@@ -43,6 +50,18 @@ def load_settings() -> Settings:
             f"AGENT_SIDECAR_EXECUTOR={executor_type!r} is not supported; "
             f"expected one of {', '.join(VALID_EXECUTORS)}"
         )
+    raw_max_steps = os.environ.get("AGENT_SIDECAR_MAX_STEPS", "8").strip() or "8"
+    try:
+        max_steps = int(raw_max_steps)
+    except ValueError as exc:
+        raise ValueError(
+            f"AGENT_SIDECAR_MAX_STEPS={raw_max_steps!r} is not an integer"
+        ) from exc
+    if max_steps < 1:
+        raise ValueError(
+            f"AGENT_SIDECAR_MAX_STEPS={max_steps} must be at least 1"
+        )
+
     return Settings(
         omniroute_base_url=base_url,
         omniroute_api_key=os.environ.get("OMNIROUTE_API_KEY") or None,
@@ -52,4 +71,5 @@ def load_settings() -> Settings:
             "OMNIROUTE_MCP_URL", f"{base_url}/api/mcp/stream"
         ),
         executor_type=executor_type,
+        max_steps=max_steps,
     )

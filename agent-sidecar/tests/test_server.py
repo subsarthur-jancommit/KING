@@ -103,6 +103,43 @@ def test_run_falls_back_to_the_configured_model(client, _stub_runners, monkeypat
     assert resp.json()["model"] == "ollama/qwen2.5:1.5b-instruct-q4_K_M"
 
 
+def test_run_caps_max_steps_at_the_configured_ceiling(
+    client, _stub_runners, monkeypatch
+):
+    monkeypatch.setenv("AGENT_SIDECAR_MAX_STEPS", "8")
+
+    # A caller may lower the ceiling but must not be able to raise it: the
+    # bound exists to stop a run that will never converge, and a caller that
+    # times out does not stop the agent.
+    captured = {}
+
+    def _capture(runner):
+        def _run(task, settings=None):
+            captured["max_steps"] = settings.max_steps
+            return "ok"
+
+        return _run
+
+    monkeypatch.setattr(server, "_resolve", _capture, raising=True)
+
+    client.post("/run", json={"task": "t", "max_steps": 99})
+    assert captured["max_steps"] == 8
+
+    client.post("/run", json={"task": "t", "max_steps": 3})
+    assert captured["max_steps"] == 3
+
+
+# `True` is included deliberately: it is an int subclass, so a naive
+# isinstance check would accept it as "1 step".
+@pytest.mark.parametrize("bad", [0, -1, "4", 2.5, True, [], {}])
+def test_run_rejects_a_bad_max_steps(client, _stub_runners, bad):
+    resp = client.post("/run", json={"task": "t", "max_steps": bad})
+
+    assert resp.status_code == 400
+    assert "max_steps" in resp.json()["error"]
+    assert _stub_runners == []
+
+
 @pytest.mark.parametrize("bad", ["", "   ", 7, [], {}])
 def test_run_rejects_a_non_string_or_empty_model(client, _stub_runners, bad):
     resp = client.post("/run", json={"task": "t", "model": bad})

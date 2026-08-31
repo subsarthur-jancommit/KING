@@ -61,6 +61,7 @@ async def health(_request: Request) -> JSONResponse:
             "model_id": settings.model_id,
             "omniroute_base_url": settings.omniroute_base_url,
             "executor_type": settings.executor_type,
+            "max_steps": settings.max_steps,
             # Booleans only — never the keys themselves. This endpoint is
             # unauthenticated (see the module docstring in docs) and its whole
             # job is to be safe to curl.
@@ -111,6 +112,19 @@ async def run(request: Request) -> JSONResponse:
                 status_code=400,
             )
         settings = replace(settings, model_id=model.strip())
+
+    # Per-call iteration ceiling, bounded above by the configured one so a
+    # caller cannot raise it. A caller that times out does NOT stop the agent —
+    # measured: curl gave up at 300 s and the loop was still on step 5 — so
+    # this is the only thing that ends a run that will never converge.
+    max_steps = payload.get("max_steps")
+    if max_steps is not None:
+        if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
+            return JSONResponse(
+                {"error": "'max_steps' must be a positive integer when given"},
+                status_code=400,
+            )
+        settings = replace(settings, max_steps=min(max_steps, settings.max_steps))
 
     func = _resolve(runner)
     try:

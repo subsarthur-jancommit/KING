@@ -19,6 +19,7 @@ def build_agent(settings: Settings | None = None) -> CodeAgent:
         # an OS sandbox — see settings.executor_type for the real boundary.
         additional_authorized_imports=[],
         executor_type=settings.executor_type,
+        max_steps=settings.max_steps,
     )
 
 

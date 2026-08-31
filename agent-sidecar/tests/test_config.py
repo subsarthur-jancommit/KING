@@ -25,8 +25,40 @@ def _clean_env(monkeypatch):
         "OMNIROUTE_MCP_URL",
         "AGENT_SIDECAR_MODEL_ID",
         "AGENT_SIDECAR_EXECUTOR",
+        "AGENT_SIDECAR_MAX_STEPS",
     ):
         monkeypatch.delenv(var, raising=False)
+
+
+def test_max_steps_defaults_to_a_finite_number():
+    # An agent loop is the only thing here that can spend without bound, so the
+    # default must be a real ceiling rather than smolagents' own.
+    assert load_settings().max_steps == 8
+
+
+@pytest.mark.parametrize("raw,expected", [("1", 1), ("20", 20), (" 5 ", 5)])
+def test_max_steps_is_read_from_the_environment(raw, expected, monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_MAX_STEPS", raw)
+    assert load_settings().max_steps == expected
+
+
+@pytest.mark.parametrize("bad", ["nope", "3.5", ""])
+def test_non_integer_max_steps_fails_fast(bad, monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_MAX_STEPS", bad)
+    if bad == "":
+        # Empty falls back to the default rather than erroring, matching how
+        # every other variable here treats an unset-but-present value.
+        assert load_settings().max_steps == 8
+        return
+    with pytest.raises(ValueError, match="AGENT_SIDECAR_MAX_STEPS"):
+        load_settings()
+
+
+@pytest.mark.parametrize("bad", ["0", "-1"])
+def test_max_steps_below_one_fails_fast(bad, monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_MAX_STEPS", bad)
+    with pytest.raises(ValueError, match="at least 1"):
+        load_settings()
 
 
 def test_executor_defaults_to_local():
