@@ -257,8 +257,32 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    # This container runs the Python a model writes. Nothing it does needs a
+    # capability, so it gets none: no raw sockets, no mount, no chown, no
+    # ptrace of anything else in the namespace.
+    cap_drop:
+      - ALL
     mem_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
+    # Equal, like every other service here. Its absence was an oversight, and
+    # it matters more on this one than most: an agent loop is the one thing in
+    # this stack that can consume without bound, and without an equal swap
+    # limit it thrashes the host instead of dying inside its own cgroup.
+    memswap_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
     cpus: ${AGENT_SIDECAR_CPUS:-1.0}
+    #
+    # NOT set, and the reason is worth recording: `read_only: true` would be
+    # the obvious next hardening step and it does not work here. The command
+    # is `uv run`, which syncs the virtualenv on every start — a test run
+    # visibly reports "Uninstalled 1 package, Installed 4 packages" — so a
+    # read-only root filesystem stops the container booting. Making it
+    # read-only means dropping `uv run` for a pre-resolved interpreter path,
+    # which is a change to the image, not to this file.
+    #
+    # Egress is likewise NOT restricted. It would need agent-sidecar-http and
+    # omniroute-base to share an `internal: true` network, and omniroute-base
+    # is defined in the vendored omniroute/ compose file, which this repo must
+    # never edit. Until the sandbox moves off-host (roadmap Phase 2c), model-
+    # written code here can reach the internet.
     logging: *default-logging
     profiles:
       - agent-sidecar-http
