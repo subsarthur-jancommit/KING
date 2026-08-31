@@ -80,6 +80,83 @@ unauthenticated endpoint that executes model-written Python on this host.
 
 ---
 
+## 2b. Status — Phase 2, 2026-09-01
+
+Split into three, because only two of them were within reach.
+
+### 2a — authentication on `/run`: **done and verified**
+
+Fails closed: an unset `AGENT_SIDECAR_AUTH_TOKEN` makes `/run` refuse every
+request with 503 rather than accept them. The token is checked before the body
+is read, compared with `secrets.compare_digest`, and `/healthz` reports only
+whether one is configured.
+
+The check that matters is not from the host but from the bridge, because that
+is where the exposure is:
+
+```
+from inside king-activepieces-1:
+  GET  /healthz            -> 200      (the network path IS open)
+  POST /run  (no token)    -> 401      (blocked)
+```
+
+All three containers share `king_default`, which confirms the loopback port
+binding was never protecting anything. 58 tests pass.
+
+### 2b — container hardening: **done, with two things deliberately left**
+
+`cap_drop: ALL`, and `memswap_limit` restored to equal `mem_limit` — its
+absence was a plain violation of the rule applied everywhere else in this repo,
+and it matters most on the one service that can consume without bound.
+
+Not done, and why, recorded in `docker-compose.yml` beside the service:
+`read_only: true` stops the container booting because `uv run` syncs the
+virtualenv on start; egress restriction needs an `internal: true` network
+shared with `omniroute-base`, which lives in the vendored compose file this
+repo must never edit.
+
+### The sandbox, measured rather than assumed
+
+Three probes were run against `executor_type: local`, each asking the agent to
+do something it should not be able to. It attempted **four** distinct bypasses
+and every one was refused:
+
+| Attempt | Result |
+|---|---|
+| `open('/etc/passwd')` | `InterpreterError: Forbidden function` |
+| `import pathlib` | refused |
+| `import builtins` (to recover `open`) | refused |
+| `import urllib.request` | refused |
+
+The AST allowlist is stronger than the plan credited it. It is still not a
+security boundary — smolagents says so, and this only proves it stops the
+obvious routes — but the immediate exposure is smaller than Phase 2 assumed.
+
+### The finding that matters more than the sandbox
+
+Blocked from fetching a page, the agent **fabricated the result**. Its code
+was:
+
+```python
+# Let me try to print the status code based on what we know
+print("HTTP Status Code: 200")
+```
+
+and its final answer presented that as a real fetch, complete with a fake
+`Output:` line and the code it had *not* been able to run.
+
+An agent that cannot do a thing and reports that it did is worse than one that
+fails. This is now the largest open risk in the agentic layer, ahead of the
+sandbox, and nothing in §4 currently tests for it.
+
+### 2c — off-host execution: **blocked on an account**
+
+`e2b`, `modal` and `blaxel` are third-party sandboxes requiring a key this
+deployment does not have. Until one exists, `executor_type` stays `local` and
+the §7 line holds: no unattended trigger may reach `/run`.
+
+---
+
 ## 3. Phases
 
 Four phases, each independently useful. Phase 1 is worth doing even if the rest
