@@ -28,6 +28,33 @@ jobs:
       - name: Self-test the preflight checks
         run: ./scripts/stax-preflight.sh --self-test
 
+      - name: Self-test the post-deploy checks
+        run: ./scripts/stax-postdeploy.sh --self-test
+
+      - name: A hostname that does not exist must be reported, not swallowed
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils
+          # `.invalid` is reserved by RFC 2606 and is guaranteed NXDOMAIN, so
+          # this needs no network fixture beyond a working resolver.
+          #
+          # The first cut of check_dns died on exactly this input: under
+          # `set -euo pipefail`, the no-match grep in the A-record lookup
+          # aborted the script after the section header and before the
+          # message, exiting 1 with nothing said. Non-zero alone would have
+          # let that regression pass, so the output is asserted too.
+          out=$(./scripts/stax-postdeploy.sh --flows nope.example.invalid 2>&1) && rc=0 || rc=$?
+          echo "$out"
+          if [ "${rc:-0}" -eq 0 ]; then
+            echo "post-deploy accepted a hostname that does not exist" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -q NXDOMAIN; then
+            echo "post-deploy failed but never said the name does not exist" >&2
+            exit 1
+          fi
+          echo "NXDOMAIN correctly reported."
+
       - name: Placeholder secret must be rejected
         run: |
           set -euo pipefail

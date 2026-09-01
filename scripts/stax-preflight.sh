@@ -333,13 +333,12 @@ check_proxy() {
     # registration itself once the first account exists. That is a property of
     # the running instance, not of this config, so it cannot be checked here.
     warn "Activepieces will be reachable from the internet at $ap_domain."
-    echo "         Confirm registration is closed before trusting this:"
-    echo "           curl -sf -o /dev/null -w '%{http_code}' -X POST \\"
-    echo "             https://$ap_domain/api/v1/authentication/sign-up \\"
-    echo "             -H 'Content-Type: application/json' \\"
-    echo "             -d '{\"firstName\":\"x\",\"lastName\":\"x\",\"email\":\"probe@example.invalid\",\"password\":\"Pr0be-Test-99xz\",\"trackEvents\":false,\"newsLetter\":false}'"
-    echo "         403 (INVITATION_ONLY_SIGN_UP) is what you want. 200 means anyone"
-    echo "         who finds the URL can register and run code on this host."
+    echo "         Registration being closed is a property of the running instance,"
+    echo "         so it cannot be settled here. After \`up\`, run:"
+    echo "           ./scripts/stax-postdeploy.sh --flows $ap_domain"
+    echo "         That reads the instance's own USER_CREATED flag; add"
+    echo "         --probe-signup to exercise the endpoint for real. An open"
+    echo "         signup lets anyone who finds the URL run code on this host."
   fi
 
   # OmniRoute's own two "safe on localhost, unsafe in public" defaults. Both
@@ -357,10 +356,10 @@ check_proxy() {
     pass "REQUIRE_API_KEY=true — /v1/* rejects unauthenticated callers."
   else
     fail "REQUIRE_API_KEY is '${require_key:-unset}'. Publishing with this off means anyone who finds the domain can spend your provider credit."
-    echo "         Set REQUIRE_API_KEY=true in omniroute/.env, then verify:"
-    echo "           curl -s -o /dev/null -w '%{http_code}' -X POST https://YOUR_DOMAIN/v1/chat/completions \\"
-    echo "             -H 'Content-Type: application/json' -d '{\"model\":\"oc/big-pickle\",\"messages\":[]}'"
-    echo "         401 is what you want. 200 means the gateway is open to the world."
+    echo "         Set REQUIRE_API_KEY=true in omniroute/.env. This file says what the"
+    echo "         gateway is CONFIGURED to do; only a real unauthenticated request"
+    echo "         proves what it DOES. After \`up\`, run:"
+    echo "           ./scripts/stax-postdeploy.sh --gateway \$OMNIROUTE_PUBLIC_DOMAIN"
   fi
 
   if [ "$cookie_secure" = "true" ]; then
