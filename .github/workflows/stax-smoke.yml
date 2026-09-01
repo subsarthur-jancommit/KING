@@ -204,7 +204,7 @@ jobs:
             -e AGENT_SIDECAR_MODEL_ID=opencode/big-pickle \
             agent-sidecar uv run pytest tests/ -v
 
-      - name: Give the wrapper its key the way a deployment does
+      - name: Give the wrapper its keys the way a deployment does
         run: |
           set -euo pipefail
           # The step above passes the key with `-e` because it runs a one-shot
@@ -213,8 +213,19 @@ jobs:
           # where docs/integrations/activepieces-workflow.md tells an operator
           # to put it — so configure it the same way here rather than
           # inventing a CI-only path.
+          #
+          # Two secrets, not one. OMNIROUTE_API_KEY is what the wrapper
+          # presents UPSTREAM to the gateway; AGENT_SIDECAR_AUTH_TOKEN is what
+          # callers must present to IT. Without the second, /run fails closed
+          # with 503 and every step below is testing a refusal — which is
+          # exactly what happened once the pytest step stopped aborting the
+          # job first and this step was finally reached.
+          AUTH_TOKEN=$(openssl rand -hex 32)
+          echo "::add-mask::${AUTH_TOKEN}"
+          echo "SIDECAR_AUTH_TOKEN=${AUTH_TOKEN}" >> "$GITHUB_ENV"
           {
             echo "OMNIROUTE_API_KEY=${SIDECAR_API_KEY}"
+            echo "AGENT_SIDECAR_AUTH_TOKEN=${AUTH_TOKEN}"
             echo "AGENT_SIDECAR_MODEL_ID=opencode/big-pickle"
           } > agent-sidecar/.env
           chmod 600 agent-sidecar/.env
@@ -246,11 +257,40 @@ jobs:
           # that starts echoing settings back cannot pass unnoticed.
           BODY=$(curl -sf http://localhost:8100/healthz)
           echo "$BODY" | grep -q '"omniroute_api_key_set":true'
-          if echo "$BODY" | grep -qF "${SIDECAR_API_KEY}"; then
-            echo "/healthz leaked the API key" >&2
-            exit 1
-          fi
+          # Asserted here rather than left to the run steps: when this is false
+          # /run answers 503 to everyone, and a green "rejected" result reads
+          # the same as a working guard.
+          echo "$BODY" | grep -q '"auth_configured":true'
+          for secret in "${SIDECAR_API_KEY}" "${SIDECAR_AUTH_TOKEN}"; do
+            if echo "$BODY" | grep -qF "$secret"; then
+              echo "/healthz leaked a secret" >&2
+              exit 1
+            fi
+          done
           echo "No key material in the health payload."
+
+      - name: An unauthenticated /run must be refused
+        run: |
+          set -euo pipefail
+          # The bearer requirement landed in "Require a bearer token on /run,
+          # and fail closed without one" with nothing in CI exercising it.
+          # /run executes model-written Python, so it is worth one assertion
+          # that the door is actually shut.
+          BODY='{"task":"should never run"}'
+
+          no_header=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8100/run \
+            -H 'Content-Type: application/json' -d "$BODY")
+          wrong_token=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8100/run \
+            -H 'Content-Type: application/json' \
+            -H 'Authorization: Bearer not-the-real-token' -d "$BODY")
+
+          for code in "$no_header" "$wrong_token"; do
+            if [ "$code" != "401" ]; then
+              echo "expected 401 from an unauthenticated /run, got $code" >&2
+              exit 1
+            fi
+          done
+          echo "/run rejects a missing and a wrong bearer token."
 
       - name: A real task must run end to end over HTTP
         run: |
@@ -263,6 +303,7 @@ jobs:
           # error message, which is what distinguishes the two cases below.
           RESP=$(curl -s -X POST http://localhost:8100/run \
             -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer ${SIDECAR_AUTH_TOKEN}" \
             --max-time 300 \
             -d '{"task":"Say exactly: HTTP-WRAPPER-OK, nothing else."}')
           echo "$RESP"
@@ -287,7 +328,8 @@ jobs:
           set -euo pipefail
           for body in '{}' '{"task":""}' '{"task":"t","runner":"nope"}'; do
             code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8100/run \
-              -H 'Content-Type: application/json' -d "$body")
+              -H 'Content-Type: application/json' \
+              -H "Authorization: Bearer ${SIDECAR_AUTH_TOKEN}" -d "$body")
             if [ "$code" != "400" ]; then
               echo "expected 400 for $body, got $code" >&2
               exit 1
