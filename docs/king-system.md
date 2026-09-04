@@ -356,7 +356,7 @@ absent from a self-hosted install. Neither is usable. This is.
 | `agy/claude-sonnet-4-6`, 2-step task | 3 s, correct |
 | `agy/gemini-3.7-flash-high` | 2 s, correct |
 | `ollama/qwen2.5:1.5b`, `max_steps: 2` | 66 s, correct |
-| Test suite in the built image | 61 passed, 3 skipped |
+| Test suite in the built image | 94 passed, 3 skipped |
 
 **The local model cannot drive an agent loop.** Unbounded it never converged —
 malformed code blobs, rejected and retried, still running after the caller had
@@ -373,6 +373,49 @@ a fabricated `Output:` line and the code it had not been able to run.
 `step_errors` comes from the agent's own step records rather than its prose, so
 `degraded: true` means at least one step failed and the answer was produced
 despite it. **Treat that as "do not trust this answer".**
+
+### The tools it holds, and the one it never will
+
+Until 2026-09-04 the agent ran with `tools=[]`. It could execute Python in a
+sandbox and nothing else — no search, no fetch, no memory. It now loads tools
+from OmniRoute's MCP server, gated on a separately provisioned `manage`-scoped
+`OMNIROUTE_MCP_API_KEY`.
+
+It does **not** get all 110. The default is seven, read-mostly:
+
+```
+omniroute_web_search   omniroute_web_fetch   omniroute_x_search
+omniroute_list_models_catalog   omniroute_get_health
+omniroute_memory_search   omniroute_memory_add
+```
+
+**An allowlist, not a denylist**, set by `AGENT_SIDECAR_AGENT_TOOLS`
+(`none` for no tools). OmniRoute tags twelve tools "phase 1", and that was the
+obvious set to reuse — but the tag marks usefulness to an MCP client, not
+safety in the hands of an agent that reads web pages. Two of the twelve,
+`omniroute_switch_combo` and `omniroute_create_combo`, rewrite the live
+gateway's routing. An allowlist also survives upstream growth: a `git subtree
+pull` that adds twenty tools adds none of them here, where a denylist would be
+wrong from that moment until somebody noticed.
+
+**`vps_exec` is never registered, and configuration cannot change that.** It,
+`run_agent` and `ask_model` are this service's own MCP tools, so under correct
+configuration they are not offered to the agent at all. They are named in
+`NEVER_REGISTER` because the mistake that would offer them is quiet: point
+`OMNIROUTE_MCP_URL` at this service instead of the gateway, and the agent is
+holding a shell on the VPS with `run_agent` to recurse into itself. Being
+offered one is reported as `misdirected` rather than silently filtered — the
+operator needs to know the URL is wrong, not merely be protected from it.
+
+**A tool that was asked for and not delivered counts as `degraded`.** It is
+invisible in `result`: the agent answers from training data and sounds exactly
+like one that searched — the same failure a self-hosted search layer produced
+for real, not an outage but confident wrong answers. So `/run` reports
+`selected`, `missing` and `misdirected`, and folds all three into `degraded`.
+
+`/healthz` reports `agent_tools_active` as the **conjunction** of the allowlist
+and the key, because setting one without the other is the obvious way to end up
+with an agent that has no tools and says nothing about it.
 
 ### What contains it, and what does not
 
