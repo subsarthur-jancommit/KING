@@ -34,6 +34,27 @@
 		}
 	}
 
+	# The code graph, on the same reasoning as the bridge above: a path on a
+	# name that already resolves, because this domain has no wildcard record.
+	#
+	# /king-codegraph/mcp reaches codegraph-serve as /mcp, which is the path
+	# `graphify.serve --path /mcp` publishes.
+	#
+	# No auth layer is added here, unlike nothing else on this domain, because
+	# codegraph-serve already enforces its own GRAPHIFY_API_KEY bearer.
+	# Verified before this block was written rather than assumed: with the key
+	# unset the compose default is an EMPTY string, which would have published
+	# a full map of this repo to the open internet. Probed on the VPS —
+	# no token gives 401, a wrong token gives 401.
+	#
+	# Reaching it previously required `ssh -L` every session, which is the
+	# whole reason a live, daily-refreshed graph sat unused.
+	handle_path /king-codegraph/* {
+		reverse_proxy codegraph-serve:8130 {
+			flush_interval -1
+		}
+	}
+
 	handle {
 		reverse_proxy omniroute-base:{$DASHBOARD_PORT:20128} {
 		# OmniRoute streams SSE for /v1/chat/completions and /v1/messages.
