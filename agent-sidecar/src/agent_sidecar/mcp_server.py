@@ -129,7 +129,13 @@ def vps_status() -> dict:
     # container's view; on a single-purpose VPS that tracks the host closely
     # enough to answer "is there room", which is what this is for.
     return {
-        "memory": sh("free -m | awk '/^Mem:/{print $2\" MB total, \"$7\" MB available\"}'"),
+        # /proc/meminfo rather than `free`: this is a python:slim image and
+        # procps is not installed, so `free` returned an empty string — a
+        # health tool reporting "" for memory is worse than one that errors.
+        "memory": sh(
+            "awk '/^MemTotal:/{t=$2}/^MemAvailable:/{a=$2}"
+            "END{printf \"%d MB total, %d MB available\", t/1024, a/1024}' /proc/meminfo"
+        ),
         "disk": sh("df -h / | awk 'NR==2{print $3\" used of \"$2\" (\"$5\")\"}'"),
         "load": sh("cat /proc/loadavg | cut -d' ' -f1-3"),
         "sidecar_uptime": sh("cat /proc/uptime | cut -d' ' -f1"),
