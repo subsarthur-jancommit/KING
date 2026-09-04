@@ -34,6 +34,17 @@ class Settings:
     # including the one that runs model-authored code, reaches
     # http://agent-sidecar-http:8100 directly.
     auth_token: str | None
+    # Packages generated code may import, as a tuple so Settings stays
+    # hashable. Empty by default, and deliberately NOT widened automatically
+    # when executor_type becomes remote: switching sandbox and widening
+    # permissions are two decisions, and bundling them means the second happens
+    # without anyone choosing it. Set AGENT_SIDECAR_AUTHORIZED_IMPORTS
+    # explicitly once the sandbox is proven.
+    #
+    # With executor_type=local this list is the ONLY boundary, so keep it empty
+    # there. With a remote sandbox the sandbox is the boundary and a practical
+    # list is what makes the agent able to do anything at all.
+    authorized_imports: tuple[str, ...]
     # Hard ceiling on agent iterations. A loop is the one thing in this stack
     # that can spend without bound, and it does: a 1.5B model driving a
     # CodeAgent produced malformed code blobs, smolagents rejected each one and
@@ -79,5 +90,10 @@ def load_settings() -> Settings:
         ),
         executor_type=executor_type,
         auth_token=os.environ.get("AGENT_SIDECAR_AUTH_TOKEN") or None,
+        authorized_imports=tuple(
+            p.strip()
+            for p in os.environ.get("AGENT_SIDECAR_AUTHORIZED_IMPORTS", "").split(",")
+            if p.strip()
+        ),
         max_steps=max_steps,
     )

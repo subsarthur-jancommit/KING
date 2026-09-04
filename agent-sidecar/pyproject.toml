@@ -4,7 +4,16 @@ version = "0.1.0"
 description = "STAX agent-sidecar — smolagents + pydantic-ai runners using OmniRoute as LLM backend and MCP tool source."
 requires-python = ">=3.11"
 dependencies = [
-    "smolagents[toolkit,mcp]>=1.0.0",
+    # `e2b` and `modal` are the two off-host sandboxes this deployment will
+    # accept. `docker` is deliberately excluded even though smolagents offers
+    # it: DockerExecutor uses docker.from_env(), so from inside this container
+    # it needs the host's Docker socket — root-equivalent host access handed to
+    # the one service that runs model-written code by design. `blaxel` is
+    # excluded because the operator chose not to use it.
+    #
+    # Both extras are light: e2b pulls e2b-code-interpreter and python-dotenv,
+    # modal pulls modal and websocket-client. Neither drags in torch.
+    "smolagents[toolkit,mcp,e2b,modal]>=1.0.0",
     "pydantic-ai>=1.0.0",
     "httpx>=0.27",
     # Both already arrive transitively via `mcp`, so declaring them adds no

@@ -14,14 +14,17 @@ def build_agent(settings: Settings | None = None) -> CodeAgent:
     return CodeAgent(
         tools=[],
         model=model,
-        # Empty allowlist: nothing beyond smolagents' own safe builtins is
-        # importable by generated code. This is an AST-level restriction, not
-        # an OS sandbox — see settings.executor_type for the real boundary.
+        # Empty by default. With executor_type=local this is the ONLY boundary,
+        # and it holds: asked to read /etc/passwd and to fetch a URL, an agent
+        # tried open(), pathlib, builtins (to recover open) and urllib, and
+        # every one was refused. It is still an AST filter, not an OS sandbox —
+        # smolagents says so — which is why the real answer is a remote
+        # executor.
         #
-        # Measured to hold: asked to read /etc/passwd and to fetch a URL, an
-        # agent tried open(), pathlib, builtins (to recover open) and urllib,
-        # and every one was refused.
-        additional_authorized_imports=[],
+        # Widening it is a separate, explicit decision (see config.py), because
+        # a list that grew automatically when the executor changed would be a
+        # permission change nobody made.
+        additional_authorized_imports=list(settings.authorized_imports),
         executor_type=settings.executor_type,
         max_steps=settings.max_steps,
     )
