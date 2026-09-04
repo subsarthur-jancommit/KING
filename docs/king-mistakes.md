@@ -209,7 +209,36 @@ unexpected 403 or an unexpected fallback.
 
 ---
 
-## 12. Smaller ones, kept for the pattern
+## 12. Repeated a documented mistake, six days after documenting it
+
+**What happened.** Added a `qdrant` service to the root `docker-compose.yml`.
+`omniroute/docker-compose.yml:221` already defines one.
+
+That is precisely what entry 1 of this file and the comment at the top of the
+compose file both forbid, citing the `omniroute-base` override that turned
+every Docker CI job red with `conflicts with imported resource`.
+
+**Why it was not caught.** For the same reason as last time: it worked.
+Compose v5.5 accepts the override, so the container came up healthy — carrying
+*my* image `v1.19.1` under *their* `container_name: omniroute-qdrant`. The
+mismatch in that one line was the only visible tell, and it appeared in the
+`up` output as `Container omniroute-qdrant Starting`, which reads as normal.
+
+**The second mistake inside the first.** It was never needed. The comment
+above their service says SQLite + sqlite-vec + FTS5 is the primary vector
+store and Qdrant is for cross-instance sharing or >1M points. `enabled: false`
+in `/api/settings/qdrant` means the dual-write path is off, **not** that memory
+is off. Verified after reverting: `omniroute_memory_add` then
+`omniroute_memory_search` wrote and retrieved a record with no Qdrant running.
+
+**Rule.** Before adding any service, grep `omniroute/docker-compose.yml` for
+its name. And before adding infrastructure to enable a feature, check whether
+the feature already works — `enabled: false` on one backend does not mean the
+capability is unavailable.
+
+---
+
+## 13. Smaller ones, kept for the pattern
 
 - **Executable bit lost on Windows.** Two scripts were committed `100644` while
   every other script in `scripts/` is `100755`. After `git pull` on the VPS they

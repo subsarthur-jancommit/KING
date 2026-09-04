@@ -238,7 +238,7 @@ Three MCP servers, two of which already existed and had never been switched on.
 | Endpoint | Tools | What it covers |
 |---|---|---|
 | `https://gateway.arject.co/api/mcp/stream` | **110** | OmniRoute's own control plane — routing, quota, cost, cache, skills, memory, `best_combo_for_task`, `explain_route` |
-| `https://gateway.arject.co/king-agent/mcp` | **3** | `run_agent`, `ask_model`, `vps_status` |
+| `https://gateway.arject.co/king-agent/mcp` | **4** | `run_agent`, `ask_model`, `vps_status`, `vps_exec` |
 | `http://127.0.0.1:8130/mcp` (tunnel) | **10** | codegraph — `get_neighbors`, `shortest_path`, `god_nodes`, … |
 
 ### Connecting
@@ -276,6 +276,47 @@ a loopback-only allow-list. The public name is added via
 `AGENT_SIDECAR_MCP_ALLOWED_HOSTS`; the guard stays on, because it is the only
 thing stopping a browser page from driving this endpoint through a victim's
 network.
+
+### `vps_exec` — a shell, and what it really grants
+
+Off unless `AGENT_SIDECAR_EXEC_ENABLED` is set. Runs in the sidecar with the
+repo at `/workspace`, `git`, `curl` and `docker-cli` installed, and the host's
+Docker socket mounted.
+
+**Mounting that socket is granting root on this host.** Anything holding it can
+start a privileged container with `/` mounted, so `cap_drop`, the non-root uid
+and the `/dev/null` masks used elsewhere limit none of it. Four things do the
+protecting instead:
+
+1. the tool is off by default, so no deployment grows a shell by accident
+2. the bearer token on `/mcp`, which fails closed
+3. **the agent never receives it** — smolagents is built with `tools=[]`, and
+   that matters because the agent reads web pages: a page carrying instructions
+   plus a shell is a direct path from someone else's text to this machine
+4. every command is appended to `/audit/vps_exec.log` before it runs
+
+```bash
+docker run --rm -v king_agent-audit:/a alpine cat /a/vps_exec.log
+```
+
+Two permission faults showed up on first real use, both the same shape — a
+mount present but unusable because the container runs as uid 10001. `git`
+exited 128 with "dubious ownership" until `safe.directory`; the audit log
+stayed empty until `/audit` existed in the image owned by `app`, because Docker
+seeds a fresh named volume's ownership from the image path. The audit helper
+writes its own failures to stderr rather than swallowing them, which is the
+only reason the second was a five-minute fix.
+
+### Memory persists without extra infrastructure
+
+OmniRoute's memory runs on SQLite + sqlite-vec + FTS5. Verified end to end:
+`omniroute_memory_add` then `omniroute_memory_search` wrote and retrieved a
+record with nothing else running.
+
+`enabled: false` at `/api/settings/qdrant` means the **dual-write path** to
+Qdrant is off, not that memory is off — a distinction worth knowing before
+adding 74 MB of vector store to a 2-vCPU box, which is exactly the mistake
+that was made and reverted here.
 
 ### Why a path and not a subdomain
 
