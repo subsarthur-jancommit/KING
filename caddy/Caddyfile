@@ -9,7 +9,33 @@
 # DASHBOARD_PORT does not need to be reachable from outside the VPS at all.
 
 {$OMNIROUTE_PUBLIC_DOMAIN} {
-	reverse_proxy omniroute-base:{$DASHBOARD_PORT:20128} {
+	# The agent bridge, served under a path rather than its own subdomain.
+	#
+	# A name like agent.arject.co would be cleaner, but it needs a DNS A
+	# record, and this domain has no wildcard — probed 2026-09-04:
+	# gateway and flows resolve to the VPS, any other subdomain does not
+	# resolve at all. A path on a name that already resolves needs nothing
+	# from DNS, so the bridge is usable now rather than after a DNS change.
+	#
+	# `handle_path` strips the prefix, so /king-agent/mcp reaches the sidecar
+	# as /mcp — which is the path FastMCP serves and the path an MCP client
+	# will be pointed at.
+	#
+	# Safe to reference an upstream from a profile that may not be running:
+	# Caddy resolves reverse_proxy upstreams per request, so a missing
+	# container yields 502 on this path only. It is an unset *site address*
+	# that breaks config load, not an unreachable upstream — see the
+	# Activepieces note below.
+	handle_path /king-agent/* {
+		reverse_proxy agent-sidecar-http:8100 {
+			# The MCP transport streams; buffering would stall it, the same
+			# reason the gateway below sets this.
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy omniroute-base:{$DASHBOARD_PORT:20128} {
 		# OmniRoute streams SSE for /v1/chat/completions and /v1/messages.
 		# Caddy does not buffer responses by default, but say so explicitly:
 		# a future directive that enables buffering would silently break
@@ -32,6 +58,7 @@
 		# connection never succeeded, so a POST cannot be applied twice.
 		lb_try_duration 20s
 		lb_try_interval 500ms
+		}
 	}
 }
 
