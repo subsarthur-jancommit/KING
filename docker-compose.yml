@@ -719,7 +719,56 @@ services:
     profiles:
       - localmodel
 
+  # Vector store behind OmniRoute's memory engine, so Claude keeps something
+  # across sessions instead of starting cold every time.
+  #
+  # OmniRoute already integrates this first-class — settings at
+  # /api/settings/qdrant (host, collection, embeddingModel), health and
+  # cleanup routes, a dashboard card, and the omniroute_memory_* MCP tools.
+  # Nothing here is new code; the engine was simply set to a mode that stores
+  # nothing.
+  #
+  # Embeddings come from ollama-local/embeddinggemma rather than an API model:
+  # memory writes on every turn, and a per-token embedding bill on every turn
+  # is exactly the kind of cost that arrives as a surprise.
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    # No ports. OmniRoute reaches http://qdrant:6333 on the compose network;
+    # publishing it would put an unauthenticated vector store on the internet,
+    # since Qdrant's API key is optional and unset here.
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      # Telemetry off: this is a private store on a small box and has no
+      # reason to phone home.
+      - QDRANT__TELEMETRY_DISABLED=true
+    healthcheck:
+      # The image has no curl, wget, nc or python — only bash. /dev/tcp is
+      # bash's own socket, so this asserts a real 200 from /readyz rather than
+      # merely that something is listening, which is the distinction every
+      # other healthcheck in this file also makes.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET /readyz HTTP/1.0\r\n\r\n" >&3 && head -1 <&3 | grep -q "200"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${QDRANT_MEM_LIMIT:-512m}
+    memswap_limit: ${QDRANT_MEM_LIMIT:-512m}
+    cpus: ${QDRANT_CPUS:-0.5}
+    logging: *default-logging
+    profiles:
+      - memory
+
 volumes:
+  qdrant-storage:
   openhands-canvas-settings:
   caddy-data:
   caddy-config:
