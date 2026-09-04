@@ -226,6 +226,66 @@ variants show their reasoning in ~108.
 
 ---
 
+## 5. The bridge — how Claude reaches any of this
+
+Until 2026-09-04 Claude had five tools while this VPS ran 1,019 models, a
+59k-node code graph and an agent runtime. The gap was never capability; nothing
+was reachable without an SSH tunnel per session, which is why the code graph sat
+unused while running perfectly.
+
+Three MCP servers, two of which already existed and had never been switched on.
+
+| Endpoint | Tools | What it covers |
+|---|---|---|
+| `https://gateway.arject.co/api/mcp/stream` | **110** | OmniRoute's own control plane — routing, quota, cost, cache, skills, memory, `best_combo_for_task`, `explain_route` |
+| `https://gateway.arject.co/king-agent/mcp` | **3** | `run_agent`, `ask_model`, `vps_status` |
+| `http://127.0.0.1:8130/mcp` (tunnel) | **10** | codegraph — `get_neighbors`, `shortest_path`, `god_nodes`, … |
+
+### Connecting
+
+```bash
+claude mcp add --transport http king \
+  https://gateway.arject.co/king-agent/mcp \
+  --header "Authorization: Bearer $AGENT_SIDECAR_AUTH_TOKEN"
+
+claude mcp add --transport http omniroute \
+  https://gateway.arject.co/api/mcp/stream \
+  --header "Authorization: Bearer $OMNIROUTE_MANAGE_KEY"
+```
+
+Both tokens live in gitignored files on the VPS — `agent-sidecar/.env` and the
+OmniRoute key list. Never put them in a committed `.mcp.json`.
+
+### Four things that each failed silently first
+
+**OmniRoute's MCP was off.** `mcpEnabled: false` and `mcpTransport: stdio` by
+default. Turning both on is what produced 110 tools from nothing.
+
+**`tools/list` returned 0 tools** until the `Mcp-Session-Id` from `initialize`
+was carried forward. That is the protocol, not a permission problem — the
+symptom looks identical to a scope failure.
+
+**The bind mount kept serving the old config.** `git pull` replaces a file
+rather than editing it, so the new inode never reached the running Caddy
+container. `grep` inside the container showed zero matches while the host file
+was correct. Recreating the container is what re-resolves it.
+
+**Every proxied call answered "Invalid Host header"** — as a 200 with that
+body, not an error status. MCP's DNS-rebinding guard validates `Host` against
+a loopback-only allow-list. The public name is added via
+`AGENT_SIDECAR_MCP_ALLOWED_HOSTS`; the guard stays on, because it is the only
+thing stopping a browser page from driving this endpoint through a victim's
+network.
+
+### Why a path and not a subdomain
+
+`agent.arject.co` would be cleaner and needs a DNS A record. Probed: only
+`gateway` and `flows` resolve to this VPS, there is no wildcard. A path on a
+name that already resolves needs nothing from DNS, so `/king-agent/*` is
+usable now rather than after a change only the operator can make.
+
+---
+
 ## 5a. The agentic layer
 
 Live since 2026-09-01 as the `agent-sidecar-http` profile: a smolagents
