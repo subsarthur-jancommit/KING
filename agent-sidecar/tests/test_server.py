@@ -355,3 +355,23 @@ def test_resolve_maps_every_advertised_runner_to_a_real_callable():
     """
     for runner in server.RUNNERS:
         assert callable(server._resolve(runner)), runner
+
+
+@pytest.mark.parametrize(
+    "executor,expected",
+    [
+        ("local", "restriction"),
+        ("e2b", "install-manifest (NOT a restriction)"),
+        ("modal", "install-manifest (NOT a restriction)"),
+    ],
+)
+def test_healthz_says_which_meaning_the_import_list_has(
+    client, monkeypatch, executor, expected
+):
+    # The trap this guards: `authorized_imports: []` reads as "nothing can be
+    # imported", and under a remote executor that is false — smolagents passes
+    # the list to pip and restricts nothing. Verified in the wild: with the
+    # list empty under e2b, an agent imported socket, platform and urllib.
+    monkeypatch.setenv("AGENT_SIDECAR_EXECUTOR", executor)
+
+    assert client.get("/healthz").json()["imports_are"] == expected

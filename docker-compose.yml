@@ -94,6 +94,10 @@ services:
       # "blaxel"), which needs no local daemon.
       # See docs/integrations/vps-hardening.md.
       - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-local}
+      # Read config.py before setting this: under `local` it RESTRICTS imports
+      # and is the whole boundary, under e2b/modal smolagents pip-installs it
+      # and restricts nothing.
+      - AGENT_SIDECAR_AUTHORIZED_IMPORTS=${AGENT_SIDECAR_AUTHORIZED_IMPORTS:-}
     depends_on:
       omniroute-base:
         condition: service_healthy
@@ -239,6 +243,10 @@ services:
     environment:
       - OMNIROUTE_BASE_URL=http://omniroute-base:${DASHBOARD_PORT:-20128}
       - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-local}
+      # Read config.py before setting this: under `local` it RESTRICTS imports
+      # and is the whole boundary, under e2b/modal smolagents pip-installs it
+      # and restricts nothing.
+      - AGENT_SIDECAR_AUTHORIZED_IMPORTS=${AGENT_SIDECAR_AUTHORIZED_IMPORTS:-}
     ports:
       - "${AGENT_SIDECAR_HTTP_BIND_HOST:-127.0.0.1}:${AGENT_SIDECAR_HTTP_PORT:-8100}:8100"
     depends_on:

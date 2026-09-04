@@ -34,16 +34,24 @@ class Settings:
     # including the one that runs model-authored code, reaches
     # http://agent-sidecar-http:8100 directly.
     auth_token: str | None
-    # Packages generated code may import, as a tuple so Settings stays
-    # hashable. Empty by default, and deliberately NOT widened automatically
-    # when executor_type becomes remote: switching sandbox and widening
-    # permissions are two decisions, and bundling them means the second happens
-    # without anyone choosing it. Set AGENT_SIDECAR_AUTHORIZED_IMPORTS
-    # explicitly once the sandbox is proven.
+    # THE SAME LIST MEANS TWO OPPOSITE THINGS depending on executor_type, and
+    # this is the single most misleading thing in this service.
     #
-    # With executor_type=local this list is the ONLY boundary, so keep it empty
-    # there. With a remote sandbox the sandbox is the boundary and a practical
-    # list is what makes the agent able to do anything at all.
+    #   local            -> a RESTRICTION. Generated code may import only what
+    #                       is listed here, enforced by an AST filter. Empty
+    #                       means "nothing", and that is the entire boundary.
+    #
+    #   e2b / modal      -> an INSTALL MANIFEST. smolagents' remote executors
+    #                       pass it to `install_packages()`, i.e. pip. Nothing
+    #                       is restricted: generated code can import anything
+    #                       already in the sandbox image regardless of this
+    #                       list. Verified — with this empty, an agent running
+    #                       under e2b imported socket, platform and urllib.
+    #
+    # So moving to a remote executor does not merely widen the allowlist, it
+    # removes the allowlist. That is the intended design — the sandbox is the
+    # boundary — but it must be a decision someone makes knowing it, which is
+    # why /healthz reports which meaning is in force.
     authorized_imports: tuple[str, ...]
     # Hard ceiling on agent iterations. A loop is the one thing in this stack
     # that can spend without bound, and it does: a 1.5B model driving a

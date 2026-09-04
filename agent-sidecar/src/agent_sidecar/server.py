@@ -63,9 +63,17 @@ async def health(_request: Request) -> JSONResponse:
             "omniroute_base_url": settings.omniroute_base_url,
             "executor_type": settings.executor_type,
             "max_steps": settings.max_steps,
-            # Visible because with executor_type=local this list is the entire
-            # boundary, and an operator should be able to see it from outside.
             "authorized_imports": list(settings.authorized_imports),
+            # The list above means opposite things per executor, so say which.
+            # Under `local` it restricts and is the entire boundary; under a
+            # remote sandbox smolagents pip-installs it and restricts nothing,
+            # so an operator reading `authorized_imports: []` must not conclude
+            # "nothing can be imported".
+            "imports_are": (
+                "restriction"
+                if settings.executor_type == "local"
+                else "install-manifest (NOT a restriction)"
+            ),
             # Booleans only — never the keys themselves. This endpoint is
             # unauthenticated (see the module docstring in docs) and its whole
             # job is to be safe to curl.
