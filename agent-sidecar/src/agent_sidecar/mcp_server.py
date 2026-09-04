@@ -23,11 +23,41 @@ import subprocess
 import urllib.request
 from dataclasses import replace
 
+import os
+
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import load_settings
 
-mcp = FastMCP("king", stateless_http=True)
+# MCP ships DNS-rebinding protection that validates the Host header against an
+# allow-list defaulting to localhost only. Behind a reverse proxy the header is
+# the public name, so every request arrives as "Invalid Host header" — a 200
+# with that body rather than an error status, which reads like a broken tool
+# rather than a rejected host.
+#
+# The fix is to add the real host, NOT to disable the protection: it is the
+# only thing stopping a page in a browser from driving this endpoint through a
+# victim's own network.
+_LOOPBACK = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+_extra_hosts = [
+    h.strip()
+    for h in os.environ.get("AGENT_SIDECAR_MCP_ALLOWED_HOSTS", "").split(",")
+    if h.strip()
+]
+
+mcp = FastMCP(
+    "king",
+    # No session state to lose across a reverse proxy — the same reason the
+    # codegraph server runs with --stateless.
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_LOOPBACK + _extra_hosts,
+        allowed_origins=[f"https://{h}" for h in _extra_hosts]
+        + ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"],
+    ),
+)
 
 
 @mcp.tool(

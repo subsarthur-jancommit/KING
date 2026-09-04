@@ -98,6 +98,11 @@ services:
       # and is the whole boundary, under e2b/modal smolagents pip-installs it
       # and restricts nothing.
       - AGENT_SIDECAR_AUTHORIZED_IMPORTS=${AGENT_SIDECAR_AUTHORIZED_IMPORTS:-}
+      # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
+      # proxy this must include the public name, or every request comes back
+      # "Invalid Host header". Empty leaves loopback-only, which is correct
+      # when nothing proxies to it.
+      - AGENT_SIDECAR_MCP_ALLOWED_HOSTS=${AGENT_SIDECAR_MCP_ALLOWED_HOSTS:-}
     depends_on:
       omniroute-base:
         condition: service_healthy
@@ -247,6 +252,11 @@ services:
       # and is the whole boundary, under e2b/modal smolagents pip-installs it
       # and restricts nothing.
       - AGENT_SIDECAR_AUTHORIZED_IMPORTS=${AGENT_SIDECAR_AUTHORIZED_IMPORTS:-}
+      # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
+      # proxy this must include the public name, or every request comes back
+      # "Invalid Host header". Empty leaves loopback-only, which is correct
+      # when nothing proxies to it.
+      - AGENT_SIDECAR_MCP_ALLOWED_HOSTS=${AGENT_SIDECAR_MCP_ALLOWED_HOSTS:-}
     ports:
       - "${AGENT_SIDECAR_HTTP_BIND_HOST:-127.0.0.1}:${AGENT_SIDECAR_HTTP_PORT:-8100}:8100"
     depends_on:
