@@ -282,7 +282,12 @@ services:
       #   4. every command is appended to /audit/vps_exec.log
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/workspace
-      - ./agent-sidecar/audit:/audit
+      # A named volume, not a bind mount: the host directory is owned by the
+      # host user and this container runs as uid 10001, so a bind mount is
+      # present and unwritable — the audit log stayed empty while every
+      # command ran, which is the worst shape for an audit trail. Read it with
+      #   docker run --rm -v king_agent-audit:/a alpine cat /a/vps_exec.log
+      - agent-audit:/audit
     # The socket is root:docker mode 660, and this image runs as uid 10001, so
     # without the docker group the mount above is present and unreadable — a
     # failure that looks like "docker is broken" rather than "no permission".
@@ -721,3 +726,4 @@ volumes:
   activepieces-cache:
   codegraph-out:
   ollama-models:
+  agent-audit:

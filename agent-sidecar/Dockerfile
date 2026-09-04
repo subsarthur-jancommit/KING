@@ -41,6 +41,12 @@ RUN chown app:app /app
 
 USER app
 
+# The repo is bind-mounted at /workspace and owned by the host user, not by
+# uid 10001, so git refuses every command with "detected dubious ownership".
+# Measured: `git log` exits 128 before this line exists. Scoped to the one
+# path that is mounted, not a blanket "*".
+RUN git config --global --add safe.directory /workspace
+
 RUN uv sync --no-dev --frozen
 
 ENV OMNIROUTE_BASE_URL=http://omniroute-base:20128
