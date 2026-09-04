@@ -1,6 +1,29 @@
 name: STAX smoke test
 
+# Paths are duplicated across the two triggers rather than shared, because
+# GitHub Actions has no anchor or alias support in workflow `on:` blocks — a
+# YAML anchor here is accepted by the parser and then silently ignored.
+#
+# `push` is not decoration. This workflow existed for months triggering only on
+# pull_request, while roughly fifteen commits of agent-sidecar work went
+# straight to main: the MCP server, vps_exec, the sandbox move, the audit
+# ownership fix. None of it was ever tested by CI. The tests passed on the VPS,
+# by hand, which is exactly the kind of evidence docs/king-mistakes.md entry 2
+# says not to trust. A workflow named "STAX smoke test" that covers precisely
+# the files being changed, and does not run when they change, is a guard that
+# does not cover the case it appears to cover.
 on:
+  push:
+    branches: [main]
+    paths:
+      - "docker-compose.yml"
+      - "agent-sidecar/**"
+      - "activepieces/**"
+      - "observability/**"
+      - "caddy/**"
+      - "codegraph/**"
+      - "scripts/**"
+      - ".github/workflows/stax-smoke.yml"
   pull_request:
     paths:
       - "docker-compose.yml"
