@@ -68,20 +68,25 @@ def _skip_if_upstream_is_down(exc: Exception) -> None:
 
 def test_smolagents_reaches_omniroute():
     try:
-        result = smol_run("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
+        outcome = smol_run("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
     except Exception as exc:
         _skip_if_upstream_is_down(exc)
         raise
-    assert "SMOKE-TEST-OK" in result
+    assert "SMOKE-TEST-OK" in outcome["result"]
+    # The answer alone is not evidence. An agent blocked from doing the work
+    # once wrote `print("HTTP Status Code: 200")` and presented it as a real
+    # fetch, so the runner returns step records the model does not author —
+    # and a smoke test that ignores them is checking the half that can lie.
+    assert not outcome["step_errors"], outcome["step_errors"]
 
 
 def test_pydantic_ai_reaches_omniroute():
     try:
-        result = pydantic_run_sync("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
+        outcome = pydantic_run_sync("Say exactly: SMOKE-TEST-OK, nothing else.", settings)
     except Exception as exc:
         _skip_if_upstream_is_down(exc)
         raise
-    assert "SMOKE-TEST-OK" in result
+    assert "SMOKE-TEST-OK" in outcome["result"]
 
 
 @pytest.mark.skipif(

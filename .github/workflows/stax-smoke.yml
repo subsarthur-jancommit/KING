@@ -123,6 +123,35 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck scripts/*.sh
 
+  # Our own code, with no OmniRoute anywhere near it.
+  #
+  # The `agent-sidecar` job below is an integration test and rightly builds
+  # omniroute:base first. But that build currently fails for a reason outside
+  # this repo — tls-client-node looks for a release asset upstream renamed, see
+  # the closing section of docs/king-mistakes.md — and while it fails it takes
+  # every test in this service down with it, including the ~580 lines that
+  # never needed OmniRoute at all. That is how a dict/str regression in
+  # test_smoke.py survived from 2026-09-01 to 2026-09-04 unnoticed.
+  #
+  # test_smoke.py skips itself when no key is set (it short-circuits before it
+  # would try the network), so the suite runs clean with nothing else running.
+  #
+  # This job must never acquire a dependency on omniroute:base. Being the one
+  # thing that still reports on our own code when the vendored build is broken
+  # is its entire reason to exist.
+  agent-sidecar-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build the sidecar image on its own
+        run: docker build -t king-agent-sidecar:ci ./agent-sidecar
+
+      - name: Run the suite with no OmniRoute reachable
+        run: docker run --rm king-agent-sidecar:ci uv run pytest tests/ -v
+
   agent-sidecar:
     runs-on: ubuntu-latest
     timeout-minutes: 30
