@@ -41,6 +41,23 @@ restart with zero errors logged, and an open gateway. Preflight runs before
 `up`, so it can only assert files and variables; anything that is only knowable
 once containers are running belongs in a post-deploy check, not there.
 
+## After deploying
+
+Run `./scripts/stax-postdeploy.sh` and fix everything it reports. This is the
+other half of preflight: it checks the surface that is actually served, which
+is the only place the failures this project keeps hitting are visible.
+Preflight can prove `REQUIRE_API_KEY=true` is written in `omniroute/.env`; only
+an unauthenticated request proves the running gateway honours it, and on
+2026-08-28 it did not.
+
+It also asks DNS a question, which nothing here used to do. On 2026-09-01 a
+hostname that had never existed was assumed live for the length of a debugging
+session: every container healthy, the other domain serving fine, and the
+authoritative nameserver answering NXDOMAIN the whole time.
+
+Unmeasurable is not a pass. Both scripts count "I could not find out" as
+blocking, for the reason set out in `docs/integrations/reliability-plan.md`.
+
 ## Secrets
 
 Every `.env` in this repo is gitignored, and so is `.claude/settings.local.json`

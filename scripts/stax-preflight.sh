@@ -99,6 +99,89 @@ check_bind_host() {
   esac
 }
 
+# Prints the service names declared in a compose file, one per line.
+#
+# awk rather than a YAML parser on purpose: this runs on the VPS before
+# anything is up, and adding a pyyaml dependency to a deploy guard is a way
+# for the guard itself to be the thing that is missing. Service names are the
+# only keys indented exactly two spaces under `services:`; their own keys sit
+# at four or more. Any top-level key ends the block.
+compose_services() {
+  [ -f "$1" ] || return 0
+  awk '
+    /^services:/ { inside = 1; next }
+    /^[a-zA-Z_]/ { inside = 0 }
+    inside && /^  [a-zA-Z0-9._-]+:[[:space:]]*$/ {
+      gsub(/[ :]/, "");
+      print
+    }
+  ' "$1"
+}
+
+# The root compose file must never declare a service that omniroute/ already
+# defines. This has cost this project twice.
+#
+# First as `omniroute-base`, added to mount a plugins directory and pass two
+# OTel variables: the Compose spec forbids an including file from overriding
+# an included resource, and every Docker CI job went red with
+# `services.omniroute-base conflicts with imported resource`.
+#
+# Then, six days after that was written down in CLAUDE.md and at the top of
+# the compose file, as `qdrant` — which omniroute/docker-compose.yml:221
+# already defines. That one did NOT go red: Compose v5.5 accepts the override,
+# so the container came up healthy carrying our image under their
+# container_name, and the single mismatched line in the `up` output read as
+# normal.
+#
+# The rule written after it was "before adding any service, grep
+# omniroute/docker-compose.yml for its name". A rule that depends on
+# remembering to grep is not a rule, which is why it is a check now.
+check_compose_collisions() {
+  echo "structure: root compose must not redeclare an omniroute/ service"
+
+  # Both paths are arguments with the real defaults, so the self-test can point
+  # this at fixtures and assert it actually FAILS on a collision. A guard whose
+  # failing branch is never executed is a guard nobody has tested.
+  local root="${1:-docker-compose.yml}"
+  local vendored="${2:-omniroute/docker-compose.yml}"
+
+  if [ ! -f "$root" ]; then
+    fail "$root is missing."
+    return
+  fi
+  if [ ! -f "$vendored" ]; then
+    # Not a pass. The whole point is comparing against the vendored file; if it
+    # cannot be read, the collision it would have caught is simply unexamined.
+    fail "$vendored is missing, so service-name collisions cannot be checked."
+    return
+  fi
+
+  local ours theirs collisions
+  ours=$(compose_services "$root")
+  theirs=$(compose_services "$vendored")
+
+  if [ -z "$ours" ] || [ -z "$theirs" ]; then
+    fail "could not read service names from $root or $vendored."
+    return
+  fi
+
+  collisions=$(printf '%s\n' "$ours" | grep -Fxf <(printf '%s\n' "$theirs") || true)
+
+  if [ -n "$collisions" ]; then
+    local name
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      fail "$root declares '$name', which $vendored already defines."
+    done <<<"$collisions"
+    echo "         Compose forbids an including file from overriding an included"
+    echo "         resource. Newer Compose accepts it anyway and starts YOUR image"
+    echo "         under THEIR container_name, so a healthy container is not proof."
+    echo "         Configure the gateway through omniroute/.env instead."
+  else
+    pass "no service name is declared in both files ($(printf '%s\n' "$ours" | grep -c . ) ours, $(printf '%s\n' "$theirs" | grep -c . ) theirs)."
+  fi
+}
+
 check_base() {
   echo "profile: base (OmniRoute)"
   if [ ! -f omniroute/.env ]; then
@@ -333,13 +416,12 @@ check_proxy() {
     # registration itself once the first account exists. That is a property of
     # the running instance, not of this config, so it cannot be checked here.
     warn "Activepieces will be reachable from the internet at $ap_domain."
-    echo "         Confirm registration is closed before trusting this:"
-    echo "           curl -sf -o /dev/null -w '%{http_code}' -X POST \\"
-    echo "             https://$ap_domain/api/v1/authentication/sign-up \\"
-    echo "             -H 'Content-Type: application/json' \\"
-    echo "             -d '{\"firstName\":\"x\",\"lastName\":\"x\",\"email\":\"probe@example.invalid\",\"password\":\"Pr0be-Test-99xz\",\"trackEvents\":false,\"newsLetter\":false}'"
-    echo "         403 (INVITATION_ONLY_SIGN_UP) is what you want. 200 means anyone"
-    echo "         who finds the URL can register and run code on this host."
+    echo "         Registration being closed is a property of the running instance,"
+    echo "         so it cannot be settled here. After \`up\`, run:"
+    echo "           ./scripts/stax-postdeploy.sh --flows $ap_domain"
+    echo "         That reads the instance's own USER_CREATED flag; add"
+    echo "         --probe-signup to exercise the endpoint for real. An open"
+    echo "         signup lets anyone who finds the URL run code on this host."
   fi
 
   # OmniRoute's own two "safe on localhost, unsafe in public" defaults. Both
@@ -357,10 +439,10 @@ check_proxy() {
     pass "REQUIRE_API_KEY=true — /v1/* rejects unauthenticated callers."
   else
     fail "REQUIRE_API_KEY is '${require_key:-unset}'. Publishing with this off means anyone who finds the domain can spend your provider credit."
-    echo "         Set REQUIRE_API_KEY=true in omniroute/.env, then verify:"
-    echo "           curl -s -o /dev/null -w '%{http_code}' -X POST https://YOUR_DOMAIN/v1/chat/completions \\"
-    echo "             -H 'Content-Type: application/json' -d '{\"model\":\"oc/big-pickle\",\"messages\":[]}'"
-    echo "         401 is what you want. 200 means the gateway is open to the world."
+    echo "         Set REQUIRE_API_KEY=true in omniroute/.env. This file says what the"
+    echo "         gateway is CONFIGURED to do; only a real unauthenticated request"
+    echo "         proves what it DOES. After \`up\`, run:"
+    echo "           ./scripts/stax-postdeploy.sh --gateway \$OMNIROUTE_PUBLIC_DOMAIN"
   fi
 
   if [ "$cookie_secure" = "true" ]; then
@@ -592,6 +674,50 @@ self_test() {
   # very check returning a silent pass — would have gone on passing every test
   # in the repo. So the acquiring half is stubbed and asserted too: what matters
   # is that "could not measure" never collapses into "measured fine".
+  echo "self-test: compose_services / check_compose_collisions"
+  local fx; fx=$(mktemp -d)
+  cat > "$fx/root.yml" <<'YAML'
+include:
+  - path: omniroute/docker-compose.yml
+x-logging: &default-logging
+  driver: json-file
+services:
+  caddy:
+    image: caddy:2
+    environment:
+      not-a-service: true
+  ollama:
+    image: ollama/ollama:0.5
+volumes:
+  data:
+YAML
+  cat > "$fx/vendored.yml" <<'YAML'
+services:
+  redis:
+    image: redis:7
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+YAML
+  assert_eq "extracts only 2-space service keys" "$(compose_services "$fx/root.yml" | tr '\n' ',')" "caddy,ollama,"
+  assert_eq "stops at the next top-level key"    "$(compose_services "$fx/vendored.yml" | tr '\n' ',')" "redis,qdrant,"
+  assert_eq "a missing file yields nothing"      "$(compose_services "$fx/nope.yml")" ""
+
+  errors=0; check_compose_collisions "$fx/root.yml" "$fx/vendored.yml" >/dev/null
+  assert_eq "disjoint service names pass" "$errors" 0
+
+  # The real 2026-09-03 mistake, reconstructed: qdrant added to the root file
+  # while omniroute/ already defines it. Inserted INTO the services block —
+  # appending to the end of the file put it under `volumes:` instead, which
+  # the extractor correctly ignored and which made this assertion pass for the
+  # wrong reason on its first run.
+  sed -i 's|^  ollama:$|  qdrant:\n    image: qdrant/qdrant:v1.19.1\n  ollama:|' "$fx/root.yml"
+  errors=0; check_compose_collisions "$fx/root.yml" "$fx/vendored.yml" >/dev/null
+  assert_eq "a redeclared service fails" "$errors" 1
+
+  errors=0; check_compose_collisions "$fx/root.yml" "$fx/absent.yml" >/dev/null
+  assert_eq "an unreadable vendored file fails, never passes" "$errors" 1
+  rm -rf "$fx"
+
   echo "self-test: check_disk_gb"
   local stub; stub=$(mktemp -d)
   printf '#!/bin/sh\nexit 1\n'                                 > "$stub/df-fails";   chmod +x "$stub/df-fails"
@@ -645,6 +771,13 @@ main() {
 
   echo "STAX preflight — profiles: $*"
   echo
+
+  # Unconditional, and first. This is a structural invariant of the compose
+  # model rather than a property of any one profile: a collision breaks every
+  # profile at once, including the ones the operator did not ask for.
+  check_compose_collisions
+  echo
+
   for profile in "$@"; do
     case "$profile" in
       base)          check_base ;;
