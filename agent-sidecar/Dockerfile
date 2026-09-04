@@ -29,6 +29,14 @@ ENV HOME=/home/app \
     UV_CACHE_DIR=/home/app/.cache/uv \
     UV_PROJECT_ENVIRONMENT=/app/.venv
 
+# Must exist in the image, owned by the runtime user, BEFORE a volume is
+# mounted over it: Docker seeds a fresh named volume from the image path and
+# copies its ownership. Without this the volume is created root-owned, the
+# container writes as uid 10001, and every audit line fails with EACCES while
+# commands run normally — measured, and the same trap the codegraph image
+# handles by chowning /out.
+RUN mkdir -p /audit && chown app:app /audit
+
 WORKDIR /app
 # uv.lock is committed but was previously not copied in, so every image build
 # re-resolved dependencies from scratch and the lockfile had no effect on what
