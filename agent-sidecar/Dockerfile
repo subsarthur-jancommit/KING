@@ -1,5 +1,22 @@
 FROM python:3.11-slim
 
+# System tools the MCP `vps_exec` shell needs to be worth anything: without
+# git, curl and a docker client, a shell on this box can neither inspect the
+# repo, reach the gateway, nor touch a container.
+#
+# `docker-cli` and not `docker.io`: the latter drags in the daemon and
+# containerd for a container that only ever talks to a mounted socket. Version
+# pinned rather than floating, per the same rule that pins every image tag in
+# this repo — and placed before the dependency copy so the layer cache is not
+# invalidated by a source edit.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git=1:2.* \
+        curl=8.* \
+        docker-cli=26.1.5+dfsg1-9+deb13u1 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir uv
 
 # Run as a non-root user. This image executes model-generated Python via

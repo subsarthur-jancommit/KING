@@ -375,3 +375,71 @@ def test_healthz_says_which_meaning_the_import_list_has(
     monkeypatch.setenv("AGENT_SIDECAR_EXECUTOR", executor)
 
     assert client.get("/healthz").json()["imports_are"] == expected
+
+
+def test_vps_exec_is_off_unless_explicitly_enabled(monkeypatch):
+    # The failure this guards: a deployment that grew a shell by accident.
+    # Mounting the Docker socket is granting host root, so the tool must be
+    # something an operator turned on, never something a default did.
+    from agent_sidecar import mcp_server
+
+    monkeypatch.delenv("AGENT_SIDECAR_EXEC_ENABLED", raising=False)
+    out = mcp_server.vps_exec("echo should-not-run")
+
+    assert out["enabled"] is False
+    assert "AGENT_SIDECAR_EXEC_ENABLED" in out["error"]
+    assert "stdout" not in out
+
+
+@pytest.mark.parametrize("flag", ["true", "TRUE", "1", "yes"])
+def test_vps_exec_runs_when_enabled(monkeypatch, tmp_path, flag):
+    from agent_sidecar import mcp_server
+
+    monkeypatch.setenv("AGENT_SIDECAR_EXEC_ENABLED", flag)
+    monkeypatch.setenv("AGENT_SIDECAR_EXEC_AUDIT", str(tmp_path / "a.log"))
+    monkeypatch.setenv("AGENT_SIDECAR_WORKDIR", str(tmp_path))
+
+    out = mcp_server.vps_exec("echo hello-from-exec")
+
+    assert out["exit_code"] == 0
+    assert "hello-from-exec" in out["stdout"]
+
+
+def test_vps_exec_audits_every_command(monkeypatch, tmp_path):
+    from agent_sidecar import mcp_server
+
+    log = tmp_path / "audit" / "vps_exec.log"
+    monkeypatch.setenv("AGENT_SIDECAR_EXEC_ENABLED", "true")
+    monkeypatch.setenv("AGENT_SIDECAR_EXEC_AUDIT", str(log))
+    monkeypatch.setenv("AGENT_SIDECAR_WORKDIR", str(tmp_path))
+
+    mcp_server.vps_exec("echo audited")
+
+    assert log.exists()
+    assert "echo audited" in log.read_text()
+
+
+def test_vps_exec_caps_the_timeout(monkeypatch, tmp_path):
+    # A caller must not be able to hold the bridge open indefinitely — the
+    # same reason max_steps exists for the agent.
+    from agent_sidecar import mcp_server
+
+    monkeypatch.setenv("AGENT_SIDECAR_EXEC_ENABLED", "true")
+    monkeypatch.setenv("AGENT_SIDECAR_EXEC_AUDIT", str(tmp_path / "a.log"))
+    monkeypatch.setenv("AGENT_SIDECAR_WORKDIR", str(tmp_path))
+
+    out = mcp_server.vps_exec("sleep 5", timeout=1)
+
+    assert "timed out after 1s" in out["error"]
+
+
+@pytest.mark.parametrize("bad", ["", "   "])
+def test_vps_exec_rejects_an_empty_command(monkeypatch, tmp_path, bad):
+    from agent_sidecar import mcp_server
+
+    monkeypatch.setenv("AGENT_SIDECAR_EXEC_ENABLED", "true")
+    monkeypatch.setenv("AGENT_SIDECAR_EXEC_AUDIT", str(tmp_path / "a.log"))
+
+    out = mcp_server.vps_exec(bad)
+
+    assert "command is required" in out["error"]

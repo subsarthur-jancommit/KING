@@ -19,11 +19,12 @@ with --stateless.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 import urllib.request
 from dataclasses import replace
-
-import os
+from datetime import datetime, timezone
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -174,6 +175,92 @@ def vps_status() -> dict:
             "omniroute_get_health tool."
         ),
     }
+
+
+@mcp.tool(
+    description=(
+        "Run a shell command on the KING VPS and return stdout, stderr and the "
+        "exit code. The working directory is the repository. Use for git, "
+        "docker compose, reading logs, running scripts in scripts/. Disabled "
+        "unless the operator has explicitly enabled it."
+    )
+)
+def vps_exec(command: str, timeout: int = 60) -> dict:
+    """Shell on the host, gated and audited.
+
+    Two things about this tool are deliberate and worth stating plainly.
+
+    It is OFF by default. `AGENT_SIDECAR_EXEC_ENABLED` must be set, because a
+    deployment that grew a shell by accident is exactly the failure this whole
+    service is otherwise built to avoid.
+
+    And **the agent never gets it.** smolagents is constructed with `tools=[]`,
+    so a task the agent reads can never reach this — which matters because the
+    agent reads web pages, and a page carrying instructions plus a shell is a
+    direct path from someone else's text to this machine. Claude holds the
+    operator's context; the agent holds only what it read.
+    """
+    if os.environ.get("AGENT_SIDECAR_EXEC_ENABLED", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return {
+            "error": "vps_exec is disabled; set AGENT_SIDECAR_EXEC_ENABLED=true",
+            "enabled": False,
+        }
+
+    if not isinstance(command, str) or not command.strip():
+        return {"error": "command is required and must be a non-empty string"}
+
+    # Bounded: a command that never returns would hold the bridge open, the
+    # same failure an unbounded agent loop already demonstrated.
+    timeout = max(1, min(int(timeout), 600))
+    workdir = os.environ.get("AGENT_SIDECAR_WORKDIR", "/workspace")
+
+    _audit(command, timeout)
+    try:
+        p = subprocess.run(
+            ["sh", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=workdir if os.path.isdir(workdir) else None,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": f"timed out after {timeout}s", "command": command}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}", "command": command}
+
+    # Capped so one `docker logs` cannot flood the caller's context.
+    cap = 20000
+    out, err = p.stdout or "", p.stderr or ""
+    return {
+        "exit_code": p.returncode,
+        "stdout": out[:cap],
+        "stderr": err[:cap],
+        "truncated": len(out) > cap or len(err) > cap,
+        "cwd": workdir,
+    }
+
+
+def _audit(command: str, timeout: int) -> None:
+    """Append every command to a file, best-effort.
+
+    Best-effort on purpose: an unwritable audit path must not stop the
+    operator working, but it also must not silently look like it logged. The
+    failure is written to stderr, which lands in the container log.
+    """
+    path = os.environ.get("AGENT_SIDECAR_EXEC_AUDIT", "/audit/vps_exec.log")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(
+                f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}"
+                f"\ttimeout={timeout}\t{command}\n"
+            )
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        print(f"[vps_exec] audit write failed: {exc}", file=sys.stderr, flush=True)
 
 
 app = mcp.streamable_http_app()
