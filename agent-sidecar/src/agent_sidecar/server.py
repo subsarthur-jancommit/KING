@@ -77,6 +77,16 @@ async def health(_request: Request) -> JSONResponse:
                 if settings.executor_type == "local"
                 else "install-manifest (NOT a restriction)"
             ),
+            "agent_tools": list(settings.agent_tools),
+            # The trap this guards is the mirror of imports_are: an operator
+            # sets AGENT_SIDECAR_AGENT_TOOLS, sees it echoed back, and assumes
+            # the agent has tools. It does not, unless a separately provisioned
+            # `manage`-scoped OMNIROUTE_MCP_API_KEY is also set — and an agent
+            # with no tools answers from training data and sounds identical to
+            # one that searched. So report the conjunction, not the setting.
+            "agent_tools_active": bool(
+                settings.agent_tools and settings.omniroute_mcp_api_key
+            ),
             # Booleans only — never the keys themselves. This endpoint is
             # unauthenticated (see the module docstring in docs) and its whole
             # job is to be safe to curl.
@@ -211,6 +221,20 @@ async def run(request: Request) -> JSONResponse:
     # evidence the model did not author travels with the answer.
     outcome = result if isinstance(result, dict) else {"result": result}
     step_errors = outcome.get("step_errors") or []
+
+    # A tool the agent was configured to have and did not get is degradation
+    # too, and it is invisible in `result`: the agent simply answers from
+    # training data and sounds the same doing it. `missing` catches an upstream
+    # rename or a typo in the allowlist; `error` catches an unreachable
+    # gateway; `misdirected` catches OMNIROUTE_MCP_URL pointed at this service
+    # instead of the gateway, which would otherwise hand an agent a shell.
+    tool_report = outcome.get("tools") or {}
+    tools_wanting = bool(
+        tool_report.get("error")
+        or tool_report.get("missing")
+        or tool_report.get("misdirected")
+    )
+
     return JSONResponse(
         {
             "result": str(outcome.get("result")),
@@ -218,10 +242,12 @@ async def run(request: Request) -> JSONResponse:
             "model": settings.model_id,
             "steps": outcome.get("steps"),
             "step_errors": step_errors,
+            "tools": tool_report,
             # A single boolean the caller can branch on without parsing
-            # anything: true means at least one step failed, so the answer was
+            # anything: true means at least one step failed or the agent is not
+            # holding the tools it was configured to hold, so the answer was
             # produced despite something not working.
-            "degraded": bool(step_errors),
+            "degraded": bool(step_errors) or tools_wanting,
         }
     )
 

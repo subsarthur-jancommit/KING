@@ -98,6 +98,15 @@ services:
       # and is the whole boundary, under e2b/modal smolagents pip-installs it
       # and restricts nothing.
       - AGENT_SIDECAR_AUTHORIZED_IMPORTS=${AGENT_SIDECAR_AUTHORIZED_IMPORTS:-}
+      # Which MCP tools the agent may hold, by exact name. An ALLOWLIST:
+      # empty uses the read-mostly default in config.py, "none" gives it none.
+      # OmniRoute serves 110 tools and two of the twelve it tags "phase 1"
+      # rewrite live routing, so the default is not that tag.
+      #
+      # This does nothing without OMNIROUTE_MCP_API_KEY, which is a separately
+      # provisioned `manage`-scoped key and comes from agent-sidecar/.env — it
+      # must never be written here, where it would be committable.
+      - AGENT_SIDECAR_AGENT_TOOLS=${AGENT_SIDECAR_AGENT_TOOLS:-}
       # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
       # proxy this must include the public name, or every request comes back
       # "Invalid Host header". Empty leaves loopback-only, which is correct
@@ -252,6 +261,15 @@ services:
       # and is the whole boundary, under e2b/modal smolagents pip-installs it
       # and restricts nothing.
       - AGENT_SIDECAR_AUTHORIZED_IMPORTS=${AGENT_SIDECAR_AUTHORIZED_IMPORTS:-}
+      # Which MCP tools the agent may hold, by exact name. An ALLOWLIST:
+      # empty uses the read-mostly default in config.py, "none" gives it none.
+      # OmniRoute serves 110 tools and two of the twelve it tags "phase 1"
+      # rewrite live routing, so the default is not that tag.
+      #
+      # This does nothing without OMNIROUTE_MCP_API_KEY, which is a separately
+      # provisioned `manage`-scoped key and comes from agent-sidecar/.env — it
+      # must never be written here, where it would be committable.
+      - AGENT_SIDECAR_AGENT_TOOLS=${AGENT_SIDECAR_AGENT_TOOLS:-}
       # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
       # proxy this must include the public name, or every request comes back
       # "Invalid Host header". Empty leaves loopback-only, which is correct

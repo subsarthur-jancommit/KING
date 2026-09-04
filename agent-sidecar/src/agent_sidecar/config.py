@@ -60,6 +60,37 @@ class Settings:
     # already given up and disconnected at 300 s. A caller timing out does not
     # stop the agent, so the bound has to live here.
     max_steps: int
+    # Which MCP tools the agent may hold, by exact name. An ALLOWLIST, never a
+    # denylist: OmniRoute serves 110 tools and tags 12 of them "phase 1", but
+    # that tag marks usefulness to an MCP client, not safety in the hands of an
+    # agent that reads web pages. Two of the twelve — omniroute_switch_combo
+    # and omniroute_create_combo — rewrite the live gateway's routing, and a
+    # page carrying injected instructions plus a tool that reroutes production
+    # is the same shape of hazard as a page plus a shell.
+    #
+    # Allowlist-only also survives upstream growth: a `git subtree pull` that
+    # adds twenty tools adds none of them here. A denylist would have to be
+    # updated to stay correct, and would be wrong until someone noticed.
+    agent_tools: tuple[str, ...]
+
+
+# Read-mostly by construction. Search and fetch are what the agent could not
+# do at all before; memory is what lets one run leave something for the next.
+# Nothing here reconfigures the gateway.
+#
+# omniroute_memory_add writes, and is included deliberately: the write is
+# confined to the memory store, which exists to be written to. Its destructive
+# sibling omniroute_memory_clear is not here, and would not be reachable even
+# if it were added by hand — see NEVER_REGISTER in mcp_tools.py.
+DEFAULT_AGENT_TOOLS: tuple[str, ...] = (
+    "omniroute_web_search",
+    "omniroute_web_fetch",
+    "omniroute_x_search",
+    "omniroute_list_models_catalog",
+    "omniroute_get_health",
+    "omniroute_memory_search",
+    "omniroute_memory_add",
+)
 
 
 # Mirrors smolagents.CodeAgent's own Literal for executor_type (verified
@@ -88,6 +119,17 @@ def load_settings() -> Settings:
             f"AGENT_SIDECAR_MAX_STEPS={max_steps} must be at least 1"
         )
 
+    # "none" is spelled out rather than implied by an empty string, because
+    # empty means "unset, use the default" everywhere else in this file and a
+    # silent tools=[] is indistinguishable from a misconfiguration.
+    raw_tools = os.environ.get("AGENT_SIDECAR_AGENT_TOOLS", "").strip()
+    if raw_tools.lower() == "none":
+        agent_tools: tuple[str, ...] = ()
+    elif raw_tools:
+        agent_tools = tuple(t.strip() for t in raw_tools.split(",") if t.strip())
+    else:
+        agent_tools = DEFAULT_AGENT_TOOLS
+
     return Settings(
         omniroute_base_url=base_url,
         omniroute_api_key=os.environ.get("OMNIROUTE_API_KEY") or None,
@@ -104,4 +146,5 @@ def load_settings() -> Settings:
             if p.strip()
         ),
         max_steps=max_steps,
+        agent_tools=agent_tools,
     )

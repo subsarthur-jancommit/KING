@@ -443,3 +443,89 @@ def test_vps_exec_rejects_an_empty_command(monkeypatch, tmp_path, bad):
     out = mcp_server.vps_exec(bad)
 
     assert "command is required" in out["error"]
+
+
+def test_healthz_says_tools_are_inactive_without_the_mcp_key(client, monkeypatch):
+    """The mirror of the imports_are trap.
+
+    Setting the allowlist and seeing it echoed back reads as "the agent has
+    tools". It does not: loading them also needs a separately provisioned
+    `manage`-scoped key. An agent with no tools answers from training data and
+    sounds exactly like one that searched, so the conjunction is what gets
+    reported.
+    """
+    monkeypatch.setenv("AGENT_SIDECAR_AGENT_TOOLS", "omniroute_web_search")
+    monkeypatch.delenv("OMNIROUTE_MCP_API_KEY", raising=False)
+
+    body = client.get("/healthz").json()
+
+    assert body["agent_tools"] == ["omniroute_web_search"]
+    assert body["agent_tools_active"] is False
+
+
+def test_healthz_says_tools_are_active_when_both_are_set(client, monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_AGENT_TOOLS", "omniroute_web_search")
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+
+    body = client.get("/healthz").json()
+
+    assert body["agent_tools_active"] is True
+    # The key itself must never appear, the same rule as every other secret
+    # this endpoint reports on.
+    assert "a-manage-scoped-key" not in client.get("/healthz").text
+
+
+def test_run_reports_degraded_when_a_configured_tool_is_missing(client, monkeypatch):
+    """A tool that was asked for and not delivered is degradation.
+
+    It is also invisible in `result`: the agent just answers without it. This
+    is the same failure a self-hosted search layer produced for real — not an
+    outage, confident wrong answers — so it has to reach the caller as a flag
+    they can branch on.
+    """
+
+    def _runner(task, settings=None):
+        return {
+            "result": "answered anyway",
+            "steps": 2,
+            "step_errors": [],
+            "tools": {
+                "enabled": True,
+                "offered": 40,
+                "selected": [],
+                "missing": ["omniroute_web_search"],
+                "misdirected": [],
+            },
+        }
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _runner, raising=True)
+
+    body = client.post("/run", json={"task": "t"}).json()
+
+    assert body["result"] == "answered anyway"
+    assert body["step_errors"] == []
+    assert body["degraded"] is True
+    assert body["tools"]["missing"] == ["omniroute_web_search"]
+
+
+def test_run_is_not_degraded_when_every_tool_loaded(client, monkeypatch):
+    def _runner(task, settings=None):
+        return {
+            "result": "ok",
+            "steps": 3,
+            "step_errors": [],
+            "tools": {
+                "enabled": True,
+                "offered": 40,
+                "selected": ["omniroute_web_search"],
+                "missing": [],
+                "misdirected": [],
+            },
+        }
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _runner, raising=True)
+
+    body = client.post("/run", json={"task": "t"}).json()
+
+    assert body["degraded"] is False
+    assert body["tools"]["selected"] == ["omniroute_web_search"]

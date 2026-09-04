@@ -5,15 +5,26 @@ from __future__ import annotations
 from smolagents import CodeAgent
 
 from .config import Settings, load_settings
+from .mcp_tools import (
+    mcp_tools_enabled,
+    select_agent_tools,
+    smolagents_mcp_server_parameters,
+)
 from .omniroute_model import smolagents_model
 
 
-def build_agent(settings: Settings | None = None) -> CodeAgent:
+def build_agent(settings: Settings | None = None, tools=None) -> CodeAgent:
     settings = settings or load_settings()
     model = smolagents_model(settings)
     return CodeAgent(
-        tools=[],
+        tools=list(tools or []),
         model=model,
+        # Empty unless MCP tools were loaded and allowlisted; see run().
+        #
+        # additional_authorized_imports below is a DIFFERENT boundary and is
+        # unrelated to this list — it governs the Python the agent writes, not
+        # the tools it may call.
+        #
         # Empty by default. With executor_type=local this is the ONLY boundary,
         # and it holds: asked to read /etc/passwd and to fetch a URL, an agent
         # tried open(), pathlib, builtins (to recover open) and urllib, and
@@ -54,6 +65,45 @@ def _diagnostics(agent: CodeAgent) -> dict:
     return {"steps": counted, "step_errors": errors}
 
 
+def _load_tools(settings: Settings):
+    """(tools, client, report) — never raises.
+
+    A gateway that is briefly unreachable must not turn every agent run into a
+    500; the agent without tools is exactly the agent this service shipped with
+    for weeks. But it must not degrade *quietly* either. Self-hosting a search
+    layer that silently returned junk once cost two hours and produced
+    confident, sourced, wrong answers, so the reason travels back with the run.
+    """
+    blank = {
+        "enabled": False,
+        "offered": 0,
+        "selected": [],
+        "missing": [],
+        "misdirected": [],
+    }
+    if not mcp_tools_enabled(settings) or not settings.agent_tools:
+        return [], None, blank
+
+    from smolagents import MCPClient
+
+    # MCPClient connects inside __init__, so a failure here leaves no client to
+    # close and `client` correctly stays None.
+    try:
+        client = MCPClient(
+            smolagents_mcp_server_parameters(settings), structured_output=True
+        )
+    except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+        return [], None, {**blank, "enabled": True, "error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        tools, report = select_agent_tools(client.get_tools(), settings)
+    except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+        client.disconnect()
+        return [], None, {**blank, "enabled": True, "error": f"{type(exc).__name__}: {exc}"}
+
+    return tools, client, {**report, "enabled": True}
+
+
 def run(task: str, settings: Settings | None = None) -> dict:
     """Run the agent and return its answer alongside what actually happened.
 
@@ -61,9 +111,17 @@ def run(task: str, settings: Settings | None = None) -> dict:
     An agent that could not do the thing and says it did is worse than one that
     fails, and this is the only signal that distinguishes them.
     """
-    agent = build_agent(settings)
-    result = agent.run(task)
-    return {"result": result, **_diagnostics(agent)}
+    settings = settings or load_settings()
+    tools, client, tool_report = _load_tools(settings)
+    try:
+        agent = build_agent(settings, tools=tools)
+        result = agent.run(task)
+        return {"result": result, **_diagnostics(agent), "tools": tool_report}
+    finally:
+        # The tool list stays usable outside a `with` block, but the transport
+        # does not close itself — smolagents documents the try/finally pairing.
+        if client is not None:
+            client.disconnect()
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ def _clean_env(monkeypatch):
         "AGENT_SIDECAR_EXECUTOR",
         "AGENT_SIDECAR_MAX_STEPS",
         "AGENT_SIDECAR_AUTHORIZED_IMPORTS",
+        "AGENT_SIDECAR_AGENT_TOOLS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -134,3 +135,31 @@ def test_base_url_trailing_slash_is_stripped(monkeypatch):
     settings = load_settings()
     assert settings.omniroute_base_url == "http://omniroute-base:20128"
     assert settings.omniroute_mcp_url == "http://omniroute-base:20128/api/mcp/stream"
+
+
+def test_agent_tools_default_to_the_read_mostly_set():
+    tools = load_settings().agent_tools
+    assert "omniroute_web_search" in tools
+    assert "omniroute_web_fetch" in tools
+    # OmniRoute tags twelve tools "phase 1", and two of them rewrite the live
+    # gateway's routing. Usefulness to an MCP client is not the same question
+    # as safety in the hands of an agent that reads web pages.
+    assert "omniroute_switch_combo" not in tools
+    assert "omniroute_create_combo" not in tools
+    # Writes to the memory store are the point of the memory store; wiping it
+    # is not something an agent should reach.
+    assert "omniroute_memory_add" in tools
+    assert "omniroute_memory_clear" not in tools
+
+
+def test_agent_tools_can_be_narrowed(monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_AGENT_TOOLS", " omniroute_web_search , omniroute_get_health ")
+    assert load_settings().agent_tools == ("omniroute_web_search", "omniroute_get_health")
+
+
+def test_agent_tools_none_means_none(monkeypatch):
+    # Spelled out rather than implied by an empty string: empty means "unset,
+    # use the default" everywhere else here, so a silent no-tools run would be
+    # indistinguishable from a misconfiguration.
+    monkeypatch.setenv("AGENT_SIDECAR_AGENT_TOOLS", "none")
+    assert load_settings().agent_tools == ()
