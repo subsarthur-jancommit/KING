@@ -446,13 +446,29 @@ does not have.
 `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`,
 `graph_stats`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
 
-Reached over an SSH tunnel, never exposed:
+Reachable since 2026-09-04 without a tunnel, on the same domain as the bridge:
 
 ```bash
-ssh -i ~/.ssh/king-gcp -L 8130:127.0.0.1:8130 subsa@34.101.62.94
-claude mcp add --transport http codegraph http://127.0.0.1:8130/mcp \
+claude mcp add --transport http codegraph \
+  https://gateway.arject.co/king-codegraph/mcp \
   --header "Authorization: Bearer ${GRAPHIFY_API_KEY}"
 ```
+
+It used to need `ssh -L 8130:127.0.0.1:8130` every session, and that friction is
+the whole reason a graph refreshed daily sat unused for weeks. A path rather
+than a subdomain, for the same reason as `/king-agent/`: this domain has no
+wildcard DNS record.
+
+**What that changed about the threat model.** `GRAPHIFY_API_KEY` is now the
+only thing between a complete map of this repository and the open internet,
+where before it sat behind the SSH boundary as well. That was checked before
+the route was added rather than after: the compose default for that variable is
+an empty string, so an unset key would have published the graph the moment
+Caddy loaded. Measured on the VPS — 48-character key present, 401 with no
+token, 401 with a wrong one, and the same 401 from outside once it was live.
+
+It also moves that key up the rotation list, because losing it now costs more
+than it did yesterday.
 
 Verified answer: `get_neighbors` on `CloudAgentBase` filtered to `inherits`
 returns exactly the four subclasses with file and line numbers.
@@ -563,7 +579,9 @@ is worse than one that stops.
 
 | Item | State | Why it matters |
 |---|---|---|
-| **Credential rotation** | Deferred by the operator | The list now includes the OmniRoute admin password, Neon connection string, Upstash token, two `/v1` keys, both Langfuse pairs, the `oma_` token, webhook HMAC secret, `GRAPHIFY_API_KEY`, the OpenRouter key, and the Tavily key |
+| **Credential rotation** | Deferred by the operator, to be done in one pass at the end | The list now includes the OmniRoute admin password, Neon connection string, Upstash token, two `/v1` keys, both Langfuse pairs, the `oma_` token, webhook HMAC secret, `GRAPHIFY_API_KEY`, the OpenRouter key, the Tavily key, the E2B key, the Modal token, `AGENT_SIDECAR_AUTH_TOKEN`, and the `agent-sidecar-mcp` key once it exists |
+| **Agent tools inactive** | Blocked on a credential | The allowlist ships and is deployed, but `agent_tools_active` is `false`: loading tools needs a `manage`-scoped `OMNIROUTE_MCP_API_KEY`, and the `INITIAL_PASSWORD` in `omniroute/.env` no longer authenticates — the management password was changed after onboarding and is not recorded anywhere on the host |
+| `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |
 | OpenRouter balance | Low | Web flows no longer depend on it, but `paid-first` tier 3 does |
 | Tavily credit | Finite | No fallback by design — it will fail loudly |
 | `agy` subscription risk | Accepted knowingly | Flagged `subscriptionRisk: true` in OmniRoute's own catalog |
