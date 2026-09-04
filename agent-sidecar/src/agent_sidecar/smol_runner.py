@@ -28,6 +28,23 @@ from .mcp_tools import (
 from .omniroute_model import smolagents_model
 
 
+# One measured failure shaped this. omniroute_web_search exposes a `provider`
+# field, and the model helpfully fills it — with `duckduckgo-free`, a provider
+# the gateway lists but has no credential for — so the search returns nothing,
+# the model retries other unconfigured providers, and the run burns its whole
+# step budget without an answer. Called with no provider, the gateway
+# auto-selects the one that IS configured (Tavily, verified). So the single
+# most useful thing to tell a tool-using agent here is: name a query, not a
+# provider.
+TOOL_AGENT_INSTRUCTIONS = (
+    "When you call omniroute_web_search or omniroute_web_fetch, pass only the "
+    "query (and max_results if useful). Do NOT set the `provider` field — the "
+    "gateway selects a configured provider automatically, and naming one that "
+    "is not configured makes the search return nothing. If a tool returns no "
+    "results, do not invent an answer: say you could not find it."
+)
+
+
 def uses_tool_calling(tools) -> bool:
     """Tool-bearing runs use ToolCallingAgent; codeexecution runs use CodeAgent.
 
@@ -51,6 +68,7 @@ def build_agent(settings: Settings | None = None, tools=None):
             tools=tools,
             model=model,
             max_steps=settings.max_steps,
+            instructions=TOOL_AGENT_INSTRUCTIONS,
         )
 
     return CodeAgent(
