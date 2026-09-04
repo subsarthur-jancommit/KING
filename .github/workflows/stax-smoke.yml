@@ -179,6 +179,98 @@ jobs:
       - name: Run the suite with no OmniRoute reachable
         run: docker run --rm king-agent-sidecar:ci uv run pytest tests/ -v
 
+      # The wrapper's auth and validation are decided before any model call,
+      # so they need no gateway either. They used to be asserted only in the
+      # agent-sidecar job, which dies at `Pre-build omniroute:base` while the
+      # vendored image is broken — so the guard on an endpoint that executes
+      # model-written Python went unexercised for exactly as long as that
+      # break lasts. Same reasoning as this job's existence, applied one layer
+      # out.
+      #
+      # OMNIROUTE_BASE_URL points at a closed port on purpose: reaching it is
+      # not what these steps test, and a real gateway would only add a way for
+      # them to fail for an unrelated reason.
+      - name: Start the wrapper with a token, and no gateway behind it
+        run: |
+          set -euo pipefail
+          AUTH_TOKEN=$(openssl rand -hex 32)
+          echo "::add-mask::${AUTH_TOKEN}"
+          echo "SIDECAR_AUTH_TOKEN=${AUTH_TOKEN}" >> "$GITHUB_ENV"
+          GATEWAY_KEY=$(openssl rand -hex 16)
+          echo "::add-mask::${GATEWAY_KEY}"
+          echo "SIDECAR_API_KEY=${GATEWAY_KEY}" >> "$GITHUB_ENV"
+          docker run -d --name sidecar-auth \
+            -p 127.0.0.1:8100:8100 \
+            -e "AGENT_SIDECAR_AUTH_TOKEN=${AUTH_TOKEN}" \
+            -e "OMNIROUTE_API_KEY=${GATEWAY_KEY}" \
+            -e OMNIROUTE_BASE_URL=http://127.0.0.1:59999 \
+            king-agent-sidecar:ci \
+            uv run uvicorn agent_sidecar.server:app --host 0.0.0.0 --port 8100
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8100/healthz >/dev/null; then
+              echo "wrapper ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "wrapper did not become healthy" >&2
+          docker logs sidecar-auth
+          exit 1
+
+      - name: Health reports auth configured, and leaks neither secret
+        run: |
+          set -euo pipefail
+          BODY=$(curl -sf http://127.0.0.1:8100/healthz)
+          echo "$BODY"
+          # Without this the two steps below would pass against a wrapper that
+          # refuses everyone with 503, and a locked door reads the same as a
+          # working lock from outside.
+          echo "$BODY" | grep -q '"auth_configured":true'
+          echo "$BODY" | grep -q '"omniroute_api_key_set":true'
+          for secret in "${SIDECAR_AUTH_TOKEN}" "${SIDECAR_API_KEY}"; do
+            if echo "$BODY" | grep -qF "$secret"; then
+              echo "/healthz leaked a secret" >&2
+              exit 1
+            fi
+          done
+
+      - name: /run refuses a missing and a wrong bearer token
+        run: |
+          set -euo pipefail
+          BODY='{"task":"should never run"}'
+          no_header=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8100/run \
+            -H 'Content-Type: application/json' -d "$BODY")
+          wrong_token=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8100/run \
+            -H 'Content-Type: application/json' \
+            -H 'Authorization: Bearer not-the-real-token' -d "$BODY")
+          for code in "$no_header" "$wrong_token"; do
+            if [ "$code" != "401" ]; then
+              echo "expected 401 from an unauthenticated /run, got $code" >&2
+              docker logs sidecar-auth
+              exit 1
+            fi
+          done
+          echo "both refused with 401"
+
+      - name: An authenticated /run still rejects a malformed body with 400
+        run: |
+          set -euo pipefail
+          for body in '{}' '{"task":""}' '{"task":"t","runner":"nope"}'; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8100/run \
+              -H 'Content-Type: application/json' \
+              -H "Authorization: Bearer ${SIDECAR_AUTH_TOKEN}" -d "$body")
+            if [ "$code" != "400" ]; then
+              echo "expected 400 for $body, got $code" >&2
+              docker logs sidecar-auth
+              exit 1
+            fi
+          done
+          echo "all malformed bodies rejected with 400"
+
+      - name: Tear down the wrapper
+        if: always()
+        run: docker rm -f sidecar-auth 2>/dev/null || true
+
   agent-sidecar:
     runs-on: ubuntu-latest
     timeout-minutes: 30
