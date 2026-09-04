@@ -1,8 +1,23 @@
-"""smolagents CodeAgent entrypoint, backed by OmniRoute."""
+"""smolagents runner, backed by OmniRoute.
+
+Two agent kinds, chosen by whether the run has tools:
+
+* No tools -> CodeAgent. It writes Python and needs somewhere safe to run it,
+  which is the e2b/modal sandbox. This is the "run arbitrary code" path.
+
+* Tools loaded -> ToolCallingAgent. It emits JSON tool calls and executes no
+  arbitrary Python at all, so there is nothing to sandbox. That is the correct
+  shape for an agent that reads web pages: the only actions it can take are the
+  allowlisted MCP tools, and untrusted page content can never become code
+  running on this host. It is also the only shape that works — a remote
+  CodeAgent serializes each tool's source into the sandbox, and the
+  dynamically-wrapped MCPAdaptTool fails that validation (measured: "Tool
+  validation failed for MCPAdaptTool ... 'func' is undefined").
+"""
 
 from __future__ import annotations
 
-from smolagents import CodeAgent
+from smolagents import CodeAgent, ToolCallingAgent
 
 from .config import Settings, load_settings
 from .mcp_tools import (
@@ -13,24 +28,39 @@ from .mcp_tools import (
 from .omniroute_model import smolagents_model
 
 
-def build_agent(settings: Settings | None = None, tools=None) -> CodeAgent:
+def uses_tool_calling(tools) -> bool:
+    """Tool-bearing runs use ToolCallingAgent; codeexecution runs use CodeAgent.
+
+    Split out as a pure function so the choice is unit-testable without building
+    a live agent or reaching smolagents at all.
+    """
+    return bool(tools)
+
+
+def build_agent(settings: Settings | None = None, tools=None):
     settings = settings or load_settings()
     model = smolagents_model(settings)
+    tools = list(tools or [])
+
+    if uses_tool_calling(tools):
+        # No executor_type and no additional_authorized_imports: this agent
+        # runs no arbitrary Python, so neither the sandbox nor the import
+        # allowlist applies. The tool allowlist (config.py + mcp_tools.py) is
+        # the whole boundary, and it is enforced before we ever get here.
+        return ToolCallingAgent(
+            tools=tools,
+            model=model,
+            max_steps=settings.max_steps,
+        )
+
     return CodeAgent(
-        tools=list(tools or []),
+        tools=tools,
         model=model,
-        # Empty unless MCP tools were loaded and allowlisted; see run().
-        #
-        # additional_authorized_imports below is a DIFFERENT boundary and is
-        # unrelated to this list — it governs the Python the agent writes, not
-        # the tools it may call.
-        #
-        # Empty by default. With executor_type=local this is the ONLY boundary,
-        # and it holds: asked to read /etc/passwd and to fetch a URL, an agent
-        # tried open(), pathlib, builtins (to recover open) and urllib, and
-        # every one was refused. It is still an AST filter, not an OS sandbox —
-        # smolagents says so — which is why the real answer is a remote
-        # executor.
+        # With executor_type=local this list is the ONLY boundary, and it holds:
+        # asked to read /etc/passwd and to fetch a URL, an agent tried open(),
+        # pathlib, builtins (to recover open) and urllib, and every one was
+        # refused. It is still an AST filter, not an OS sandbox — smolagents
+        # says so — which is why the real answer is a remote executor.
         #
         # Widening it is a separate, explicit decision (see config.py), because
         # a list that grew automatically when the executor changed would be a
@@ -41,7 +71,7 @@ def build_agent(settings: Settings | None = None, tools=None) -> CodeAgent:
     )
 
 
-def _diagnostics(agent: CodeAgent) -> dict:
+def _diagnostics(agent) -> dict:
     """Structural evidence about the run, taken from the agent's own memory.
 
     This exists because the answer text cannot be trusted on its own. Blocked

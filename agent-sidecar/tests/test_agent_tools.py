@@ -12,6 +12,7 @@ import pytest
 
 from agent_sidecar.config import load_settings
 from agent_sidecar.mcp_tools import NEVER_REGISTER, select_agent_tools
+from agent_sidecar.smol_runner import uses_tool_calling
 
 
 class _Tool:
@@ -121,3 +122,13 @@ def test_tools_without_a_name_are_ignored(monkeypatch):
 
     assert [t.name for t in tools] == ["omniroute_web_search"]
     assert report["offered"] == 1
+
+
+def test_tool_runs_use_tool_calling_not_code_execution():
+    # An agent holding web tools must not also be a CodeAgent: CodeAgent runs
+    # model-authored Python, and turning untrusted page content into code on
+    # this host is the whole hazard. A run WITH tools uses ToolCallingAgent
+    # (no code execution, nothing to sandbox); a run WITHOUT tools stays a
+    # CodeAgent in the sandbox.
+    assert uses_tool_calling([object()]) is True
+    assert uses_tool_calling([]) is False
