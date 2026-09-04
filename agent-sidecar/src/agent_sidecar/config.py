@@ -34,6 +34,25 @@ class Settings:
     # including the one that runs model-authored code, reaches
     # http://agent-sidecar-http:8100 directly.
     auth_token: str | None
+    # THE SAME LIST MEANS TWO OPPOSITE THINGS depending on executor_type, and
+    # this is the single most misleading thing in this service.
+    #
+    #   local            -> a RESTRICTION. Generated code may import only what
+    #                       is listed here, enforced by an AST filter. Empty
+    #                       means "nothing", and that is the entire boundary.
+    #
+    #   e2b / modal      -> an INSTALL MANIFEST. smolagents' remote executors
+    #                       pass it to `install_packages()`, i.e. pip. Nothing
+    #                       is restricted: generated code can import anything
+    #                       already in the sandbox image regardless of this
+    #                       list. Verified — with this empty, an agent running
+    #                       under e2b imported socket, platform and urllib.
+    #
+    # So moving to a remote executor does not merely widen the allowlist, it
+    # removes the allowlist. That is the intended design — the sandbox is the
+    # boundary — but it must be a decision someone makes knowing it, which is
+    # why /healthz reports which meaning is in force.
+    authorized_imports: tuple[str, ...]
     # Hard ceiling on agent iterations. A loop is the one thing in this stack
     # that can spend without bound, and it does: a 1.5B model driving a
     # CodeAgent produced malformed code blobs, smolagents rejected each one and
@@ -79,5 +98,10 @@ def load_settings() -> Settings:
         ),
         executor_type=executor_type,
         auth_token=os.environ.get("AGENT_SIDECAR_AUTH_TOKEN") or None,
+        authorized_imports=tuple(
+            p.strip()
+            for p in os.environ.get("AGENT_SIDECAR_AUTHORIZED_IMPORTS", "").split(",")
+            if p.strip()
+        ),
         max_steps=max_steps,
     )

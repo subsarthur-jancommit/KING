@@ -22,15 +22,18 @@ docs/integrations/activepieces-workflow.md.
 from __future__ import annotations
 
 import secrets
+from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import anyio
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 from .config import load_settings
+from .mcp_server import app as mcp_app
 
 # Both runners are fully synchronous and can take minutes: smolagents' CodeAgent
 # loops until it reaches an answer. Calling them directly in an async handler
@@ -63,6 +66,17 @@ async def health(_request: Request) -> JSONResponse:
             "omniroute_base_url": settings.omniroute_base_url,
             "executor_type": settings.executor_type,
             "max_steps": settings.max_steps,
+            "authorized_imports": list(settings.authorized_imports),
+            # The list above means opposite things per executor, so say which.
+            # Under `local` it restricts and is the entire boundary; under a
+            # remote sandbox smolagents pip-installs it and restricts nothing,
+            # so an operator reading `authorized_imports: []` must not conclude
+            # "nothing can be imported".
+            "imports_are": (
+                "restriction"
+                if settings.executor_type == "local"
+                else "install-manifest (NOT a restriction)"
+            ),
             # Booleans only — never the keys themselves. This endpoint is
             # unauthenticated (see the module docstring in docs) and its whole
             # job is to be safe to curl.
@@ -212,9 +226,66 @@ async def run(request: Request) -> JSONResponse:
     )
 
 
+class _McpAuthMiddleware:
+    """Bearer auth for the mounted MCP app.
+
+    The MCP surface exposes the same agent as POST /run, so it inherits the
+    same rule: fail closed, and check before any body is read. Written as raw
+    ASGI rather than BaseHTTPMiddleware because the MCP transport streams, and
+    BaseHTTPMiddleware buffers the response body.
+    """
+
+    def __init__(self, app, prefix: str = "/mcp"):
+        self.app = app
+        self.prefix = prefix
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith(self.prefix):
+            await self.app(scope, receive, send)
+            return
+
+        settings = load_settings()
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        presented = ""
+        scheme, _, rest = headers.get("authorization", "").partition(" ")
+        if scheme.lower() == "bearer":
+            presented = rest
+
+        if settings.auth_token is None:
+            body, status = b'{"error":"AGENT_SIDECAR_AUTH_TOKEN is not configured"}', 503
+        elif not presented or not secrets.compare_digest(presented, settings.auth_token):
+            body, status = b'{"error":"invalid or missing bearer token"}', 401
+        else:
+            await self.app(scope, receive, send)
+            return
+
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    # Starlette does NOT run a mounted app's lifespan, and FastMCP sets up its
+    # session manager there. Without this the MCP route 500s on first use with
+    # nothing obviously wrong in the config — so it is run explicitly.
+    async with mcp_app.router.lifespan_context(mcp_app):
+        yield
+
+
 app = Starlette(
+    lifespan=_lifespan,
+    middleware=[Middleware(_McpAuthMiddleware)],
     routes=[
         Route("/healthz", health, methods=["GET"]),
         Route("/run", run, methods=["POST"]),
-    ]
+        # Mounted last: the two Routes above match first, so this only ever
+        # receives /mcp. FastMCP serves that path itself.
+        Mount("/", app=mcp_app),
+    ],
 )

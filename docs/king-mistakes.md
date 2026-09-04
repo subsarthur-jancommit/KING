@@ -209,7 +209,36 @@ unexpected 403 or an unexpected fallback.
 
 ---
 
-## 12. Smaller ones, kept for the pattern
+## 12. Repeated a documented mistake, six days after documenting it
+
+**What happened.** Added a `qdrant` service to the root `docker-compose.yml`.
+`omniroute/docker-compose.yml:221` already defines one.
+
+That is precisely what entry 1 of this file and the comment at the top of the
+compose file both forbid, citing the `omniroute-base` override that turned
+every Docker CI job red with `conflicts with imported resource`.
+
+**Why it was not caught.** For the same reason as last time: it worked.
+Compose v5.5 accepts the override, so the container came up healthy — carrying
+*my* image `v1.19.1` under *their* `container_name: omniroute-qdrant`. The
+mismatch in that one line was the only visible tell, and it appeared in the
+`up` output as `Container omniroute-qdrant Starting`, which reads as normal.
+
+**The second mistake inside the first.** It was never needed. The comment
+above their service says SQLite + sqlite-vec + FTS5 is the primary vector
+store and Qdrant is for cross-instance sharing or >1M points. `enabled: false`
+in `/api/settings/qdrant` means the dual-write path is off, **not** that memory
+is off. Verified after reverting: `omniroute_memory_add` then
+`omniroute_memory_search` wrote and retrieved a record with no Qdrant running.
+
+**Rule.** Before adding any service, grep `omniroute/docker-compose.yml` for
+its name. And before adding infrastructure to enable a feature, check whether
+the feature already works — `enabled: false` on one backend does not mean the
+capability is unavailable.
+
+---
+
+## 13. Smaller ones, kept for the pattern
 
 - **Executable bit lost on Windows.** Two scripts were committed `100644` while
   every other script in `scripts/` is `100755`. After `git pull` on the VPS they
@@ -230,6 +259,34 @@ unexpected 403 or an unexpected fallback.
 
 ---
 
+## 14. Shipped fifteen commits past a CI job that was never going to run
+
+**What happened.** Over one session the agent sidecar gained an MCP server, an
+audited `vps_exec` shell, a move of code execution to E2B/Modal, and a
+volume-ownership fix — roughly fifteen commits, all pushed straight to main.
+`.github/workflows/stax-smoke.yml` lists `agent-sidecar/**`,
+`docker-compose.yml`, `caddy/**` and `scripts/**` in its path filter, and every
+one of them was touched. **It never ran once.** Its only triggers were
+`pull_request` and `workflow_dispatch`, and nothing opened a pull request.
+
+**Why it was not caught.** A workflow existed, with the right name and the
+right paths, so the question "but does it fire on push?" was never asked. What
+stood in for CI was 81 tests passing in a container built and run by hand on
+the VPS — entry 2's failure with the stale cache removed and the independent
+reviewer still missing.
+
+**What made it visible.** Installing `gh` to diagnose a *different* red build.
+That one turned out not to be ours at all; the one that mattered was the job
+silently not running. A run that never happens produces no notification, no red
+mark, no row in any list — it is indistinguishable from a repo with nothing to
+test.
+
+**Rule.** A path filter says what a workflow *covers*; the event list says
+whether it ever *fires*. Read both. When CI is being trusted as the guard,
+confirm a run exists for that commit — **absence of red is not green.**
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:
@@ -245,3 +302,30 @@ Three shapes account for nearly every entry:
 
 The standing rule that comes out of all three, and the one most worth keeping:
 **anything that cannot be measured is treated as a failure, not a pass.**
+
+
+---
+
+## Not ours — recorded so it is not diagnosed a second time
+
+`omniroute-smoke` has been red since `f6d0ec9` (2026-09-04); `49fd3bd` was the
+last green. Nothing in this repo causes it.
+
+`tls-client-node@0.2.0` downloads a native binary from `bogdanfinn/tls-client`
+releases, looking for `tls-client-linux-ubuntu-amd64-1.16.0.so`. Upstream
+renamed its release assets — v1.16.0 ships `tls-client-xgo-1.16.0-linux-amd64.so`.
+The name the package wants no longer exists, the download is skipped, and the
+deliberate guard at `omniroute/Dockerfile:111` exits 1. That guard is behaving
+correctly: the alternative is shipping an image whose TLS client is absent.
+
+Three checks close the obvious escape routes, so none of them is worth retrying:
+
+- **Not rate limiting.** A GitHub token changes nothing; the asset is genuinely
+  named something else.
+- **Nothing to upgrade to.** `0.2.0` is already the newest release on npm.
+- **Nothing to inject.** `omniroute/Dockerfile` declares no ARG for a token or
+  a binary path, and `omniroute/` is a squashed subtree that must not be edited.
+
+It clears when `tls-client-node` publishes a fix, or when a newer omniroute
+release arrives via `git subtree pull`. Until then this job stays red, and that
+is the correct state.

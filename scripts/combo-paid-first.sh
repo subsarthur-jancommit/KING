@@ -34,25 +34,21 @@ yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 # OpenRouter reselling them) is addressed WITHOUT the `openrouter/` prefix —
 # `deepseek/deepseek-chat` — and needs its own connection registered first.
 # Put it above the openrouter rows: it is the cheaper path to the same weights.
-# False positive in ShellCheck 0.9.0: this is a plain POSIX ${VAR:-default},
-# not ${VAR/pat/rep}. The slashes in the default model names are what confuse
-# it. Verified under dash both ways — unset expands to the ladder below, and
-# COMBO_TIERS=a/b overrides it.
-# shellcheck disable=SC3060
-TIERS="${COMBO_TIERS:-
-openrouter/deepseek/deepseek-v4-pro-0813
+DEFAULT_TIERS='openrouter/deepseek/deepseek-v4-pro-0813
 openrouter/qwen/qwen3.8-flash
 openrouter/inclusionai/ling-3.0-flash-fin:free
 opencode/big-pickle
-ollama/qwen2.5:1.5b-instruct-q4_K_M
-}"
+ollama/qwen2.5:1.5b-instruct-q4_K_M'
+# Held in two steps rather than one multi-line ${COMBO_TIERS:-...}. A default
+# that spans newlines and contains slashes is ambiguous to parse — shellcheck
+# reads it as POSIX-undefined string replacement (SC3060) — and the ambiguity
+# is not worth the saved line.
+TIERS="${COMBO_TIERS:-$DEFAULT_TIERS}"
 
 COOKIES=$(mktemp)
 WORK=$(mktemp -d)
 TMPKEY_ID=""
-# Reached via `trap cleanup EXIT` below. ShellCheck 0.9.0 does not trace trap
-# handlers, so every line in here reads as unreachable to it.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317  # reached via `trap cleanup EXIT`, not by a call
 cleanup() {
   # A failed run must not leave a live /v1 credential behind — that is a worse
   # outcome than the failure being diagnosed.
@@ -111,9 +107,7 @@ for model in $TIERS; do
   total=$((total + 1))
   printf '{"model":"%s","max_tokens":400,"temperature":0,"messages":[{"role":"user","content":"Reply with one word: OK."}]}' \
     "$model" > "$WORK/probe.json"
-  # The single quotes are deliberate: what follows is a Python program, and
-  # letting the shell expand $ inside it would corrupt the source.
-  # shellcheck disable=SC2016
+  # shellcheck disable=SC2016  # the python below is deliberately unexpanded
   if out=$(curl -s -m 120 -X POST "$BASE/v1/chat/completions" \
              -H 'Content-Type: application/json' -H "Authorization: Bearer $TMPKEY" \
              --data @"$WORK/probe.json" 2>/dev/null) \

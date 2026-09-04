@@ -26,8 +26,39 @@ def _clean_env(monkeypatch):
         "AGENT_SIDECAR_MODEL_ID",
         "AGENT_SIDECAR_EXECUTOR",
         "AGENT_SIDECAR_MAX_STEPS",
+        "AGENT_SIDECAR_AUTHORIZED_IMPORTS",
     ):
         monkeypatch.delenv(var, raising=False)
+
+
+def test_authorized_imports_default_to_nothing():
+    # With executor_type=local this list is the entire boundary, so the default
+    # must be closed. Widening it is a separate decision from changing the
+    # executor.
+    assert load_settings().authorized_imports == ()
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("json", ("json",)),
+        ("json,re,datetime", ("json", "re", "datetime")),
+        (" json , re ", ("json", "re")),
+        ("json,,re", ("json", "re")),
+        ("", ()),
+        ("   ", ()),
+    ],
+)
+def test_authorized_imports_are_parsed_from_a_comma_list(raw, expected, monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_AUTHORIZED_IMPORTS", raw)
+    assert load_settings().authorized_imports == expected
+
+
+def test_changing_the_executor_does_not_widen_imports(monkeypatch):
+    # The failure this guards: bundling "use a sandbox" with "allow more
+    # imports" would make the second happen without anyone choosing it.
+    monkeypatch.setenv("AGENT_SIDECAR_EXECUTOR", "e2b")
+    assert load_settings().authorized_imports == ()
 
 
 def test_max_steps_defaults_to_a_finite_number():

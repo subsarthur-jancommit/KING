@@ -94,6 +94,15 @@ services:
       # "blaxel"), which needs no local daemon.
       # See docs/integrations/vps-hardening.md.
       - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-local}
+      # Read config.py before setting this: under `local` it RESTRICTS imports
+      # and is the whole boundary, under e2b/modal smolagents pip-installs it
+      # and restricts nothing.
+      - AGENT_SIDECAR_AUTHORIZED_IMPORTS=${AGENT_SIDECAR_AUTHORIZED_IMPORTS:-}
+      # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
+      # proxy this must include the public name, or every request comes back
+      # "Invalid Host header". Empty leaves loopback-only, which is correct
+      # when nothing proxies to it.
+      - AGENT_SIDECAR_MCP_ALLOWED_HOSTS=${AGENT_SIDECAR_MCP_ALLOWED_HOSTS:-}
     depends_on:
       omniroute-base:
         condition: service_healthy
@@ -239,6 +248,53 @@ services:
     environment:
       - OMNIROUTE_BASE_URL=http://omniroute-base:${DASHBOARD_PORT:-20128}
       - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-local}
+      # Read config.py before setting this: under `local` it RESTRICTS imports
+      # and is the whole boundary, under e2b/modal smolagents pip-installs it
+      # and restricts nothing.
+      - AGENT_SIDECAR_AUTHORIZED_IMPORTS=${AGENT_SIDECAR_AUTHORIZED_IMPORTS:-}
+      # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
+      # proxy this must include the public name, or every request comes back
+      # "Invalid Host header". Empty leaves loopback-only, which is correct
+      # when nothing proxies to it.
+      - AGENT_SIDECAR_MCP_ALLOWED_HOSTS=${AGENT_SIDECAR_MCP_ALLOWED_HOSTS:-}
+      # Shell over MCP. OFF unless set — see the volumes note below for what
+      # turning it on actually grants.
+      - AGENT_SIDECAR_EXEC_ENABLED=${AGENT_SIDECAR_EXEC_ENABLED:-}
+      - AGENT_SIDECAR_WORKDIR=/workspace
+      - AGENT_SIDECAR_EXEC_AUDIT=/audit/vps_exec.log
+    volumes:
+      # Read this before enabling AGENT_SIDECAR_EXEC_ENABLED.
+      #
+      # The Docker socket IS root on this host. Anything holding it can start a
+      # privileged container with / mounted, so no restriction applied to this
+      # container — cap_drop, non-root user, the masks used elsewhere in this
+      # file — limits what the socket grants. It is mounted because the
+      # operator asked for full VPS access knowing that, and pretending
+      # otherwise would be worse than saying it.
+      #
+      # What protects this is therefore not the container boundary:
+      #   1. the tool is off unless AGENT_SIDECAR_EXEC_ENABLED is set
+      #   2. the bearer token on /mcp, which fails closed
+      #   3. the agent NEVER sees this tool — smolagents is built with
+      #      tools=[], so text the agent reads on a web page cannot reach a
+      #      shell. Claude has the operator's context; the agent has only what
+      #      it read.
+      #   4. every command is appended to /audit/vps_exec.log
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace
+      # A named volume, not a bind mount: the host directory is owned by the
+      # host user and this container runs as uid 10001, so a bind mount is
+      # present and unwritable — the audit log stayed empty while every
+      # command ran, which is the worst shape for an audit trail. Read it with
+      #   docker run --rm -v king_agent-audit:/a alpine cat /a/vps_exec.log
+      - agent-audit:/audit
+    # The socket is root:docker mode 660, and this image runs as uid 10001, so
+    # without the docker group the mount above is present and unreadable — a
+    # failure that looks like "docker is broken" rather than "no permission".
+    # Measured on this host: gid 988. It is a host fact, not a portable one,
+    # which is why it is a variable rather than a literal.
+    group_add:
+      - "${DOCKER_GID:-988}"
     ports:
       - "${AGENT_SIDECAR_HTTP_BIND_HOST:-127.0.0.1}:${AGENT_SIDECAR_HTTP_PORT:-8100}:8100"
     depends_on:
@@ -670,3 +726,4 @@ volumes:
   activepieces-cache:
   codegraph-out:
   ollama-models:
+  agent-audit:
