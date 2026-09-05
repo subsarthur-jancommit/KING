@@ -904,3 +904,49 @@ def test_an_unknown_served_model_does_not_invent_an_override():
     )
 
     assert summary["degraded"] is False
+
+
+# --------------------------------------------------------------------------
+# vps_status had no test at all. It is the tool Claude reads before deciding
+# whether the box has room for more work, so a silent change in any of its four
+# shell one-liners would produce confident wrong answers about capacity.
+# --------------------------------------------------------------------------
+
+
+def test_vps_status_reports_the_four_facts_it_promises():
+    from agent_sidecar import mcp_server
+
+    body = mcp_server.vps_status.fn() if hasattr(mcp_server.vps_status, "fn") else mcp_server.vps_status()
+
+    assert set(body) == {"memory", "disk", "load", "sidecar_uptime", "note"}
+    # Real values, not the "<unavailable: …>" placeholder the helper falls back
+    # to — a health tool that reports a placeholder as if it were a reading is
+    # worse than one that errors.
+    for key in ("memory", "disk", "load", "sidecar_uptime"):
+        assert body[key], f"{key} came back empty"
+        assert not body[key].startswith("<unavailable"), f"{key} = {body[key]}"
+
+
+def test_vps_status_memory_avoids_the_free_command_that_is_not_installed():
+    """procps is absent from python:slim, so `free` returns an empty string.
+
+    That was the original bug: a memory field reading "" looks like a value.
+    The reading comes from /proc/meminfo instead, so it must carry both numbers.
+    """
+    from agent_sidecar import mcp_server
+
+    body = mcp_server.vps_status.fn() if hasattr(mcp_server.vps_status, "fn") else mcp_server.vps_status()
+
+    assert "MB total" in body["memory"]
+    assert "MB available" in body["memory"]
+
+
+def test_vps_status_says_its_view_is_the_container_not_the_gateway():
+    """The note is load-bearing: this container holds no Docker socket by
+    design, so anyone reading these numbers as gateway health would be wrong
+    about what they are looking at."""
+    from agent_sidecar import mcp_server
+
+    body = mcp_server.vps_status.fn() if hasattr(mcp_server.vps_status, "fn") else mcp_server.vps_status()
+
+    assert "omniroute_get_health" in body["note"]
