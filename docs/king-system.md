@@ -1156,10 +1156,19 @@ Each of these is running, not planned.
    `free-then-local` for hundreds of items, running unattended.
 5. **Work that must not leave the machine.** Point at
    `ollama/qwen2.5:1.5b-instruct-q4_K_M` and nothing egresses.
-6. **Unattended monitoring that fails loudly.** Gateway checked every 15
-   minutes, with a dead-man switch watching the monitor.
+6. **Unattended monitoring — that currently fails *quietly*.** The gateway is
+   checked every 15 minutes and a dead-man switch watches the monitor; both were
+   verified running on 2026-09-05. But the alert flow normalises what it
+   receives and stops there. Three alerts fired that day and none reached a
+   person. The destination table exists and is empty; §7 carries the one step
+   that closes it.
 7. **Spend triage.** `local-router.sh` labels a task and picks the ladder in
    ~0.95 s for nothing.
+8. **Hand a task to an agent instead of doing it yourself.** `POST /run`, or
+   `run_agent` over the bridge: it searches the live web, fetches pages, and
+   remembers what you tell it to across separate calls. Every reply carries what
+   it cost, which tools it held, and whether to trust it. Measured at $0.008 per
+   run — one Tavily search; the model is free at the margin either way.
 
 ---
 
