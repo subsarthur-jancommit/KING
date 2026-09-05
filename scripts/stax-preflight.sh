@@ -175,7 +175,19 @@ check_agent_tools_wiring() {
 check_agent_sidecar() {
   echo "profile: agent-sidecar"
   local executor
-  executor=$(lookup AGENT_SIDECAR_EXECUTOR agent-sidecar/.env)
+  # The ROOT .env, not agent-sidecar/.env, and the distinction is not cosmetic.
+  # Compose delivers this one through `environment:` as
+  # ${AGENT_SIDECAR_EXECUTOR:-local}, which is interpolated from the host env or
+  # the root .env — and `environment:` overrides `env_file:`, so a value in
+  # agent-sidecar/.env can never take effect. Looking there meant this check
+  # read empty and reported `local` on a host actually running `e2b`: a guard
+  # describing the wrong setting, in a direction that would also hide a real
+  # `local` set the only way that works.
+  #
+  # Variables that arrive ONLY through env_file — OMNIROUTE_MCP_API_KEY,
+  # OMNIROUTE_API_KEY — are still read from agent-sidecar/.env below. The rule
+  # is: look where compose actually takes the value from.
+  executor=$(lookup AGENT_SIDECAR_EXECUTOR .env)
   executor="${executor:-local}"
   case "$executor" in
     local)
@@ -210,8 +222,9 @@ check_agent_sidecar() {
   fi
   local mcp_key tool_list
   mcp_key=$(lookup OMNIROUTE_MCP_API_KEY agent-sidecar/.env)
-  tool_list=$(lookup AGENT_SIDECAR_AGENT_TOOLS agent-sidecar/.env)
-  [ -n "$tool_list" ] || tool_list=$(lookup AGENT_SIDECAR_AGENT_TOOLS .env)
+  # Root .env for the same reason as the executor above: this one is
+  # interpolated into `environment:`, so that is the file that decides it.
+  tool_list=$(lookup AGENT_SIDECAR_AGENT_TOOLS .env)
   check_agent_tools_wiring "$mcp_key" "$tool_list"
 }
 
