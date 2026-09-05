@@ -246,6 +246,21 @@ A caller going direct to `/v1/chat/completions` gets no such flag. The
 `x-omniroute-provider` response header is the equivalent there, and it is on
 every response.
 
+Demonstrated on the deployment, and it is not a small hop:
+
+```
+asked      ollama/qwen2.5:1.5b-instruct-q4_K_M     (on this host)
+served_by  gemini-3.7-flash-high                   (Google, via agy)
+degraded   true
+           "local-only work left the host: asked for ollama/…, served by gemini-…"
+```
+
+A request explicitly addressed to the on-host model was answered by a
+third-party cloud model. That case, and only that case, sets `degraded` —
+being served `gemini` instead of `big-pickle` is a cost question, being served
+anything instead of `ollama` is a confidentiality one, and filing them together
+would put the second under a flag that is true too often to read.
+
 **It goes both ways**, which the flag caught within the hour. A later run asking
 for `opencode/big-pickle` — the free tier — was served by
 `gemini-3.7-flash-high`, spending subscription quota nobody requested:
