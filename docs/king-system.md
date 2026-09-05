@@ -517,6 +517,33 @@ for real, not an outage but confident wrong answers. So `/run` reports
 and the key, because setting one without the other is the obvious way to end up
 with an agent that has no tools and says nothing about it.
 
+### Every run leaves a record
+
+Run evidence used to die with the HTTP response. Nothing could answer what the
+agent cost over a week, whether degraded runs were becoming more common, or
+which of its seven tools actually get used — the gateway's `call_logs` sees
+model calls and knows nothing about steps, tools, or trustworthiness.
+
+One JSON line per run now lands in `/audit/runs.jsonl`, in the same volume as
+the `vps_exec` audit:
+
+```json
+{"at":"2026-09-05T04:40:11+00:00","runner":"smolagents","model":"opencode/big-pickle",
+ "task":"Search the web for the release date of…","seconds":18.4,"steps":3,
+ "tokens":{"input":23105,"output":986,"total":24091},
+ "tools":["omniroute_web_search","…"],"step_errors":[],"degraded":false}
+```
+
+Both outcomes are written, the successful one and the 500 — a journal that only
+records successes answers the least interesting half of every question. Task
+text is truncated to 200 characters, the same choice the `vps_exec` audit makes
+with commands: enough to recognise a run, not a transcript.
+
+Writing is best-effort. A full disk must not turn working runs into 500s, and
+must not silently look like it logged either, so the failure goes to stderr and
+into the container log. That path has a test, because "best-effort" is the kind
+of promise that quietly stops being true.
+
 ### What contains it, and what does not
 
 `/run` requires a bearer token and fails closed without one configured — 503,
@@ -592,6 +619,7 @@ reporting healthy. Each guard below exists because of a specific one.
 | `gateway_monitor` | 15 min | Real failure ratios from `call_logs`, with severity computed from shape |
 | `monitor-deadman.timer` | 15 min | That the monitor **itself** is still running |
 | `codegraph-refresh.timer` | Daily | The graph ageing silently |
+| `/audit/runs.jsonl` | Every agent run | Cost, tool use, and degradation trends that were previously unrecoverable |
 
 **They are `--user` units, and checking them the obvious way says they are
 dead.** `systemctl list-timers` and `systemctl is-active monitor-deadman.timer`
