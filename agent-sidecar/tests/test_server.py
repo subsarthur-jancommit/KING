@@ -1111,18 +1111,26 @@ def test_the_journal_is_trimmed_before_it_can_fill_the_disk(monkeypatch, tmp_pat
     assert any("trimmed at" in str(_json.loads(l).get("note", "")) for l in lines if l.strip())
 
 
-def test_trimming_never_breaks_a_run_when_the_journal_is_unreadable(monkeypatch, tmp_path):
+def test_trimming_never_breaks_a_run_when_the_journal_cannot_be_sized(monkeypatch, tmp_path):
+    """A size check that throws must not cost the entry it was protecting.
+
+    Patch `getsize` alone, not `os.path`. Replacing the module wholesale took
+    pytest itself down with an INTERNALERROR — everything in the process shares
+    that object, including the test runner.
+    """
     from agent_sidecar import outcome as outcome_mod
 
     journal = tmp_path / "runs.jsonl"
     monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(journal))
-    monkeypatch.setattr(
-        outcome_mod.os, "path", type("P", (), {
-            "getsize": staticmethod(lambda p: (_ for _ in ()).throw(OSError("gone"))),
-            "dirname": staticmethod(lambda p: str(tmp_path)),
-        })(), raising=True,
-    )
 
-    outcome_mod.journal({"n": 1})  # must not raise
+    def _boom(_path):
+        raise OSError("cannot stat")
 
+    monkeypatch.setattr(outcome_mod.os.path, "getsize", _boom, raising=True)
+
+    outcome_mod.journal({"n": 1})
+
+    # The run was still recorded: an unsizeable journal is a reason to skip the
+    # trim, not a reason to drop the entry.
     assert journal.exists()
+    assert '"n":1' in journal.read_text(encoding="utf-8")
