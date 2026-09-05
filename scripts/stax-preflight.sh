@@ -143,6 +143,13 @@ check_base() {
       echo "           # log in, list keys — a key created before the restart must still be there"
     fi
   fi
+
+  # The largest build in this repo had no disk check at all. codegraph and the
+  # local model each got one; `base`, which builds a 3.15 GB image over a
+  # nine-minute run, did not — so the profile most able to fill the disk was
+  # the one profile that never looked. Measured: eight sidecar rebuilds in a
+  # day put the host at 77% used with 11G free, three above the threshold.
+  check_disk_gb 8 "the 3.15 GB omniroute:base image and the layers built on top of it"
 }
 
 # Split out of check_agent_sidecar so the self-test can drive all four
