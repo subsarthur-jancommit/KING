@@ -374,6 +374,37 @@ a fabricated `Output:` line and the code it had not been able to run.
 `degraded: true` means at least one step failed and the answer was produced
 despite it. **Treat that as "do not trust this answer".**
 
+### Two agent kinds, and why holding tools changes which one you get
+
+Turning the tools on forced a design decision that turned out to be the right
+one anyway.
+
+| Run | Agent | Executes Python? | Boundary |
+|---|---|---|---|
+| No tools | `CodeAgent` | Yes, in the e2b/modal sandbox | The sandbox |
+| Tools loaded | `ToolCallingAgent` | **No** | The tool allowlist |
+
+A `CodeAgent` under a remote executor serializes each tool's source code into
+the sandbox, and the dynamically-wrapped `MCPAdaptTool` fails that validation —
+measured: `Tool validation failed for MCPAdaptTool ... 'func' is undefined`. So
+MCP tools and a sandboxed `CodeAgent` cannot coexist in smolagents 1.26.0.
+
+The fix is not a workaround. An agent that reads web pages should not also be
+executing model-authored Python, because that is precisely how injected page
+content becomes code running on this host. A `ToolCallingAgent` emits JSON tool
+calls and runs no arbitrary code at all, so there is nothing to sandbox and the
+allowlist is the entire boundary.
+
+**It is told which search provider to name.** The gateway advertises twenty
+search and fetch providers; exactly one, `tavily-search`, reports
+`cred=configured`. Left to itself the model picked `duckduckgo-free`, got
+nothing, retried other dead providers and burned the whole step budget. The
+opposite instruction — omit `provider` — failed differently and more usefully:
+`Argument provider is required`, three times, because the MCP schema marks the
+field required and smolagents validates arguments client-side before the
+request is sent. (A direct MCP call omitting it succeeds; the server is lenient,
+the client is not.) So the instruction names `tavily-search` explicitly.
+
 ### The tools it holds, and the one it never will
 
 Until 2026-09-04 the agent ran with `tools=[]`. It could execute Python in a
