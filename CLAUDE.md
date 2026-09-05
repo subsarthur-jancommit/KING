@@ -51,7 +51,42 @@ profile mounts the whole repo, so anything secret must also be shadowed with
 
 ## Code knowledge graph
 
-Not available yet. `graphify-out/` does not exist, and the `graphify` CLI is not
-installed on any machine this project runs on — use ordinary search tools.
-The graph is being moved to a shared MCP server on the VPS; these rules get
-rewritten to point at it once that endpoint is live.
+**Live since 2026-09-04**, and no longer behind an SSH tunnel:
+
+```
+claude mcp add --transport http codegraph   https://gateway.arject.co/king-codegraph/mcp   --header "Authorization: Bearer ${GRAPHIFY_API_KEY}"
+```
+
+Ten tools, refreshed daily by a systemd timer. Prefer it over grep for
+"what calls this" and "if I change this, what breaks" — `get_neighbors` answers
+in one call what a recursive grep answers wrongly.
+
+It can be stale by up to a day, which is normal; weeks behind is not. Check
+with `graph_stats`, refresh with `scripts/codegraph-refresh.sh`. A confident
+answer about month-old code is worse than no graph at all.
+
+## Skills
+
+Eleven ECC skills are installed in `~/.claude/skills/`, chosen to match what is
+actually in this repo: `python-patterns`, `python-testing`, `tdd-workflow`,
+`docker-patterns`, `deployment-patterns`, `security-review`,
+`verification-loop`, `mcp-server-patterns`, `github-ops`, `error-handling`,
+`context-budget`.
+
+**Read the relevant skill before writing code, not after.** It is a guide book,
+not a review checklist. Where no skill fits, work from the facts in front of
+you and use ECC's universal principles as the anchor.
+
+**The `ecc@ecc` plugin is deliberately NOT enabled**, and `enabledPlugins` was
+removed from `.claude/settings.json` to keep it that way. Installing it whole
+adds **~40,637 tokens to every session** — measured with
+`claude plugin details ecc@ecc` — for 380 skills and 68 agents covering
+Android, Flutter, Laravel, Perl, healthcare and DeFi, none of which appear in
+this repo. The eleven above cost roughly 1,100 always-on, about 2.7% of that.
+Context that is not relevant is a cost, not a bonus, and ECC's own first
+principle is to optimize the context window.
+
+**If a task ever needs a skill that is not installed, take that one from the
+ECC marketplace** — it is still declared in `.claude/settings.json`, so
+`~/.claude/plugins/cache/ecc/ecc/<version>/skills/` holds all 286 to copy from.
+Add the single skill you need. Do not enable the plugin to get it.
