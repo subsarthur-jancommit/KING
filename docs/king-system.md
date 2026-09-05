@@ -207,6 +207,22 @@ the provider prefix is stripped before comparing — `agy/claude-sonnet-4-6`
 answered by `claude-sonnet-4-6` is a match, and treating it otherwise would
 mark every correct run degraded.
 
+**A workaround exists and is deliberately not taken.** smolagents' system
+prompt can be replaced through `prompt_templates`, and prompt size decides the
+outcome:
+
+```
+59 chars   "You answer the user's question. Call a tool when one helps."   -> claude-sonnet-4-6
+156 chars  a normal instruction paragraph                                 -> big-pickle
+9,867      smolagents' actual default                                     -> big-pickle
+```
+
+So the agent could have the model it asks for by shipping a nearly empty system
+prompt. That prompt is what teaches it tool-call formatting, `final_answer`
+usage and what to do when a tool returns nothing — trading a stronger model for
+an agent that behaves unreliably is a bad trade, and it would break again the
+moment the prompt grew by a sentence. Reported rather than dodged.
+
 ### The ladder was probed, not assumed — 2026-09-05
 
 An alert fired at 04:41 (`monitor.error_rate`, 38% over 15 minutes, WARNING)
