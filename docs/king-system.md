@@ -1274,7 +1274,10 @@ Each of these is running, not planned.
 4. **Bulk classification at zero cost.** An Activepieces flow over
    `free-then-local` for hundreds of items, running unattended.
 5. **Work that must not leave the machine.** Point at
-   `ollama/qwen2.5:1.5b-instruct-q4_K_M` and nothing egresses.
+   `ollama/qwen2.5:1.5b-instruct-q4_K_M` and nothing egresses. Verified
+   2026-09-05: answered through the gateway in 9.8 s, served by exactly the
+   model requested — one of the few requests that is *not* rerouted, since a
+   plain prompt does not trigger the content-based switch.
 6. **Unattended monitoring — that currently fails *quietly*.** The gateway is
    checked every 15 minutes and a dead-man switch watches the monitor; both were
    verified running on 2026-09-05. But the alert flow normalises what it
