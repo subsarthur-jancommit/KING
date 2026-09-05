@@ -9,8 +9,23 @@ sudah pernah melihat `opencode/big-pickle` membalas `service_unavailable`, dan
 kode CI-nya sampai harus menoleransi itu secara eksplisit.
 
 Model lokal menutup celah terakhir itu. Ia tidak lebih pintar dari model gratis
-mana pun — ia hanya **selalu ada**, tidak punya kuota, dan tidak mengirim apa
-pun keluar dari VPS.
+mana pun — ia hanya **selalu ada** dan tidak punya kuota.
+
+> **Koreksi 2026-09-05: "tidak mengirim apa pun keluar dari VPS" tidak berlaku
+> tanpa syarat.** Kalimat itu ada di sini sampai hari ini dan terukur salah.
+> Permintaan yang menyebut `ollama/qwen2.5:1.5b-instruct-q4_K_M` dilayani ollama
+> untuk prompt biasa, tetapi dilayani **`gemini-3.7-flash-high` — Google, lewat
+> agy** — ketika prompt memicu pengalihan berbasis konten di OmniRoute. Tanpa
+> error, tanpa peringatan, jawaban tampak normal.
+>
+> Routing itu ada di subtree ter-vendor yang tidak boleh disunting, jadi tidak
+> bisa dicegah dari sini. Yang bisa: sidecar kini menyalakan `degraded` dengan
+> pesan `local-only work left the host`, dan pemanggil `/v1` langsung harus
+> membaca header `x-omniroute-provider`. Rinciannya di `docs/king-system.md`
+> §5b.
+>
+> Jangan perlakukan model lokal sebagai jaminan kerahasiaan tanpa memeriksa
+> siapa yang benar-benar melayani permintaannya.
 
 **Tidak ada kode gateway yang ditulis untuk ini.** OmniRoute sudah mendaftarkan
 `ollama-local` (`omniroute/src/shared/constants/providers/local.ts:32-44`)
