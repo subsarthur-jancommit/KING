@@ -292,6 +292,12 @@ claude mcp add --transport http omniroute \
 Both tokens live in gitignored files on the VPS — `agent-sidecar/.env` and the
 OmniRoute key list. Never put them in a committed `.mcp.json`.
 
+Both endpoints re-verified over the public domain on 2026-09-05: `initialize`
+answers `serverInfo.name = "king"` on the first and `"omniroute" 1.8.1` on the
+second. Worth re-running after any Caddy change, since a route that stops
+matching fails as a 404 the client reports as "server not found" — which reads
+like a configuration mistake at the Claude end, not at this one.
+
 ### Four things that each failed silently first
 
 **OmniRoute's MCP was off.** `mcpEnabled: false` and `mcpTransport: stdio` by
