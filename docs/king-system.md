@@ -1180,10 +1180,14 @@ actually showed.
 **Near term**
 
 1. **Rotate credentials.** The one deferred item that grows with every session.
-2. **Make silent degradation visible.** The flows cannot see which tier served
-   them — the AI piece returns text, not a model name. An HTTP step against
-   `/v1/chat/completions` would expose the `model` field, so a drop from Opus to
-   DeepSeek becomes detectable instead of merely cheaper-looking.
+2. **Make silent degradation visible — done for the agent, still open for the
+   flows.** The agent now reports `served_by` on every run and marks a model
+   override as `degraded`, which is how the gateway's content-based rerouting
+   was found at all. The flows still cannot see which tier served them: the AI
+   piece returns text, not a model name. An HTTP step against
+   `/v1/chat/completions` would expose the `model` field, and the
+   `x-omniroute-decision` header would expose the *strategy* — which is the
+   thing that actually changes.
 3. **A weekly `pool-register.sh --prove` timer.** The built-in health autopilot
    reported all providers "healthy, 0 issues" while three of them failed 100% of
    real requests.
@@ -1196,12 +1200,15 @@ actually showed.
    measured across four versions. A 3B–7B model, or grammar-constrained decoding
    forcing one of four labels, is the next real gain. `--eval` already exists to
    judge whether it worked.
-6. **Web fetch, not just search.** Tavily's `webFetch` capability is registered
-   but unused. Snippets answered the Caddy question; a question needing the body
-   of a page would not be answered by snippets alone.
-7. **Alerting that reaches a human.** `gateway_alerts` receives findings; it has
-   no destination yet. A Discord webhook needs only a URL — the piece requires no
-   OAuth.
+6. **Web fetch, not just search — available to the agent, unused by the flows.**
+   `omniroute_web_fetch` is in the agent's allowlist and reaches Tavily, the one
+   provider configured for both. The flows still work from snippets only, which
+   answered the Caddy question but would not answer one needing a page body.
+7. **Alerting that reaches a human.** `gateway_alerts` receives findings and
+   stops. Confirmed on 2026-09-05: three alerts fired, none delivered, and the
+   `gateway_alerts` table that should hold them is provisioned with the right
+   columns and zero rows. §7 records the exact step — piece, action, table id
+   and field mapping. A Discord webhook on top needs only a URL and no OAuth.
 
 **Longer term, and only if the need is real**
 
