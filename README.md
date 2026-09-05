@@ -227,9 +227,19 @@ docker compose --profile codegraph up -d codegraph-serve
 No wrapper was written: graphify ships its own MCP streamable-HTTP server. The
 build is a one-shot costing ~4.5 minutes and 4 GB, refreshed by a systemd timer
 calling `scripts/codegraph-refresh.sh`, which also refuses to run while a local
-model holds memory. The server itself holds 392 MB and is loopback-only —
-Activepieces reaches it over the Docker network, and a laptop reaches it through
-an SSH tunnel.
+model holds memory. The server itself holds 392 MB. Activepieces reaches it over the Docker
+network, and since 2026-09-04 a laptop reaches it through Caddy rather than an
+SSH tunnel:
+
+```bash
+claude mcp add --transport http codegraph   https://gateway.arject.co/king-codegraph/mcp   --header "Authorization: Bearer ${GRAPHIFY_API_KEY}"
+```
+
+The tunnel is what kept a daily-refreshed graph unused, so removing it was the
+point. Note what that key now protects: `GRAPHIFY_API_KEY` defaults to an empty
+string in compose, so an unset key would publish a complete map of the
+repository. Authentication was verified before the route was added — 401 with
+no token, 401 with a wrong one.
 
 See [`docs/integrations/codegraph.md`](docs/integrations/codegraph.md).
 
