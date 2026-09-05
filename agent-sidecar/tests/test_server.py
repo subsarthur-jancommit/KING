@@ -1083,3 +1083,46 @@ def test_the_pydantic_runner_returns_the_same_keys_as_the_smolagents_one():
     src = inspect.getsource(pydantic_runner.run_sync)
     for key in ("result", "steps", "step_errors", "tokens", "served_by"):
         assert f'"{key}"' in src, f"pydantic_runner stopped returning {key}"
+
+
+def test_the_journal_is_trimmed_before_it_can_fill_the_disk(monkeypatch, tmp_path):
+    """An append-only file with no bound is a slow leak, and a full disk takes
+    down every container on the host rather than only the one that filled it."""
+    from agent_sidecar import outcome as outcome_mod
+
+    journal = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(journal))
+    monkeypatch.setattr(outcome_mod, "_JOURNAL_MAX_BYTES", 400, raising=True)
+
+    for i in range(40):
+        outcome_mod.journal({"n": i, "padding": "x" * 40})
+
+    size = journal.stat().st_size
+    assert size < 4000, f"journal grew to {size} bytes despite the cap"
+
+    lines = journal.read_text(encoding="utf-8").strip().splitlines()
+    import json as _json
+
+    # Halved, not emptied: history that vanishes at the cap without warning is
+    # worse than a bounded window, so the newest entries survive...
+    assert any(_json.loads(l).get("n") == 39 for l in lines if l.strip())
+    # ...and the file says a trim happened, so a reader never mistakes a
+    # trimmed journal for the whole story.
+    assert any("trimmed at" in str(_json.loads(l).get("note", "")) for l in lines if l.strip())
+
+
+def test_trimming_never_breaks_a_run_when_the_journal_is_unreadable(monkeypatch, tmp_path):
+    from agent_sidecar import outcome as outcome_mod
+
+    journal = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(journal))
+    monkeypatch.setattr(
+        outcome_mod.os, "path", type("P", (), {
+            "getsize": staticmethod(lambda p: (_ for _ in ()).throw(OSError("gone"))),
+            "dirname": staticmethod(lambda p: str(tmp_path)),
+        })(), raising=True,
+    )
+
+    outcome_mod.journal({"n": 1})  # must not raise
+
+    assert journal.exists()

@@ -103,6 +103,14 @@ def summarise(outcome: dict, *, runner: str, model: str) -> dict:
     }
 
 
+# Above this, the journal is trimmed to its most recent half. An append-only
+# file on a 48 GB disk that was already at 73% is a slow leak, and the failure
+# it produces is the worst kind — a full disk takes down every container on
+# the host, not just the one that filled it. Entries are ~400 bytes, so this
+# holds roughly 12,000 runs before anything is dropped.
+_JOURNAL_MAX_BYTES = 5 * 1024 * 1024
+
+
 def journal(entry: dict) -> None:
     """Append one line per agent run, best-effort.
 
@@ -115,11 +123,48 @@ def journal(entry: dict) -> None:
         directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
+        _trim_if_oversized(path)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, separators=(",", ":"), default=str) + "\n")
     except Exception as exc:  # noqa: BLE001 - see docstring
         print(f"[run] journal write failed: {exc}", file=sys.stderr, flush=True)
 
+
+
+def _trim_if_oversized(path: str) -> None:
+    """Keep the newest half when the journal passes its cap.
+
+    Halving rather than emptying: truncating at the cap would make the history
+    vanish periodically and without warning, which is worse than a bounded
+    window. A note is written into the file saying a trim happened, so a reader
+    never mistakes a trimmed journal for the whole story.
+
+    One stat() per write; the rewrite only happens at the cap, which at ~400
+    bytes an entry is roughly every 12,000 runs.
+    """
+    try:
+        if os.path.getsize(path) < _JOURNAL_MAX_BYTES:
+            return
+    except OSError:
+        return  # not there yet, or unreadable — the append will report it
+
+    with open(path, "r", encoding="utf-8") as fh:
+        lines = fh.readlines()
+    kept = lines[len(lines) // 2 :]
+    note = json.dumps(
+        {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "caller": "journal",
+            "note": (
+                f"trimmed at {_JOURNAL_MAX_BYTES} bytes; "
+                f"{len(lines) - len(kept)} older entries dropped"
+            ),
+        },
+        separators=(",", ":"),
+    )
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(note + chr(10))
+        fh.writelines(kept)
 
 def journal_run(summary: dict, *, task: str, seconds: float, caller: str) -> None:
     """Record a completed run, from the same summary the caller was given.
