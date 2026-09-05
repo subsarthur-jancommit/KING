@@ -236,8 +236,27 @@ for `opencode/big-pickle` — the free tier — was served by
 ```
 
 So this is not "the gateway prefers the cheap model". It is content-dependent
-routing that can land anywhere, and the only reason either direction is now
-visible is that the response says which model answered.
+routing that can land anywhere — three runs of the same task were served by
+`big-pickle`, `gemini-3.7-flash-high` and `gemini-3.1-flash-lite` — and the
+only reason any of it is visible is that the response says which model answered.
+
+**It has its own flag, not `degraded`.** Folding it in was the first attempt and
+watching real traffic killed it: the reroute happens on essentially every agent
+run, so `degraded` went true every single time, including on runs that answered
+correctly with no errors. A flag that is always on is worse than no flag —
+it teaches the caller to ignore the one signal meaning the answer itself may be
+wrong. Live, after the split:
+
+```
+result           59410
+served_by        gemini-3.1-flash-lite
+model_overridden true
+degraded         false
+step_errors      []
+```
+
+`degraded` keeps its narrow meaning: a step failed, or a configured tool did not
+load.
 
 A combo name is exempt, because it asks for a ladder rather than one model, and
 the provider prefix is stripped before comparing — `agy/claude-sonnet-4-6`
