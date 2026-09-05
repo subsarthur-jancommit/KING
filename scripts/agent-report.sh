@@ -91,7 +91,11 @@ if unmeasured:
     print(f"  unmeasured      {unmeasured} run(s) reported no token counts")
 print(f"  seconds med/max {sorted(seconds)[len(seconds) // 2]:.1f} / {max(seconds):.1f}")
 
-overridden = [r for r in runs if r.get("model_overridden")]
+# Only runs that actually recorded the field. Entries written before it
+# existed have no opinion, and counting them as "not overridden" quietly
+# understates the rate — the same trap as attributing old rows to a caller.
+scored = [r for r in runs if "model_overridden" in r]
+overridden = [r for r in scored if r.get("model_overridden")]
 if overridden:
     # The gateway reroutes on prompt content and can land anywhere, so the
     # model a run asked for and the model that answered are different
@@ -103,7 +107,7 @@ if overridden:
     pairs = collections.Counter(
         str(r.get("model")) + " -> " + str(r.get("served_by")) for r in overridden
     )
-    print(f"  model overridden {len(overridden)} of {len(runs)} run(s)")
+    print(f"  model overridden {len(overridden)} of {len(scored)} run(s) that recorded it")
     for pair, n in pairs.most_common(5):
         print(f"    {n:>4}  {pair}")
 
