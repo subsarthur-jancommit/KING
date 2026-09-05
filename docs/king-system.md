@@ -227,6 +227,34 @@ asked agy/claude-sonnet-4-6  -> served big-pickle  degraded=true
 asked opencode/big-pickle    -> served big-pickle  degraded=false
 ```
 
+**And it escapes the API key's model restrictions.** This is the more serious
+half, because those restrictions are what §8 uses as access control.
+
+A temporary key was created allowing exactly one model —
+`allowed_models: ["ollama/qwen2.5:1.5b-instruct-q4_K_M"]`, nothing else — and
+then deleted. With it:
+
+```
+plain prompt         provider=ollama  ->  qwen2.5:1.5b-instruct-q4_K_M   allowed
+agent-shaped prompt  provider=oc      ->  big-pickle                     NOT allowed
+```
+
+The second request was served by a model the key is explicitly forbidden from
+using. No 403, no warning.
+
+A first probe looked like the restriction held — a key allowing only
+`opencode/big-pickle` was served `big-pickle` under both prompts. That was
+coincidence, not enforcement: the reroute happened to land on the one model
+that was permitted. Testing with a key whose allowed model is the *local* one,
+which the reroute never lands on, is what separated the two readings.
+
+**What this means for §8.** Keys there are scoped so that "what a robot can
+reach is narrower than what the operator can" — `gateway-monitor-triage`
+excluded from `agy/*`, `flow-search` restricted to search. Those restrictions
+hold for ordinary prompts and are not a boundary against a prompt that trips
+the content switch. Treat them as cost control, not as a security boundary,
+until this is fixed upstream.
+
 **It can send private work off the machine.** This is the consequence that
 matters most, and it is not about cost. Requesting the *local* model:
 
@@ -1274,6 +1302,7 @@ is worse than one that stops.
 | **Credential rotation** | Deferred by the operator, to be done in one pass at the end. `./scripts/verify-credentials.sh` proves each key afterwards with real calls — six checks, two of which assert a *rejection*, all passing as of 2026-09-05 | The list now includes the OmniRoute admin password, Neon connection string, Upstash token, two `/v1` keys, both Langfuse pairs, the `oma_` token, webhook HMAC secret, `GRAPHIFY_API_KEY`, the OpenRouter key, the Tavily key, the E2B key, the Modal token, `AGENT_SIDECAR_AUTH_TOKEN`, and the `agent-sidecar-mcp` key once it exists |
 | **OmniRoute admin password was reset** | Done 2026-09-04 | The old one was lost — `POST /api/auth/login` rejected both the 24-character `INITIAL_PASSWORD` in `omniroute/.env` and a value the operator supplied, and no OIDC is configured. Recovered through OmniRoute's own mechanism: the hash lives in `key_value`/`settings`/`password`, and `ensurePersistentManagementPasswordHash` re-hashes a non-bcrypt value there on next login, so writing a plaintext password into that row restores access with no restart. Database backed up first to `db_backups/manual_20260904T153154Z_*`. The new password is with the operator and is first on the rotation list |
 | Agent tools | **Live 2026-09-04** | `agent_tools_active: true`. Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and answered in 2 steps with no step errors and `degraded: false` |
+| **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here |
 | **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served by `oc/big-pickle` when the prompt trips the gateway's content-based reroute. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree |
 | `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |
 | OpenRouter balance | Low, and the failure is shaped by `max_tokens` | A 402 is not a flat "out of credits": it reads *"You requested up to 65536 tokens, but can only afford 7040"*. The cost of the **reservation** is what fails, so the same balance serves a 400-token request and refuses a 65k one. `paid-first` tier 3 answered normally when probed — keep `max_tokens` modest on OpenRouter tiers and it keeps working |
