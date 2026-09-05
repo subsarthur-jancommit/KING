@@ -672,10 +672,23 @@ package publishes a fix or when an omniroute release carrying one arrives via
 newest upstream release, and #12747 is open. Those jobs stay red, and that is
 the correct state.
 
-**What still gets tested.** The `agent-sidecar-unit` job builds the sidecar
-image alone and runs the suite with no OmniRoute reachable, so it does not
-depend on the gateway image and is green throughout. `preflight`, `codegraph`
-and `observability` are green too. What is lost is the *integration* half —
-the sidecar's pytest run against a live OmniRoute, and the end-to-end HTTP
-checks. Unit coverage in CI is not a substitute for those; it is what remains
-of them.
+**What still gets tested.** `omniroute-smoke` is the workflow whose job is this
+build, so it stays red and should. `stax-smoke` no longer does: as of
+2026-09-05 its gateway-dependent jobs pull the published image for the version
+`omniroute/package.json` vendors, pinned by index digest, because they exist to
+test our compose graph, Caddy's routes, Activepieces' reach and the sidecar
+against a live `/v1` — none of which depends on the image being built here.
+`agent-sidecar-unit` needs no gateway at all and was green throughout.
+
+The split is load-bearing and must not be tidied into one path. If both
+workflows pulled, nothing would exercise `omniroute/Dockerfile` and
+`omniroute-smoke` would go green while the build stayed broken — the first
+pattern in this document, applied to the very break it was documenting.
+
+Restoring that coverage paid for itself inside one run. With a gateway
+reachable, the sidecar's suite ran against a live `/v1` for the first time in
+weeks, and the end-to-end step failed on
+`AGENT_SIDECAR_AUTH_TOKEN is not configured; /run is refusing all requests`.
+The wrapper had required a bearer for weeks while CI posted without one. It was
+invisible because the job died at the build long before reaching that step —
+a second fault hiding behind the first, which is the usual arrangement.

@@ -366,9 +366,12 @@ The full reasoning — the CVE's real severity, which is not the one the upstrea
 PR states, and two workarounds that look like fixes and are not — is in
 [`docs/king-mistakes.md`](docs/king-mistakes.md) so nobody re-diagnoses it.
 
-Three jobs that build `omniroute:base` are blocked behind it, in this workflow
-and in the STAX one below. No commit in this repository caused it, and reverting
-one will not clear it.
+This workflow stays red while it stands, which is the correct state — it is the
+one whose job is to build the vendored app. The STAX workflow below no longer
+is: its jobs pull a published image of the vendored version instead, because
+they test our wiring against a running gateway and were failing on a build none
+of them depend on. No commit in this repository caused this, and reverting one
+will not clear it.
 
 ### STAX smoke test
 
@@ -377,7 +380,7 @@ one that covers the code in this repository rather than the vendored app:
 preflight self-tests and shellcheck, the agent sidecar, codegraph,
 observability, OpenHands, and the workflow profile.
 
-Two things about it are worth knowing:
+Three things about it are worth knowing:
 
 - It runs on **push to `main`** as well as on pull requests. For months it did
   not, and roughly fifteen commits of agent-sidecar work merged with no CI
@@ -387,3 +390,21 @@ Two things about it are worth knowing:
   100+ tests in about 30 seconds — so a broken vendored build cannot take our
   own tests down with it, which is how a real regression once survived for
   three days.
+- The jobs that need a running gateway **pull** `omniroute:base` rather than
+  building it, pinned to the published image's index digest for the exact
+  version `omniroute/package.json` vendors. `omniroute-smoke` above still
+  builds from source, so the build question keeps being asked — just not by
+  six jobs that do not depend on the answer.
+
+  `scripts/ci-build-omniroute-base.sh` refuses to run if the pinned version and
+  the vendored version disagree, and checks the pulled image's own
+  `/app/package.json` rather than the tag it just applied. After a
+  `git subtree pull` it fails loudly and names the two lines to update. Set
+  `CI_OMNIROUTE_BUILD=1` to build here instead, once upstream is fixed.
+
+  This was worth doing for what it found within one run. With the gateway
+  reachable again, the sidecar's suite ran against a live `/v1` for the first
+  time in weeks and the end-to-end step failed with
+  `AGENT_SIDECAR_AUTH_TOKEN is not configured` — the wrapper had required a
+  bearer for weeks while CI posted without one, invisible because the job died
+  at the build first.
