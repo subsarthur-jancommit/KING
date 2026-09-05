@@ -176,6 +176,23 @@ setting or nothing — and the first setting that looked right is now ruled out.
 `-request-id` are on every response. Reading them first would have skipped most
 of the eight eliminations above.
 
+**What was done about it.** Nothing can be fixed inside `omniroute/`, and the
+one settings lever was tested and does nothing. So the override is now
+*reported* instead: asking for a `provider/model` and being served something
+else lands in `step_errors` and sets `degraded`, using the same contract every
+other degradation here already uses. Live:
+
+```
+asked agy/claude-sonnet-4-6  -> served big-pickle  degraded=true
+   "model override: asked for agy/claude-sonnet-4-6, served by big-pickle"
+asked opencode/big-pickle    -> served big-pickle  degraded=false
+```
+
+A combo name is exempt, because it asks for a ladder rather than one model, and
+the provider prefix is stripped before comparing — `agy/claude-sonnet-4-6`
+answered by `claude-sonnet-4-6` is a match, and treating it otherwise would
+mark every correct run degraded.
+
 ### The ladder was probed, not assumed — 2026-09-05
 
 An alert fired at 04:41 (`monitor.error_rate`, 38% over 15 minutes, WARNING)
