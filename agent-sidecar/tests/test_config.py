@@ -28,6 +28,7 @@ def _clean_env(monkeypatch):
         "AGENT_SIDECAR_MAX_STEPS",
         "AGENT_SIDECAR_AUTHORIZED_IMPORTS",
         "AGENT_SIDECAR_AGENT_TOOLS",
+        "AGENT_SIDECAR_MAX_TOKENS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -163,3 +164,27 @@ def test_agent_tools_none_means_none(monkeypatch):
     # indistinguishable from a misconfiguration.
     monkeypatch.setenv("AGENT_SIDECAR_AGENT_TOOLS", "none")
     assert load_settings().agent_tools == ()
+
+
+def test_max_tokens_defaults_to_a_generous_backstop():
+    # A backstop, not a budget: a measured 3-step search run cost ~24k, so the
+    # default sits far above normal operation and exists to stop something
+    # pathological rather than to shape ordinary runs.
+    assert load_settings().max_tokens == 250000
+
+
+def test_max_tokens_zero_disables_the_ceiling(monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_MAX_TOKENS", "0")
+    assert load_settings().max_tokens == 0
+
+
+def test_a_negative_max_tokens_is_rejected(monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_MAX_TOKENS", "-1")
+    with pytest.raises(ValueError, match="must be 0"):
+        load_settings()
+
+
+def test_a_non_integer_max_tokens_is_rejected(monkeypatch):
+    monkeypatch.setenv("AGENT_SIDECAR_MAX_TOKENS", "lots")
+    with pytest.raises(ValueError, match="not an integer"):
+        load_settings()

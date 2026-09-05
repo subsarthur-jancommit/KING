@@ -18,6 +18,7 @@ Two agent kinds, chosen by whether the run has tools:
 from __future__ import annotations
 
 from smolagents import CodeAgent, ToolCallingAgent
+from smolagents.utils import AgentError
 
 from .config import Settings, load_settings
 from .mcp_tools import (
@@ -52,6 +53,43 @@ TOOL_AGENT_INSTRUCTIONS = (
 )
 
 
+class _TokenCeiling:
+    """Stops a run that has cost more than it is allowed to.
+
+    smolagents bounds iterations with max_steps but nothing bounds what one
+    iteration costs, and a tool returning a large page moves the context a long
+    way in a single step. This is the second half of the rule that came out of
+    an agent running past the caller that had already given up: the loop is the
+    one thing here that can spend without bound, so the ceiling lives in the
+    service.
+
+    Registered as a step callback, which smolagents invokes as
+    `callback(memory_step, agent=...)` after each ActionStep — and after the
+    monitor's own metrics callback, so the totals it reads are current.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.used = 0
+        self.tripped = False
+
+    def __call__(self, memory_step, agent=None) -> None:
+        if agent is None or self.tripped:
+            return
+        counts = getattr(getattr(agent, "monitor", None), "get_total_token_counts", None)
+        if not callable(counts):
+            return
+        try:
+            self.used = getattr(counts(), "total_tokens", 0) or 0
+        except Exception:  # noqa: BLE001 - a ceiling must not itself break a run
+            return
+        if self.used > self.limit:
+            self.tripped = True
+            # Cooperative: smolagents raises AgentError at the next step
+            # boundary rather than tearing down mid-tool-call.
+            agent.interrupt()
+
+
 def uses_tool_calling(tools) -> bool:
     """Tool-bearing runs use ToolCallingAgent; codeexecution runs use CodeAgent.
 
@@ -61,10 +99,11 @@ def uses_tool_calling(tools) -> bool:
     return bool(tools)
 
 
-def build_agent(settings: Settings | None = None, tools=None):
+def build_agent(settings: Settings | None = None, tools=None, ceiling=None):
     settings = settings or load_settings()
     model = smolagents_model(settings)
     tools = list(tools or [])
+    callbacks = [ceiling] if ceiling is not None else None
 
     if uses_tool_calling(tools):
         # No executor_type and no additional_authorized_imports: this agent
@@ -76,6 +115,7 @@ def build_agent(settings: Settings | None = None, tools=None):
             model=model,
             max_steps=settings.max_steps,
             instructions=TOOL_AGENT_INSTRUCTIONS,
+            step_callbacks=callbacks,
         )
 
     return CodeAgent(
@@ -93,6 +133,7 @@ def build_agent(settings: Settings | None = None, tools=None):
         additional_authorized_imports=list(settings.authorized_imports),
         executor_type=settings.executor_type,
         max_steps=settings.max_steps,
+        step_callbacks=callbacks,
     )
 
 
@@ -195,10 +236,32 @@ def run(task: str, settings: Settings | None = None) -> dict:
     """
     settings = settings or load_settings()
     tools, client, tool_report = _load_tools(settings)
+    ceiling = _TokenCeiling(settings.max_tokens) if settings.max_tokens > 0 else None
     try:
-        agent = build_agent(settings, tools=tools)
-        result = agent.run(task)
-        return {"result": result, **_diagnostics(agent), "tools": tool_report}
+        agent = build_agent(settings, tools=tools, ceiling=ceiling)
+        try:
+            result = agent.run(task)
+        except AgentError:
+            # Hitting the ceiling is a bounded stop, not a crash, so it must not
+            # become a 500 — the caller gets whatever the run established, plus
+            # a step error saying why it ended. Any OTHER AgentError is a real
+            # failure and still propagates.
+            if ceiling is None or not ceiling.tripped:
+                raise
+            result = (
+                f"Stopped: this run reached its token ceiling "
+                f"({ceiling.used:,} of {ceiling.limit:,} allowed) and was "
+                f"interrupted before it could finish."
+            )
+
+        outcome = {"result": result, **_diagnostics(agent), "tools": tool_report}
+        if ceiling is not None and ceiling.tripped:
+            # Goes in step_errors so `degraded` becomes true without the caller
+            # needing to know this feature exists.
+            outcome["step_errors"] = list(outcome["step_errors"]) + [
+                f"token ceiling: used {ceiling.used} of {ceiling.limit} allowed"
+            ]
+        return outcome
     finally:
         # The tool list stays usable outside a `with` block, but the transport
         # does not close itself — smolagents documents the try/finally pairing.

@@ -60,6 +60,16 @@ class Settings:
     # already given up and disconnected at 300 s. A caller timing out does not
     # stop the agent, so the bound has to live here.
     max_steps: int
+    # A second, independent ceiling on the same runaway max_steps guards
+    # against. Steps bound how many times the loop turns; they do not bound
+    # what one turn costs, and a tool that returns a large page can move the
+    # context a long way in a single step. 0 disables it.
+    #
+    # Deliberately generous: this is a backstop, not a budget. A measured
+    # 3-step search run cost ~24k tokens, so the default sits far above normal
+    # operation and exists to stop something pathological, not to shape
+    # ordinary runs.
+    max_tokens: int
     # Which MCP tools the agent may hold, by exact name. An ALLOWLIST, never a
     # denylist: OmniRoute serves 110 tools and tags 12 of them "phase 1", but
     # that tag marks usefulness to an MCP client, not safety in the hands of an
@@ -119,6 +129,18 @@ def load_settings() -> Settings:
             f"AGENT_SIDECAR_MAX_STEPS={max_steps} must be at least 1"
         )
 
+    raw_max_tokens = os.environ.get("AGENT_SIDECAR_MAX_TOKENS", "250000").strip() or "250000"
+    try:
+        max_tokens = int(raw_max_tokens)
+    except ValueError as exc:
+        raise ValueError(
+            f"AGENT_SIDECAR_MAX_TOKENS={raw_max_tokens!r} is not an integer"
+        ) from exc
+    if max_tokens < 0:
+        raise ValueError(
+            f"AGENT_SIDECAR_MAX_TOKENS={max_tokens} must be 0 (disabled) or positive"
+        )
+
     # "none" is spelled out rather than implied by an empty string, because
     # empty means "unset, use the default" everywhere else in this file and a
     # silent tools=[] is indistinguishable from a misconfiguration.
@@ -146,5 +168,6 @@ def load_settings() -> Settings:
             if p.strip()
         ),
         max_steps=max_steps,
+        max_tokens=max_tokens,
         agent_tools=agent_tools,
     )

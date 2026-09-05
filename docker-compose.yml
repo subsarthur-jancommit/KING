@@ -107,6 +107,11 @@ services:
       # provisioned `manage`-scoped key and comes from agent-sidecar/.env — it
       # must never be written here, where it would be committable.
       - AGENT_SIDECAR_AGENT_TOOLS=${AGENT_SIDECAR_AGENT_TOOLS:-}
+      # Backstop on what a run may cost, independent of max_steps: steps
+      # bound how many times the loop turns, not what one turn costs, and a
+      # tool returning a large page moves the context a long way in a single
+      # step. Generous on purpose — 0 disables it.
+      - AGENT_SIDECAR_MAX_TOKENS=${AGENT_SIDECAR_MAX_TOKENS:-}
       # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
       # proxy this must include the public name, or every request comes back
       # "Invalid Host header". Empty leaves loopback-only, which is correct
@@ -270,6 +275,11 @@ services:
       # provisioned `manage`-scoped key and comes from agent-sidecar/.env — it
       # must never be written here, where it would be committable.
       - AGENT_SIDECAR_AGENT_TOOLS=${AGENT_SIDECAR_AGENT_TOOLS:-}
+      # Backstop on what a run may cost, independent of max_steps: steps
+      # bound how many times the loop turns, not what one turn costs, and a
+      # tool returning a large page moves the context a long way in a single
+      # step. Generous on purpose — 0 disables it.
+      - AGENT_SIDECAR_MAX_TOKENS=${AGENT_SIDECAR_MAX_TOKENS:-}
       # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
       # proxy this must include the public name, or every request comes back
       # "Invalid Host header". Empty leaves loopback-only, which is correct

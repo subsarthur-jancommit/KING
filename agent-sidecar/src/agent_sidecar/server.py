@@ -71,6 +71,9 @@ async def health(_request: Request) -> JSONResponse:
             "omniroute_base_url": settings.omniroute_base_url,
             "executor_type": settings.executor_type,
             "max_steps": settings.max_steps,
+            # The second ceiling. Steps bound how many times the loop turns;
+            # this bounds what the turns cost. 0 means disabled.
+            "max_tokens": settings.max_tokens,
             "authorized_imports": list(settings.authorized_imports),
             # The list above means opposite things per executor, so say which.
             # Under `local` it restricts and is the entire boundary; under a

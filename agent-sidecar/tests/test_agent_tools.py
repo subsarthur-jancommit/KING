@@ -13,7 +13,7 @@ import pytest
 from agent_sidecar.config import load_settings
 from agent_sidecar.mcp_tools import NEVER_REGISTER, select_agent_tools
 from agent_sidecar import smol_runner
-from agent_sidecar.smol_runner import uses_tool_calling
+from agent_sidecar.smol_runner import _TokenCeiling, uses_tool_calling
 
 
 class _Tool:
@@ -237,3 +237,97 @@ def test_a_working_gateway_returns_tools_and_the_client_to_close(monkeypatch):
     assert client is not None
     assert report["enabled"] is True
     assert report["offered"] == 2
+
+
+# --------------------------------------------------------------------------
+# The token ceiling. max_steps bounds how many times the loop turns; nothing
+# bounded what one turn costs, and a tool returning a large page moves the
+# context a long way in a single step.
+# --------------------------------------------------------------------------
+
+
+class _FakeAgent:
+    """Minimal stand-in: the ceiling only reads monitor totals and interrupts."""
+
+    def __init__(self, total):
+        self.interrupted = False
+        outer = self
+
+        class _Monitor:
+            def get_total_token_counts(self):
+                class _Usage:
+                    total_tokens = outer._total
+
+                return _Usage()
+
+        self._total = total
+        self.monitor = _Monitor()
+
+    def interrupt(self):
+        self.interrupted = True
+
+
+def test_ceiling_lets_a_run_under_budget_continue():
+    ceiling = _TokenCeiling(1000)
+    agent = _FakeAgent(999)
+
+    ceiling(object(), agent=agent)
+
+    assert ceiling.tripped is False
+    assert agent.interrupted is False
+    assert ceiling.used == 999
+
+
+def test_ceiling_interrupts_once_the_budget_is_passed():
+    ceiling = _TokenCeiling(1000)
+    agent = _FakeAgent(1001)
+
+    ceiling(object(), agent=agent)
+
+    assert ceiling.tripped is True
+    assert agent.interrupted is True
+
+
+def test_ceiling_interrupts_only_once():
+    """A second trip must not re-interrupt an already-stopping agent."""
+    ceiling = _TokenCeiling(10)
+    agent = _FakeAgent(50)
+
+    ceiling(object(), agent=agent)
+    agent.interrupted = False
+    ceiling(object(), agent=agent)
+
+    assert agent.interrupted is False
+
+
+def test_a_broken_monitor_never_breaks_the_run():
+    """A ceiling that throws would turn a cost guard into an outage."""
+
+    class _Exploding:
+        class monitor:
+            @staticmethod
+            def get_total_token_counts():
+                raise RuntimeError("monitor is confused")
+
+        interrupted = False
+
+        def interrupt(self):
+            self.interrupted = True
+
+    ceiling = _TokenCeiling(10)
+    agent = _Exploding()
+
+    ceiling(object(), agent=agent)
+
+    assert ceiling.tripped is False
+    assert agent.interrupted is False
+
+
+def test_an_agent_without_a_monitor_is_ignored():
+    class _Bare:
+        pass
+
+    ceiling = _TokenCeiling(10)
+    ceiling(object(), agent=_Bare())
+
+    assert ceiling.tripped is False
