@@ -21,9 +21,14 @@ docs/integrations/activepieces-workflow.md.
 
 from __future__ import annotations
 
+import json
+import os
 import secrets
+import sys
+import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import anyio
 from starlette.applications import Starlette
@@ -190,6 +195,7 @@ async def run(request: Request) -> JSONResponse:
         settings = replace(settings, max_steps=min(max_steps, settings.max_steps))
 
     func = _resolve(runner)
+    started = time.monotonic()
     try:
         result = await anyio.to_thread.run_sync(func, task, settings)
     except Exception as exc:
@@ -208,6 +214,17 @@ async def run(request: Request) -> JSONResponse:
         # No `result` key is invented to match the success shape. There is no
         # result, and an empty string here would read as "the agent answered
         # nothing" rather than "the agent never ran".
+        _journal(
+            {
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "runner": runner,
+                "model": settings.model_id,
+                "task": task[:200],
+                "seconds": round(time.monotonic() - started, 2),
+                "error": f"{type(exc).__name__}: {exc}",
+                "degraded": True,
+            }
+        )
         return JSONResponse(
             {
                 "error": f"{type(exc).__name__}: {exc}",
@@ -249,6 +266,23 @@ async def run(request: Request) -> JSONResponse:
         or tool_report.get("misdirected")
     )
 
+    _journal(
+        {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "runner": runner,
+            "model": settings.model_id,
+            # Truncated, matching what the vps_exec audit already does with
+            # commands: enough to recognise the run, not a transcript.
+            "task": task[:200],
+            "seconds": round(time.monotonic() - started, 2),
+            "steps": outcome.get("steps"),
+            "tokens": outcome.get("tokens"),
+            "tools": tool_report.get("selected"),
+            "step_errors": step_errors,
+            "degraded": bool(step_errors) or tools_wanting,
+        }
+    )
+
     return JSONResponse(
         {
             "result": str(outcome.get("result")),
@@ -269,6 +303,29 @@ async def run(request: Request) -> JSONResponse:
             "degraded": bool(step_errors) or tools_wanting,
         }
     )
+
+
+def _journal(entry: dict) -> None:
+    """Append one line per agent run, best-effort.
+
+    Same contract as the vps_exec audit next to it: an unwritable path must not
+    fail the run, and must not silently look like it logged either — the
+    failure goes to stderr, which lands in the container log.
+
+    This exists because every run's data used to die with its response. There
+    was no way to answer "what did the agent cost this week" or "are degraded
+    runs becoming more common", and the gateway's own call_logs only sees model
+    calls, not steps, tools, or whether the answer was trustworthy.
+    """
+    path = os.environ.get("AGENT_SIDECAR_RUN_JOURNAL", "/audit/runs.jsonl")
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, separators=(",", ":"), default=str) + "\n")
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        print(f"[run] journal write failed: {exc}", file=sys.stderr, flush=True)
 
 
 class _McpAuthMiddleware:

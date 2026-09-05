@@ -280,6 +280,11 @@ services:
       - AGENT_SIDECAR_EXEC_ENABLED=${AGENT_SIDECAR_EXEC_ENABLED:-}
       - AGENT_SIDECAR_WORKDIR=/workspace
       - AGENT_SIDECAR_EXEC_AUDIT=/audit/vps_exec.log
+      # One JSON line per agent run — model, steps, tokens, tools,
+      # degraded, duration. Shares the audit volume because it answers
+      # the same kind of question after the fact, and because the
+      # volume's ownership is already correct for uid 10001.
+      - AGENT_SIDECAR_RUN_JOURNAL=/audit/runs.jsonl
     volumes:
       # Read this before enabling AGENT_SIDECAR_EXEC_ENABLED.
       #

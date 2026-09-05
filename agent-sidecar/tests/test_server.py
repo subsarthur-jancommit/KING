@@ -595,3 +595,78 @@ def test_missing_token_counts_are_null_not_zero(client, monkeypatch):
 
     assert body["tokens"] is None
     assert body["degraded"] is False
+
+
+def test_every_run_is_journalled(client, monkeypatch, tmp_path):
+    """Run data used to die with the response.
+
+    There was no way to answer "what did the agent cost this week" or "are
+    degraded runs becoming more common" — the gateway's own call_logs sees model
+    calls, not steps, tools, or whether the answer could be trusted.
+    """
+    journal = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(journal))
+
+    def _runner(task, settings=None):
+        return {
+            "result": "ok",
+            "steps": 3,
+            "step_errors": [],
+            "tokens": {"input": 23105, "output": 986, "total": 24091},
+        }
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _runner, raising=True)
+    client.post("/run", json={"task": "find the release date"})
+
+    import json as _json
+
+    lines = journal.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    entry = _json.loads(lines[0])
+    assert entry["steps"] == 3
+    assert entry["tokens"]["total"] == 24091
+    assert entry["degraded"] is False
+    assert entry["task"] == "find the release date"
+    assert isinstance(entry["seconds"], float)
+
+
+def test_a_crashed_run_is_journalled_too(client, monkeypatch, tmp_path):
+    journal = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(journal))
+
+    def _explodes(task, settings=None):
+        raise RuntimeError("provider hung up")
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _explodes, raising=True)
+    client.post("/run", json={"task": "t"})
+
+    import json as _json
+
+    entry = _json.loads(journal.read_text(encoding="utf-8").strip())
+    assert entry["degraded"] is True
+    assert "RuntimeError" in entry["error"]
+
+
+def test_an_unwritable_journal_does_not_fail_the_run(client, monkeypatch, tmp_path):
+    """Best-effort, like the vps_exec audit beside it.
+
+    A full disk or a mis-owned volume must not turn working agent runs into
+    500s — but it must not be silent either, which is why the helper writes the
+    failure to stderr.
+    """
+    monkeypatch.setenv(
+        "AGENT_SIDECAR_RUN_JOURNAL", str(tmp_path / "nope" / "runs.jsonl")
+    )
+    monkeypatch.setattr(
+        server.os, "makedirs", lambda *a, **k: (_ for _ in ()).throw(OSError("read-only"))
+    )
+
+    def _runner(task, settings=None):
+        return {"result": "ok", "steps": 1, "step_errors": [], "tokens": None}
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _runner, raising=True)
+
+    resp = client.post("/run", json={"task": "t"})
+
+    assert resp.status_code == 200
+    assert resp.json()["result"] == "ok"
