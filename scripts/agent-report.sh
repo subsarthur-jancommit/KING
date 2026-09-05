@@ -96,8 +96,12 @@ if overridden:
     # The gateway reroutes on prompt content and can land anywhere, so the
     # model a run asked for and the model that answered are different
     # questions. This counts how often they disagreed.
+    # Built by concatenation, not an f-string: this whole program lives inside
+    # a single-quoted shell string, so a single quote anywhere in it ends the
+    # string and the next word becomes a bare name. That exact bug shipped
+    # once.
     pairs = collections.Counter(
-        f"{r.get('model')} -> {r.get('served_by')}" for r in overridden
+        str(r.get("model")) + " -> " + str(r.get("served_by")) for r in overridden
     )
     print(f"  model overridden {len(overridden)} of {len(runs)} run(s)")
     for pair, n in pairs.most_common(5):
