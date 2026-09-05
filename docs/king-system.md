@@ -757,6 +757,44 @@ reporting healthy. Each guard below exists because of a specific one.
 | `codegraph-refresh.timer` | Daily | The graph ageing silently |
 | `/audit/runs.jsonl` | Every agent run | Cost, tool use, and degradation trends that were previously unrecoverable |
 
+### The alarm that nobody hears
+
+`gateway_monitor` works. Probed 2026-09-05: it runs every fifteen minutes, and
+a real execution returned `{"ok":true,"breach":false,"windowMinutes":15,
+"total":1,"failed":0,"ratio":0,"threshold":0.3}` with a per-provider breakdown.
+It measures.
+
+`gateway_alerts` receives what it sends, normalises the payload into
+`{event, at, apiKey, provider, model, reason, raw}` — **and stops there.** The
+flow is two steps: the webhook, and the code step that shapes the object. Its
+return value goes nowhere.
+
+Three alerts fired on 2026-09-05 (00:11, 00:56, 04:41) and none reached a
+person. They exist only in Activepieces run history, which nobody watches. The
+04:41 one carried a 38% error ratio and three named failures — genuinely worth
+seeing, and unseen.
+
+**The destination already exists and is empty.** A `gateway_alerts` table is
+provisioned with exactly the right columns — `received_at`, `event`, `api_key`,
+`provider`, `detail` — and **0 rows**. Somebody built the sink and never wired
+the pipe.
+
+One step closes it, after `step_1` in the `gateway_alerts` flow:
+
+```
+piece   @activepieces/piece-tables    action  tables-create-records
+table_id  wzZB4ntGPk9OAnzgknJqZ
+records   [{"received_at": "{{step_1['output'].at}}",
+            "event":       "{{step_1['output'].event}}",
+            "api_key":     "{{step_1['output'].apiKey}}",
+            "provider":    "{{step_1['output'].provider}}",
+            "detail":      "{{step_1['output'].reason}}"}]
+```
+
+A push destination — Discord, email — is a second step and needs a URL only the
+operator has. The table does not, and turns "alerts vanish" into "alerts
+accumulate somewhere you can look".
+
 **They are `--user` units, and checking them the obvious way says they are
 dead.** `systemctl list-timers` and `systemctl is-active monitor-deadman.timer`
 both report nothing, because these run under the `subsa` user manager rather
