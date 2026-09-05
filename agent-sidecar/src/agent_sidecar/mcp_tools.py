@@ -21,17 +21,40 @@ def mcp_tools_enabled(settings: Settings) -> bool:
     return bool(settings.omniroute_mcp_api_key)
 
 
-def smolagents_mcp_server_parameters(settings: Settings) -> dict:
+def smolagents_mcp_server_parameters(settings: Settings) -> list[dict]:
+    """Every MCP server the agent should load tools from.
+
+    A list, because smolagents' MCPClient accepts one — OmniRoute's 110 tools
+    and codegraph's ten are different services with different keys, and a
+    codegraph outage must not cost the agent its web search.
+
+    Only servers with a key configured are included. codegraph is optional and
+    silently absent when `GRAPHIFY_API_KEY` is unset; OmniRoute is not, because
+    without it there is nothing to load and the caller asked for tools.
+    """
     if not settings.omniroute_mcp_api_key:
         raise RuntimeError(
             "OMNIROUTE_MCP_API_KEY is not set — MCP tool loading is opt-in, "
             "see agent_sidecar.mcp_tools module docstring."
         )
-    return {
-        "url": settings.omniroute_mcp_url,
-        "transport": "streamable-http",
-        "headers": {"Authorization": f"Bearer {settings.omniroute_mcp_api_key}"},
-    }
+    servers = [
+        {
+            "url": settings.omniroute_mcp_url,
+            "transport": "streamable-http",
+            "headers": {"Authorization": f"Bearer {settings.omniroute_mcp_api_key}"},
+        }
+    ]
+    if settings.codegraph_mcp_api_key:
+        servers.append(
+            {
+                "url": settings.codegraph_mcp_url,
+                "transport": "streamable-http",
+                "headers": {
+                    "Authorization": f"Bearer {settings.codegraph_mcp_api_key}"
+                },
+            }
+        )
+    return servers
 
 
 def pydantic_ai_mcp_toolset(settings: Settings):

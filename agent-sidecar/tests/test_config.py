@@ -29,6 +29,8 @@ def _clean_env(monkeypatch):
         "AGENT_SIDECAR_AUTHORIZED_IMPORTS",
         "AGENT_SIDECAR_AGENT_TOOLS",
         "AGENT_SIDECAR_MAX_TOKENS",
+        "GRAPHIFY_API_KEY",
+        "CODEGRAPH_MCP_URL",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -188,3 +190,41 @@ def test_a_non_integer_max_tokens_is_rejected(monkeypatch):
     monkeypatch.setenv("AGENT_SIDECAR_MAX_TOKENS", "lots")
     with pytest.raises(ValueError, match="not an integer"):
         load_settings()
+
+
+def test_the_default_allowlist_reaches_both_mcp_servers():
+    """Two services, one allowlist. The code graph answers "what calls this"
+    without that work landing in Claude's context, which is what this whole
+    service is for."""
+    tools = load_settings().agent_tools
+
+    assert "omniroute_web_search" in tools          # OmniRoute
+    assert "get_neighbors" in tools                 # codegraph
+    # Read-only only: the graph's PR-triage tools are left out, since an agent
+    # that reads web pages has no business acting on pull requests.
+    for acting in ("list_prs", "get_pr_impact", "triage_prs"):
+        assert acting not in tools
+
+
+def test_codegraph_is_optional_and_absent_without_its_key(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_API_KEY", raising=False)
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+    from agent_sidecar.mcp_tools import smolagents_mcp_server_parameters
+
+    servers = smolagents_mcp_server_parameters(load_settings())
+
+    # One server, not a crash and not a silent second entry with no key: a
+    # codegraph outage or an unset key must not cost the agent its web search.
+    assert len(servers) == 1
+    assert "api/mcp/stream" in servers[0]["url"]
+
+
+def test_codegraph_is_added_when_its_key_is_present(monkeypatch):
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+    monkeypatch.setenv("GRAPHIFY_API_KEY", "a-graph-key")
+    from agent_sidecar.mcp_tools import smolagents_mcp_server_parameters
+
+    servers = smolagents_mcp_server_parameters(load_settings())
+
+    assert len(servers) == 2
+    assert servers[1]["headers"]["Authorization"] == "Bearer a-graph-key"

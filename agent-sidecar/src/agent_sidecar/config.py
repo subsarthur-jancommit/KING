@@ -20,6 +20,13 @@ class Settings:
     # key intentionally does NOT carry that scope).
     omniroute_mcp_api_key: str | None
     omniroute_mcp_url: str
+    # A SECOND MCP server, so the agent can answer "what calls this function"
+    # from the code graph instead of that work landing in Claude's context —
+    # which is the whole reason this service exists. Independent of the
+    # OmniRoute pair above: separate service, separate key, separate failure.
+    # Unset means the agent simply does not get those tools.
+    codegraph_mcp_api_key: str | None
+    codegraph_mcp_url: str
     # Where smolagents' CodeAgent executes the Python it generates. "local"
     # means in-process, guarded only by an AST-level import allowlist that
     # smolagents explicitly documents as not a security boundary. That is
@@ -100,6 +107,17 @@ DEFAULT_AGENT_TOOLS: tuple[str, ...] = (
     "omniroute_get_health",
     "omniroute_memory_search",
     "omniroute_memory_add",
+    # From the code graph, a second MCP server. Four of its ten, all read-only,
+    # chosen because they answer the questions that otherwise cost Claude a lot
+    # of context: what calls this, what is this, what is near it, and is the
+    # graph fresh enough to believe.
+    #
+    # Names taken from the server's own tools/list rather than the docs — the
+    # last time a tool name was assumed here it cost a rebuild and a redeploy.
+    "get_neighbors",
+    "get_node",
+    "query_graph",
+    "graph_stats",
 )
 
 
@@ -157,6 +175,10 @@ def load_settings() -> Settings:
         omniroute_api_key=os.environ.get("OMNIROUTE_API_KEY") or None,
         model_id=os.environ.get("AGENT_SIDECAR_MODEL_ID", "opencode/big-pickle"),
         omniroute_mcp_api_key=os.environ.get("OMNIROUTE_MCP_API_KEY") or None,
+        codegraph_mcp_api_key=os.environ.get("GRAPHIFY_API_KEY") or None,
+        codegraph_mcp_url=os.environ.get(
+            "CODEGRAPH_MCP_URL", "http://codegraph-serve:8130/mcp"
+        ),
         omniroute_mcp_url=os.environ.get(
             "OMNIROUTE_MCP_URL", f"{base_url}/api/mcp/stream"
         ),

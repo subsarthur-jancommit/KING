@@ -107,6 +107,16 @@ services:
       # provisioned `manage`-scoped key and comes from agent-sidecar/.env — it
       # must never be written here, where it would be committable.
       - AGENT_SIDECAR_AGENT_TOOLS=${AGENT_SIDECAR_AGENT_TOOLS:-}
+      # The code graph as a SECOND MCP server for the agent, so "what calls
+      # this function" is answered from the graph instead of costing Claude the
+      # context of reading twenty files. Optional: without a key the agent
+      # simply does not get those four tools, and a codegraph outage never
+      # costs it web search.
+      #
+      # Same key the graph already uses, and it stays loopback-bound — the
+      # sidecar reaches it over the compose network, not the public path.
+      - GRAPHIFY_API_KEY=${GRAPHIFY_API_KEY:-}
+      - CODEGRAPH_MCP_URL=${CODEGRAPH_MCP_URL:-http://codegraph-serve:8130/mcp}
       # Backstop on what a run may cost, independent of max_steps: steps
       # bound how many times the loop turns, not what one turn costs, and a
       # tool returning a large page moves the context a long way in a single
@@ -286,6 +296,16 @@ services:
       # provisioned `manage`-scoped key and comes from agent-sidecar/.env — it
       # must never be written here, where it would be committable.
       - AGENT_SIDECAR_AGENT_TOOLS=${AGENT_SIDECAR_AGENT_TOOLS:-}
+      # The code graph as a SECOND MCP server for the agent, so "what calls
+      # this function" is answered from the graph instead of costing Claude the
+      # context of reading twenty files. Optional: without a key the agent
+      # simply does not get those four tools, and a codegraph outage never
+      # costs it web search.
+      #
+      # Same key the graph already uses, and it stays loopback-bound — the
+      # sidecar reaches it over the compose network, not the public path.
+      - GRAPHIFY_API_KEY=${GRAPHIFY_API_KEY:-}
+      - CODEGRAPH_MCP_URL=${CODEGRAPH_MCP_URL:-http://codegraph-serve:8130/mcp}
       # Backstop on what a run may cost, independent of max_steps: steps
       # bound how many times the loop turns, not what one turn costs, and a
       # tool returning a large page moves the context a long way in a single
