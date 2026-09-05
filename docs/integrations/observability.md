@@ -252,3 +252,24 @@ naik-turun.
 - Ke depan, penilaian ambang statis di `gateway_monitor` bisa digantikan model
   lokal yang berjalan di VPS. Strukturnya sudah menyiapkan itu: langkah kode
   hanya menghasilkan angka, dan keputusannya terpisah.
+
+## Agent runs tidak ada di Langfuse, dan itu disengaja
+
+Kalau Anda mencari jejak `agent-sidecar` di sini, tidak akan ketemu. Servis itu
+tidak terinstrumentasi OTel sama sekali — tidak ada `opentelemetry` di
+`pyproject.toml`-nya, dan tidak ada satu pun span yang dikirim ke collector.
+
+Yang ada sebagai gantinya: **satu baris JSON per run** di `/audit/runs.jsonl`,
+dibaca dengan `./scripts/agent-report.sh`. Isinya cap waktu, pemanggil (`http`
+atau `mcp`), model yang diminta, model yang benar-benar menjawab, jumlah token,
+tool yang dipegang, durasi, `step_errors`, dan `degraded`.
+
+Alasannya bukan ideologis, tapi urutan: jurnal itu nol dependensi baru, bekerja
+tanpa profil `tracing` menyala, dan langsung menjawab pertanyaan yang memang
+ditanyakan — berapa biayanya, seberapa sering terdegradasi, tool mana yang
+dipakai. Instrumentasi OTel penuh tetap masuk akal kalau nanti dibutuhkan
+korelasi antar-servis; jurnal ini tidak menghalanginya.
+
+Catatan yang membuat perbedaannya nyata: **collector-nya hidup** (`Up 4 days`
+saat diperiksa 2026-09-05), jadi ketiadaan jejak agen bukan gejala tracing yang
+rusak. Tidak ada yang mengirim.
