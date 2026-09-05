@@ -46,15 +46,18 @@ probe() {
         -d "$payload" 2>/dev/null \
         | awk 'tolower($1) == "x-omniroute-provider:" { gsub(/\r/, "", $2); print $2 }')
     [ -n "$provider" ] || provider="(no header — request failed?)"
-    printf '  %-22s provider=%s\n' "$label" "$provider"
+    # To stderr on purpose. The caller captures this function's stdout, so a
+    # readable line printed there lands inside the command substitution, where
+    # `tail -n 1` discarded it and the operator saw the verdict with no working.
+    printf '  %-22s provider=%s\n' "$label" "$provider" >&2
     echo "$provider"
 }
 
 echo "model routing check — asking for $MODEL"
 echo
 
-plain=$(probe "plain prompt" "" | tail -n 1)
-agent=$(probe "agent-shaped prompt" "At each step, explain your reasoning." | tail -n 1)
+plain=$(probe "plain prompt" "")
+agent=$(probe "agent-shaped prompt" "At each step, explain your reasoning.")
 
 echo
 if [ "$plain" = "$agent" ]; then
