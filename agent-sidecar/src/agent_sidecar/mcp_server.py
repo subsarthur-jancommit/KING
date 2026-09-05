@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import load_settings
+from .outcome import journal_run, summarise
 
 # MCP ships DNS-rebinding protection that validates the Host header against an
 # allow-list defaulting to localhost only. Behind a reverse proxy the header is
@@ -73,7 +75,7 @@ mcp = FastMCP(
 def run_agent(
     task: str, model: str | None = None, max_steps: int | None = None
 ) -> dict:
-    """Returns {result, model, steps, step_errors, degraded}."""
+    """Returns {result, runner, model, steps, step_errors, tokens, tools, degraded}."""
     from . import smol_runner
 
     settings = load_settings()
@@ -86,15 +88,19 @@ def run_agent(
             settings, max_steps=min(int(max_steps), settings.max_steps)
         )
 
+    started = time.monotonic()
     outcome = smol_runner.run(task, settings)
-    errors = outcome.get("step_errors") or []
-    return {
-        "result": str(outcome.get("result")),
-        "model": settings.model_id,
-        "steps": outcome.get("steps"),
-        "step_errors": errors,
-        "degraded": bool(errors),
-    }
+    # The same summariser the HTTP path uses. These were built separately and
+    # drifted: this one omitted token counts and the tool report, and computed
+    # `degraded` from step errors alone — so a run whose tools failed to load
+    # reported clean to the caller that matters most, since this is how Claude
+    # reaches the agent.
+    summary = summarise(outcome, runner="smolagents", model=settings.model_id)
+    # And it wrote nothing to the journal, which made the journal worse than
+    # incomplete: it recorded operator curl while the busiest caller left no
+    # trace, so every question asked of it was answered from a biased sample.
+    journal_run(summary, task=task, seconds=time.monotonic() - started, caller="mcp")
+    return summary
 
 
 @mcp.tool(

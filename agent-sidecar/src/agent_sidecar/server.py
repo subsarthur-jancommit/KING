@@ -39,6 +39,7 @@ from starlette.routing import Mount, Route
 
 from .config import load_settings
 from .mcp_server import app as mcp_app
+from .outcome import journal, journal_run, summarise
 
 # Both runners are fully synchronous and can take minutes: smolagents' CodeAgent
 # loops until it reaches an answer. Calling them directly in an async handler
@@ -209,7 +210,7 @@ async def run(request: Request) -> JSONResponse:
         # service is saturated, which is exactly the trend the journal exists to
         # make answerable — leaving it out would mean the record looks calmest
         # at the moment capacity is being hit hardest.
-        _journal(
+        journal(
             {
                 "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "runner": runner,
@@ -256,7 +257,7 @@ async def run(request: Request) -> JSONResponse:
         # No `result` key is invented to match the success shape. There is no
         # result, and an empty string here would read as "the agent answered
         # nothing" rather than "the agent never ran".
-        _journal(
+        journal(
             {
                 "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "runner": runner,
@@ -282,71 +283,16 @@ async def run(request: Request) -> JSONResponse:
         RUN_SLOTS.release()
 
     # smolagents returns whatever the agent produced, which is not always a
-    # string (a CodeAgent can return a number or a list). Coerce so the
-    # response shape is stable for the caller.
-    #
-    # `model` is echoed because the caller otherwise has no way to tell which
-    # model answered — the same silent-degradation problem that made a web
-    # search combo quietly answer from training data.
-    #
-    # `step_errors` matters more. Blocked from fetching a URL, an agent wrote
-    # `print("HTTP Status Code: 200")` and presented it as a real fetch with a
-    # fabricated Output: line. The prose lied; the step records did not. A
-    # caller that only reads `result` cannot tell the two apart, so the
-    # evidence the model did not author travels with the answer.
+    # string (a CodeAgent can return a number or a list), so `summarise`
+    # coerces it and builds the one response shape every caller gets — the
+    # HTTP one here and the MCP `run_agent` tool alike. They used to be built
+    # separately and had drifted apart; see outcome.py.
     outcome = result if isinstance(result, dict) else {"result": result}
-    step_errors = outcome.get("step_errors") or []
-
-    # A tool the agent was configured to have and did not get is degradation
-    # too, and it is invisible in `result`: the agent simply answers from
-    # training data and sounds the same doing it. `missing` catches an upstream
-    # rename or a typo in the allowlist; `error` catches an unreachable
-    # gateway; `misdirected` catches OMNIROUTE_MCP_URL pointed at this service
-    # instead of the gateway, which would otherwise hand an agent a shell.
-    tool_report = outcome.get("tools") or {}
-    tools_wanting = bool(
-        tool_report.get("error")
-        or tool_report.get("missing")
-        or tool_report.get("misdirected")
+    summary = summarise(outcome, runner=runner, model=settings.model_id)
+    journal_run(
+        summary, task=task, seconds=time.monotonic() - started, caller="http"
     )
-
-    _journal(
-        {
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "runner": runner,
-            "model": settings.model_id,
-            # Truncated, matching what the vps_exec audit already does with
-            # commands: enough to recognise the run, not a transcript.
-            "task": task[:200],
-            "seconds": round(time.monotonic() - started, 2),
-            "steps": outcome.get("steps"),
-            "tokens": outcome.get("tokens"),
-            "tools": tool_report.get("selected"),
-            "step_errors": step_errors,
-            "degraded": bool(step_errors) or tools_wanting,
-        }
-    )
-
-    return JSONResponse(
-        {
-            "result": str(outcome.get("result")),
-            "runner": runner,
-            "model": settings.model_id,
-            "steps": outcome.get("steps"),
-            "step_errors": step_errors,
-            # What the run cost. smolagents computes this and prints it to the
-            # container log, where it is unparseable and scrolls away; the
-            # caller deciding whether to run the agent again never saw it.
-            # `null` means not measured, never "free".
-            "tokens": outcome.get("tokens"),
-            "tools": tool_report,
-            # A single boolean the caller can branch on without parsing
-            # anything: true means at least one step failed or the agent is not
-            # holding the tools it was configured to hold, so the answer was
-            # produced despite something not working.
-            "degraded": bool(step_errors) or tools_wanting,
-        }
-    )
+    return JSONResponse(summary)
 
 
 class _RunSlots:
@@ -398,29 +344,6 @@ def _slot_limit() -> int:
 # Process-wide on purpose: the point is to bound what this container runs at
 # once, so it cannot be per-request.
 RUN_SLOTS = _RunSlots(_slot_limit())
-
-
-def _journal(entry: dict) -> None:
-    """Append one line per agent run, best-effort.
-
-    Same contract as the vps_exec audit next to it: an unwritable path must not
-    fail the run, and must not silently look like it logged either — the
-    failure goes to stderr, which lands in the container log.
-
-    This exists because every run's data used to die with its response. There
-    was no way to answer "what did the agent cost this week" or "are degraded
-    runs becoming more common", and the gateway's own call_logs only sees model
-    calls, not steps, tools, or whether the answer was trustworthy.
-    """
-    path = os.environ.get("AGENT_SIDECAR_RUN_JOURNAL", "/audit/runs.jsonl")
-    try:
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, separators=(",", ":"), default=str) + "\n")
-    except Exception as exc:  # noqa: BLE001 - see docstring
-        print(f"[run] journal write failed: {exc}", file=sys.stderr, flush=True)
 
 
 class _McpAuthMiddleware:

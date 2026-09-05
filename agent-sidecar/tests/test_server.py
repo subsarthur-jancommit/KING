@@ -657,8 +657,12 @@ def test_an_unwritable_journal_does_not_fail_the_run(client, monkeypatch, tmp_pa
     monkeypatch.setenv(
         "AGENT_SIDECAR_RUN_JOURNAL", str(tmp_path / "nope" / "runs.jsonl")
     )
+    from agent_sidecar import outcome as outcome_mod
+
     monkeypatch.setattr(
-        server.os, "makedirs", lambda *a, **k: (_ for _ in ()).throw(OSError("read-only"))
+        outcome_mod.os,
+        "makedirs",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only")),
     )
 
     def _runner(task, settings=None):
@@ -757,3 +761,47 @@ def test_a_rejected_run_is_journalled(client, monkeypatch, tmp_path):
     entry = _json.loads(journal.read_text(encoding="utf-8").strip())
     assert entry["degraded"] is True
     assert "already in flight" in entry["error"]
+
+
+def test_http_and_mcp_return_the_same_shape(monkeypatch, tmp_path):
+    """They were built separately and drifted apart.
+
+    The MCP path is how Claude reaches the agent, and it was the one missing
+    token counts and the tool report, and computing `degraded` without them —
+    so the caller that matters most got the least.
+    """
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(tmp_path / "runs.jsonl"))
+    from agent_sidecar.outcome import summarise
+
+    raw = {
+        "result": 144,
+        "steps": 1,
+        "step_errors": [],
+        "tokens": {"input": 10, "output": 2, "total": 12},
+        "tools": {"enabled": True, "offered": 110, "selected": ["omniroute_web_search"],
+                  "missing": [], "misdirected": []},
+    }
+    summary = summarise(raw, runner="smolagents", model="opencode/big-pickle")
+
+    assert set(summary) == {
+        "result", "runner", "model", "steps", "step_errors", "tokens", "tools", "degraded",
+    }
+    # Coerced: a CodeAgent can return a number.
+    assert summary["result"] == "144"
+    assert summary["degraded"] is False
+
+
+def test_summarise_counts_tool_trouble_as_degraded():
+    from agent_sidecar.outcome import summarise
+
+    summary = summarise(
+        {"result": "ok", "steps": 1, "step_errors": [],
+         "tools": {"enabled": True, "missing": ["omniroute_web_search"]}},
+        runner="smolagents",
+        model="m",
+    )
+
+    # No step failed, yet the agent answered without the tool it was configured
+    # to hold — which is invisible in `result` and is the whole reason
+    # `degraded` is not simply bool(step_errors).
+    assert summary["degraded"] is True
