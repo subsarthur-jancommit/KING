@@ -70,11 +70,14 @@ def test_an_unset_key_becomes_a_placeholder_rather_than_none():
 
     model = smolagents_model(settings)
 
-    assert model.api_key == "unused"
+    # On the client, not the model: smolagents passes the key straight through
+    # to the OpenAI SDK and keeps no copy. Asserting `model.api_key` raises
+    # AttributeError, which CI caught the first time this was written.
+    assert model.client.api_key == "unused"
 
 
 def test_a_real_key_is_passed_through_untouched(monkeypatch):
     monkeypatch.setenv("OMNIROUTE_API_KEY", "sk-a-real-looking-key")
     model = smolagents_model(load_settings())
 
-    assert model.api_key == "sk-a-real-looking-key"
+    assert model.client.api_key == "sk-a-real-looking-key"
