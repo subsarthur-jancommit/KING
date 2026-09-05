@@ -87,6 +87,37 @@ Two things to know about it:
 
 ## 4. Routing
 
+### Open: the agent falls through `paid-first` and nothing said so
+
+Found within minutes of `served_by` existing, which is the argument for having
+added it.
+
+| Caller | Requested | Actually served |
+|---|---|---|
+| `POST /run` (agent loop) | `paid-first` | **`big-pickle`** — the free tier |
+| `POST /v1/chat/completions` | `paid-first` | `claude-opus-4-6-thinking-high` |
+| `ask_model` over MCP | `paid-first` | `claude-opus-4-6-thinking-high` |
+
+Reproduced twice for the agent, with `step_errors: []` both times — so the
+fallthrough happens **inside the combo**, where it is invisible to the caller
+by design, and the agent never had anything to report.
+
+What has been ruled out: the `agy` tiers are not down (all five tiers answer),
+and they are not refusing tool calls — probed directly with a tool definition,
+`agy/claude-opus-4-6-thinking-high` returns `tool_calls` normally, and
+`paid-first` with that same payload is served by Opus.
+
+What is not yet established is why the agent's request differs enough to fall
+through. It sends seven MCP tool schemas and a longer system prompt than the
+probe did, which is the obvious suspect and is not yet evidence.
+`omniroute_explain_route` answers this but needs the `requestId` of a real
+call, which the sidecar does not currently capture.
+
+**Why it matters more than it looks.** `paid-first` exists so that work worth
+doing well is done well. An agent that silently receives the free tier defeats
+that intent completely, and before this the response said `model: paid-first`
+and looked correct.
+
 ### The ladder was probed, not assumed — 2026-09-05
 
 An alert fired at 04:41 (`monitor.error_rate`, 38% over 15 minutes, WARNING)
