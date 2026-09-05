@@ -409,6 +409,37 @@ disconnected at 300 s. It is a single-call worker, not an agent. That is also
 why `max_steps` exists: a caller giving up does not stop an agent, so the
 ceiling lives in the service (default 8, a caller may lower it, never raise).
 
+### Two ceilings, because steps do not bound cost
+
+`max_steps` (default 8) bounds how many times the loop turns. It does not bound
+what one turn costs, and the agent's own tools make that gap real — a web
+search returns a large page, and a single step can move the context a long way.
+
+`AGENT_SIDECAR_MAX_TOKENS` (default 250,000, `0` disables) is the second
+ceiling. It runs as a step callback that reads the agent's own monitor and
+calls `interrupt()`, so smolagents stops at the next step boundary rather than
+tearing down mid-tool-call.
+
+**It stops soon after the limit is crossed, not before.** Measured with the
+limit set to 500:
+
+```
+RESULT : Stopped: this run reached its token ceiling (3,143 of 500 allowed)…
+STEPS  : 2
+TOKENS : {"input": 4249, "output": 1796, "total": 6045}
+ERRORS : ["token ceiling: used 3143 of 500 allowed"]
+```
+
+The check happens between steps, so the step that crosses the line still
+completes and its cost still counts. That is why the default is generous: this
+is a backstop against something pathological, not a budget meant to shape
+ordinary runs, and a measured 3-step search run costs about 24k.
+
+Reaching it is a **bounded stop, not a crash**. The caller gets what the run
+established plus a step error, which makes `degraded` true without them needing
+to know the feature exists. Any other agent error still propagates as a 500 —
+the guard checks that the interrupt was its own before swallowing anything.
+
 ### Read `degraded` before you read `result`
 
 The agent fabricates when the sandbox stops it. Blocked from fetching a URL, it
