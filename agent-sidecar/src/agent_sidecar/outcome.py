@@ -64,10 +64,9 @@ def summarise(outcome: dict, *, runner: str, model: str) -> dict:
     # this repo must not edit, so it cannot be fixed here — but it can stop
     # being invisible.
     served = outcome.get("served_by")
-    if served and _is_direct_model(model) and not _served_matches(model, served):
-        step_errors.append(
-            f"model override: asked for {model}, served by {served}"
-        )
+    overridden = bool(
+        served and _is_direct_model(model) and not _served_matches(model, served)
+    )
     tools_wanting = bool(
         tool_report.get("error")
         or tool_report.get("missing")
@@ -87,6 +86,19 @@ def summarise(outcome: dict, *, runner: str, model: str) -> dict:
         # What the run cost. `null` means not measured, never "free".
         "tokens": outcome.get("tokens"),
         "tools": tool_report,
+        # Its own field, deliberately NOT folded into `degraded`.
+        #
+        # It was folded in at first, which is defensible — being served a model
+        # you did not ask for is something not working as configured. But the
+        # gateway does it on essentially every agent run, so `degraded` went
+        # true every time and stopped distinguishing anything. A flag that is
+        # always on is worse than no flag: it trains the caller to ignore the
+        # one signal that means the answer itself may be wrong.
+        #
+        # So `degraded` keeps its narrow meaning — a step failed, or a
+        # configured tool did not load — and this carries the routing fact.
+        # `served_by` says what actually answered.
+        "model_overridden": overridden,
         "degraded": bool(step_errors) or tools_wanting,
     }
 
@@ -131,6 +143,7 @@ def journal_run(summary: dict, *, task: str, seconds: float, caller: str) -> Non
             "tokens": summary.get("tokens"),
             "tools": (summary.get("tools") or {}).get("selected"),
             "step_errors": summary.get("step_errors") or [],
+            "model_overridden": summary.get("model_overridden"),
             "degraded": summary.get("degraded"),
         }
     )

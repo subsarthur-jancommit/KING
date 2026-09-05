@@ -785,7 +785,7 @@ def test_http_and_mcp_return_the_same_shape(monkeypatch, tmp_path):
 
     assert set(summary) == {
         "result", "runner", "model", "served_by", "steps", "step_errors",
-        "tokens", "tools", "degraded",
+        "tokens", "tools", "model_overridden", "degraded",
     }
     # Coerced: a CodeAgent can return a number.
     assert summary["result"] == "144"
@@ -856,9 +856,13 @@ def test_a_model_override_counts_as_degraded():
         model="agy/claude-sonnet-4-6",
     )
 
-    assert summary["degraded"] is True
-    assert "model override" in summary["step_errors"][0]
-    assert "big-pickle" in summary["step_errors"][0]
+    assert summary["model_overridden"] is True
+    assert summary["served_by"] == "big-pickle"
+    # NOT degraded. The gateway does this on essentially every agent run, so
+    # folding it in made degraded always-true and stopped it distinguishing
+    # anything — an always-on flag trains the caller to ignore the one signal
+    # that means the answer itself may be wrong.
+    assert summary["degraded"] is False
 
 
 def test_the_provider_prefix_is_not_treated_as_a_mismatch():
@@ -876,7 +880,7 @@ def test_the_provider_prefix_is_not_treated_as_a_mismatch():
             runner="smolagents",
             model=asked,
         )
-        assert summary["degraded"] is False, f"{asked} -> {served} misread as override"
+        assert summary["model_overridden"] is False, f"{asked} -> {served} misread"
 
 
 def test_a_combo_being_answered_by_a_tier_is_not_an_override():
@@ -891,7 +895,7 @@ def test_a_combo_being_answered_by_a_tier_is_not_an_override():
         model="paid-first",
     )
 
-    assert summary["degraded"] is False
+    assert summary["model_overridden"] is False
 
 
 def test_an_unknown_served_model_does_not_invent_an_override():
@@ -903,7 +907,7 @@ def test_an_unknown_served_model_does_not_invent_an_override():
         model="agy/claude-sonnet-4-6",
     )
 
-    assert summary["degraded"] is False
+    assert summary["model_overridden"] is False
 
 
 # --------------------------------------------------------------------------
