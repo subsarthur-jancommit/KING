@@ -227,6 +227,18 @@ asked agy/claude-sonnet-4-6  -> served big-pickle  degraded=true
 asked opencode/big-pickle    -> served big-pickle  degraded=false
 ```
 
+**It goes both ways**, which the flag caught within the hour. A later run asking
+for `opencode/big-pickle` — the free tier — was served by
+`gemini-3.7-flash-high`, spending subscription quota nobody requested:
+
+```
+"model override: asked for opencode/big-pickle, served by gemini-3.7-flash-high"
+```
+
+So this is not "the gateway prefers the cheap model". It is content-dependent
+routing that can land anywhere, and the only reason either direction is now
+visible is that the response says which model answered.
+
 A combo name is exempt, because it asks for a ladder rather than one model, and
 the provider prefix is stripped before comparing — `agy/claude-sonnet-4-6`
 answered by `claude-sonnet-4-6` is a match, and treating it otherwise would
@@ -758,6 +770,27 @@ the router could never be talked out of it. Here the free model produces the
 same answer in the same number of steps, and a caller who wants a stronger one
 passes `model` per request — which the acceptance run did, and which is the
 right place for that decision.
+
+### The code graph is one of its tools, since 2026-09-05
+
+The agent loads from **two** MCP servers now: OmniRoute's 110 and codegraph's
+ten, 120 offered in total. Four of the graph's are allowlisted, all read-only —
+`get_neighbors`, `get_node`, `query_graph`, `graph_stats`.
+
+That inverts a waste. "What calls this function" answered by the agent costs a
+tool call; answered by Claude it costs reading twenty files into a context that
+stays full for the rest of the session, which is the thing this service exists
+to avoid.
+
+Verified end to end: asked for graph statistics, the agent called `graph_stats`
+and returned **59,410 nodes and 163,526 edges** in two steps, with `missing: []`.
+
+The two servers stay independent — separate service, separate key, separate
+failure. Without `GRAPHIFY_API_KEY` the second one is simply absent and the
+agent keeps its web search; a graph outage costs it four tools, not eleven.
+
+The PR tools (`list_prs`, `get_pr_impact`, `triage_prs`) are deliberately left
+out. An agent that reads web pages should not be reaching into pull requests.
 
 ### The tools it holds, and the one it never will
 
