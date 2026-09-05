@@ -556,3 +556,42 @@ def test_a_crashed_run_is_still_marked_degraded(client, monkeypatch):
     # No fabricated `result`: there is no answer, and an empty string would read
     # as "the agent answered nothing" rather than "the agent never ran".
     assert "result" not in body
+
+
+def test_run_reports_what_it_cost(client, monkeypatch):
+    """Roadmap 4.6 asks for cost per run to be known. It was not.
+
+    smolagents prints token counts to the container log, where they are
+    unparseable and scroll away, and the caller — the one deciding whether to
+    run the agent again — never saw them.
+    """
+
+    def _runner(task, settings=None):
+        return {
+            "result": "ok",
+            "steps": 2,
+            "step_errors": [],
+            "tokens": {"input": 13993, "output": 603, "total": 14596},
+        }
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _runner, raising=True)
+
+    body = client.post("/run", json={"task": "t"}).json()
+
+    assert body["tokens"] == {"input": 13993, "output": 603, "total": 14596}
+    assert body["degraded"] is False
+
+
+def test_missing_token_counts_are_null_not_zero(client, monkeypatch):
+    """`null` means "not measured". Zeroes would read as "the call was free",
+    which is a different claim and a wrong one."""
+
+    def _runner(task, settings=None):
+        return {"result": "ok", "steps": None, "step_errors": [], "tokens": None}
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _runner, raising=True)
+
+    body = client.post("/run", json={"task": "t"}).json()
+
+    assert body["tokens"] is None
+    assert body["degraded"] is False

@@ -117,7 +117,34 @@ def _diagnostics(agent) -> dict:
         err = step.error
         if err:
             errors.append(f"step {getattr(step, 'step_number', counted)}: {err}")
-    return {"steps": counted, "step_errors": errors}
+    return {"steps": counted, "step_errors": errors, "tokens": _token_usage(agent)}
+
+
+def _token_usage(agent) -> dict | None:
+    """What the run cost, from the agent's own monitor.
+
+    smolagents already computes this and prints it to the container log —
+    "Input tokens: 13,993 | Output tokens: 603" — where it is unparseable and
+    scrolls away. The caller, who is the one deciding whether to run the agent
+    again, never saw it at all.
+
+    Defensive on every access: pydantic_runner builds a different agent object,
+    and a missing monitor must degrade to `null` rather than turn a successful
+    run into a 500 over a metric.
+    """
+    monitor = getattr(agent, "monitor", None)
+    counts = getattr(monitor, "get_total_token_counts", None)
+    if not callable(counts):
+        return None
+    try:
+        usage = counts()
+    except Exception:  # noqa: BLE001 - a metric must never fail a run
+        return None
+    return {
+        "input": getattr(usage, "input_tokens", None),
+        "output": getattr(usage, "output_tokens", None),
+        "total": getattr(usage, "total_tokens", None),
+    }
 
 
 def _load_tools(settings: Settings):

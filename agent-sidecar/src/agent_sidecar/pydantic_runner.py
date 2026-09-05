@@ -25,7 +25,10 @@ def run_sync(task: str, settings: Settings | None = None) -> dict:
     """
     agent = build_agent(settings)
     result = agent.run_sync(task)
-    return {"result": result.output, "steps": None, "step_errors": []}
+    # `tokens` is None rather than zeroes, for the same reason `steps` is: this
+    # runner does not expose a usage monitor, and reporting 0/0 would read as
+    # "the call was free" instead of "not measured here".
+    return {"result": result.output, "steps": None, "step_errors": [], "tokens": None}
 
 
 if __name__ == "__main__":

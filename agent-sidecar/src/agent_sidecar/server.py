@@ -256,6 +256,11 @@ async def run(request: Request) -> JSONResponse:
             "model": settings.model_id,
             "steps": outcome.get("steps"),
             "step_errors": step_errors,
+            # What the run cost. smolagents computes this and prints it to the
+            # container log, where it is unparseable and scrolls away; the
+            # caller deciding whether to run the agent again never saw it.
+            # `null` means not measured, never "free".
+            "tokens": outcome.get("tokens"),
             "tools": tool_report,
             # A single boolean the caller can branch on without parsing
             # anything: true means at least one step failed or the agent is not
