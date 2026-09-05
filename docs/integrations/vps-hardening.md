@@ -239,6 +239,31 @@ local daemon. Set one of those before that day, not after. An invalid value
 fails at settings load with a clear message rather than deep inside
 smolagents.
 
+### That day arrived, and the move was made
+
+Every condition above is now true. The sidecar publishes `POST /run` behind a
+bearer token, is reachable from the public internet at
+`https://gateway.arject.co/king-agent/mcp`, and its tools read live web pages —
+so task text no longer originates in anyone's shell.
+
+**`AGENT_SIDECAR_EXECUTOR=e2b` since 2026-09-04**, verified from inside the
+sandbox (`socket.gethostname()` → `e2b.local`). The decision recorded above
+still holds on its own terms; its stated trigger simply fired, and the answer
+it predicted — move off the host rather than mount the socket — is what was
+done.
+
+Two consequences that section could not have anticipated:
+
+- **The import allowlist inverted its meaning.** Under `local` it restricts;
+  under `e2b`/`modal` smolagents passes it to `pip` and restricts nothing. The
+  sandbox is the boundary now, and `/healthz` reports which meaning is in force
+  so an operator reading `authorized_imports: []` cannot conclude "nothing can
+  be imported".
+- **A tool-holding agent is not a code-executing one.** With tools loaded the
+  service builds a `ToolCallingAgent`, which runs no arbitrary Python at all —
+  so the agent that reads web pages is not the agent that executes code. See
+  `docs/king-system.md` §5b.
+
 ## What preflight does not check
 
 It reads configuration, so it catches misconfiguration. It does not and
