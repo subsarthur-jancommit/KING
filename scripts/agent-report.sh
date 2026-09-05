@@ -91,6 +91,12 @@ if unmeasured:
     print(f"  unmeasured      {unmeasured} run(s) reported no token counts")
 print(f"  seconds med/max {sorted(seconds)[len(seconds) // 2]:.1f} / {max(seconds):.1f}")
 
+by_caller = collections.Counter(r.get("caller") or "?" for r in runs)
+print("  by caller")
+for name, n in by_caller.most_common():
+    # "?" is a run journalled before the field existed, not an unknown client.
+    print(f"    {n:>4}  {name}")
+
 by_model = collections.Counter(r.get("model") or "?" for r in runs)
 print("  by model")
 for name, n in by_model.most_common():
