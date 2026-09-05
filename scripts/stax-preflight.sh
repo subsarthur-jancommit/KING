@@ -233,6 +233,18 @@ check_agent_sidecar() {
   # interpolated into `environment:`, so that is the file that decides it.
   tool_list=$(lookup AGENT_SIDECAR_AGENT_TOOLS .env)
   check_agent_tools_wiring "$mcp_key" "$tool_list"
+
+  # The agent's second MCP server. Optional by design — without it the agent
+  # keeps its seven OmniRoute tools and loses the four graph ones — but the
+  # loss is silent, and "why can't it answer what calls this function" is a
+  # confusing way to discover an unset variable.
+  if [ "$(printf '%s' "$tool_list" | tr '[:upper:]' '[:lower:]')" != "none" ]; then
+    if [ -n "$(lookup GRAPHIFY_API_KEY .env)" ]; then
+      pass "GRAPHIFY_API_KEY is set; the agent can also load the code graph's tools."
+    else
+      warn "GRAPHIFY_API_KEY is unset, so the agent gets its OmniRoute tools but none of the code graph's. Fine if deliberate; it is the same key the codegraph profile already uses."
+    fi
+  fi
 }
 
 
