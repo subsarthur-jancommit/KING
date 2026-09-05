@@ -7,6 +7,29 @@ bagian terakhir dan **tidak** dijadikan dasar keputusan.
 
 ---
 
+## Status per 2026-09-05
+
+Dokumen ini snapshot 30 Agustus. Yang **diverifikasi ulang langsung** sejak itu,
+bukan diasumsikan:
+
+- **M6 (tidak ada yang memantau si pemantau) — berjalan.**
+  `monitor-deadman.timer` dan `codegraph-refresh.timer` keduanya aktif,
+  `ExecMainStatus=0`, `systemctl --user --failed` kosong. Catatan penting: unit
+  ini **level-user**, dan `systemctl list-timers` tanpa `--user` melaporkan
+  seolah semuanya mati.
+- **`gateway_monitor` benar-benar mengukur.** Satu eksekusi nyata mengembalikan
+  jendela 15 menit dengan rasio, ambang, dan pecahan per provider.
+- **Alarmnya tidak sampai ke siapa pun.** `gateway_alerts` menormalisasi payload
+  lalu berhenti; tiga alarm menyala 5 September dan tak satu pun terkirim.
+  Tabel tujuannya ada, kolomnya benar, isinya nol baris. Ini M1 dalam bentuk
+  baru — bukan guard yang tidak dieksekusi, tapi guard yang dieksekusi ke ruang
+  kosong.
+
+Sisanya belum diaudit ulang di sesi ini dan tidak diklaim selesai. Keadaan yang
+terverifikasi hari ini ada di `docs/king-system.md` §7 dan §11.
+
+---
+
 ## Masalah
 
 Diurutkan dari yang paling merusak.
