@@ -238,9 +238,20 @@ jobs:
           # where docs/integrations/activepieces-workflow.md tells an operator
           # to put it — so configure it the same way here rather than
           # inventing a CI-only path.
+          #
+          # AGENT_SIDECAR_AUTH_TOKEN is not optional any more. Without it the
+          # wrapper answers every /run with 503 "not configured; refusing all
+          # requests" — correct fail-closed behaviour, and something this job
+          # did not notice for weeks because it never got this far: the
+          # omniroute build failed first. The end-to-end step below was posting
+          # with no Authorization header, and had been since auth went in.
+          TOKEN=$(openssl rand -hex 24)
+          echo "::add-mask::${TOKEN}"
+          echo "SIDECAR_AUTH_TOKEN=${TOKEN}" >> "$GITHUB_ENV"
           {
             echo "OMNIROUTE_API_KEY=${SIDECAR_API_KEY}"
             echo "AGENT_SIDECAR_MODEL_ID=opencode/big-pickle"
+            echo "AGENT_SIDECAR_AUTH_TOKEN=${TOKEN}"
           } > agent-sidecar/.env
           chmod 600 agent-sidecar/.env
 
@@ -288,6 +299,7 @@ jobs:
           # error message, which is what distinguishes the two cases below.
           RESP=$(curl -s -X POST http://localhost:8100/run \
             -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer ${SIDECAR_AUTH_TOKEN}" \
             --max-time 300 \
             -d '{"task":"Say exactly: HTTP-WRAPPER-OK, nothing else."}')
           echo "$RESP"
@@ -307,12 +319,48 @@ jobs:
           echo "Unexpected response from the wrapper" >&2
           exit 1
 
+      - name: An unauthenticated run must be refused
+        run: |
+          set -euo pipefail
+          # This is the assertion whose absence let the bearer regression sit
+          # unnoticed. Every other check here sends a valid token, so none of
+          # them can tell "auth is enforced" from "auth is off" — the two look
+          # identical from a request that carries the right header.
+          #
+          # 401 is the answer for a configured wrapper; 403 would also be a
+          # refusal. 200 means the door is open, and 503 means the wrapper has
+          # no token at all, which is fail-closed but also means the run above
+          # proved nothing.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8100/run \
+            -H 'Content-Type: application/json' \
+            -d '{"task":"this must never execute"}')
+          case "$code" in
+            401|403) echo "Unauthenticated /run refused with $code." ;;
+            200) echo "/run executed a task with no bearer token." >&2; exit 1 ;;
+            503) echo "Wrapper reports no token configured; the authenticated run above proved nothing." >&2; exit 1 ;;
+            *)   echo "Unauthenticated /run returned $code; expected 401." >&2; exit 1 ;;
+          esac
+
+          wrong=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8100/run \
+            -H 'Content-Type: application/json' \
+            -H 'Authorization: Bearer not-the-token' \
+            -d '{"task":"this must never execute"}')
+          if [ "$wrong" != "401" ] && [ "$wrong" != "403" ]; then
+            echo "A wrong bearer returned $wrong instead of 401." >&2
+            exit 1
+          fi
+          echo "A wrong bearer is refused with $wrong."
+
       - name: Bad requests must be rejected, not 500
         run: |
           set -euo pipefail
+          # Authenticated on purpose: these assert the *validation* path, and
+          # an unauthenticated request would be rejected before reaching it —
+          # every case would "pass" for the wrong reason.
           for body in '{}' '{"task":""}' '{"task":"t","runner":"nope"}'; do
             code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8100/run \
-              -H 'Content-Type: application/json' -d "$body")
+              -H 'Content-Type: application/json' \
+              -H "Authorization: Bearer ${SIDECAR_AUTH_TOKEN}" -d "$body")
             if [ "$code" != "400" ]; then
               echo "expected 400 for $body, got $code" >&2
               exit 1

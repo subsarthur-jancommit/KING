@@ -1188,27 +1188,56 @@ It measures.
 flow is two steps: the webhook, and the code step that shapes the object. Its
 return value goes nowhere.
 
-Three alerts fired on 2026-09-05 (00:11, 00:56, 04:41) and none reached a
-person. They exist only in Activepieces run history, which nobody watches. The
-04:41 one carried a 38% error ratio and three named failures — genuinely worth
-seeing, and unseen.
+Re-counted 2026-09-05 from the run history: **fourteen alerts have fired since
+2026-08-29, five of them today** (00:11, 00:56, 04:41, 07:26, 07:56). Every one
+succeeded, and every one was discarded. The 07:56 delivery carried a 44% error
+ratio over 15 minutes — 9 calls, 4 failed, all of them `antigravity` serving
+`gemini-3.7-flash-{high,medium,low}` with `502 Provider returned empty content`.
+Genuinely worth seeing, and unseen.
+
+That last one deserves a caveat rather than a conclusion. Nine calls in a
+fifteen-minute window is thin, so a handful of failures crosses a 30% threshold
+easily, and today's traffic included this session's own probes. What the run
+history establishes is the *structural* fault — every alert ever raised was
+shaped and dropped — not that antigravity has newly degraded. Whether it has is
+answerable once the table starts accumulating, which is precisely the point.
 
 **The destination already exists and is empty.** A `gateway_alerts` table is
 provisioned with exactly the right columns — `received_at`, `event`, `api_key`,
 `provider`, `detail` — and **0 rows**. Somebody built the sink and never wired
 the pipe.
 
-One step closes it, after `step_1` in the `gateway_alerts` flow:
+**The obvious one-step fix would half-work, which is worse than not working.**
+The shaping step reads `d.provider`, `d.model` and `d.apiKeyName` from the
+payload's `data` object. Those fields exist for OmniRoute's own key/provider
+webhooks — the shape it was written against — but a `monitor.error_rate`
+payload does not carry them: its provider information lives in `data.byProvider`
+and `data.sample`. So on the alert type that actually fires, `apiKey`,
+`provider` and `model` are all `null`, verified in run `0vohqjlRQnD49gNh982Dj`.
+Wiring the table without touching the shaping produces rows whose `provider`
+column is empty for every monitor alert — a sink that looks connected and loses
+the most useful field in it. The same pattern this document opens with.
+
+So it is two changes, not one, and they belong in one edit:
 
 ```
-piece   @activepieces/piece-tables    action  tables-create-records
-table_id  wzZB4ntGPk9OAnzgknJqZ
-records   [{"received_at": "{{step_1['output'].at}}",
-            "event":       "{{step_1['output'].event}}",
-            "api_key":     "{{step_1['output'].apiKey}}",
-            "provider":    "{{step_1['output'].provider}}",
-            "detail":      "{{step_1['output'].reason}}"}]
+1. gateway_alerts / step_1 — derive provider and model for monitor events:
+     from data.byProvider (the failing providers) and data.sample[0].model,
+     falling back to the existing d.provider / d.model for OmniRoute's own
+     events, so both payload shapes populate the same columns.
+
+2. a new step after it:
+   piece   @activepieces/piece-tables    action  tables-create-records
+   table_id  wzZB4ntGPk9OAnzgknJqZ
+   records   [{"received_at": "{{step_1['output'].at}}",
+               "event":       "{{step_1['output'].event}}",
+               "api_key":     "{{step_1['output'].apiKey}}",
+               "provider":    "{{step_1['output'].provider}}",
+               "detail":      "{{step_1['output'].reason}}"}]
 ```
+
+Both are edits to live automation, so they wait on the operator rather than
+being applied unasked.
 
 A push destination — Discord, email — is a second step and needs a URL only the
 operator has. The table does not, and turns "alerts vanish" into "alerts
