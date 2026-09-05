@@ -288,8 +288,7 @@ See [`docs/integrations/codegraph.md`](docs/integrations/codegraph.md).
 Free tiers go down — CI here has watched `opencode/big-pickle` return
 `service_unavailable`, and tolerates it explicitly. The `localmodel` profile
 closes that last gap with an Ollama container behind the same gateway. It is not
-smarter than any free model; it is simply always there, has no quota, and sends
-nothing off the box:
+smarter than any free model; it is simply always there and has no quota:
 
 ```bash
 ./scripts/stax-preflight.sh localmodel
@@ -303,6 +302,16 @@ gateway anything. Measured on a 2 vCPU host with no GPU: a real triage prompt
 answers in 12 seconds, the model holds 2.1 GB while loaded and 178 MB when idle.
 That is the size of work it is for — triage, classification, branch decisions.
 Code review is not on the list and will not be.
+
+**It does not unconditionally keep work on the box, and that matters.**
+Measured 2026-09-05: a request naming `ollama/qwen2.5:1.5b-instruct-q4_K_M` is
+served by ollama for a plain prompt, and by `gemini-3.7-flash-high` — Google,
+through agy — when the prompt trips the gateway's content-based reroute. No
+error, no warning, a normal-looking answer. The routing lives in the vendored
+subtree and cannot be changed here, so the sidecar reports it instead: a local
+model answered elsewhere sets `degraded` with `local-only work left the host`.
+A caller using `/v1` directly should read the `x-omniroute-provider` header.
+See `docs/king-system.md` §5b.
 
 `localmodel-register.sh` exists because the dashboard equivalent has a trap:
 a connection saved without an explicit Base URL keeps `localhost:11434`, which
