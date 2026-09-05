@@ -747,6 +747,35 @@ the operator can.
 | `activepieces` | restricted, **includes `agy/*`** | Flows built deliberately |
 | `gateway-monitor-triage` | restricted, **excludes `agy/*`** | A 15-minute heartbeat doing triage has no use for frontier models and should not burn subscription quota |
 | `flow-search` | restricted to `["search"]` | Can call `/v1/search`; **403 on every real model** |
+| `agent-sidecar-mcp` | **`manage` scope** | The most privileged key in the stack. It is what lets the agent load tools at all, and it is first on the rotation list |
+
+### Security review of the agent surface, 2026-09-05
+
+Run against the ECC `security-review` checklist after the agent gained tools,
+a public path and a shell. What it found, honestly — most of it clean, one gap
+that was not:
+
+| Check | Result |
+|---|---|
+| Hardcoded secrets in the tree | **clean** — no key-shaped strings; every `.env` gitignored, confirmed with `git check-ignore` |
+| Input validation on `/run` | **clean** — runner allowlisted, `model` type-checked, `max_steps` can only be *lowered* by a caller, and `bool` correctly excluded from `int` |
+| Authentication | **clean** — bearer required, fails **closed**: an unset token returns 503, not open access |
+| Sensitive data in `/healthz` | **clean** — booleans only, never key values; the endpoint is meant to be safe to curl |
+| Privilege reachable by the agent | **clean** — `vps_exec` is in `NEVER_REGISTER`, tested |
+| Concurrency | **gap, now fixed** — see below |
+
+The gap: nothing bounded how many runs the container would start at once. The
+cgroup caps it at 1 GB and 1 CPU so it cannot reach the host — that lesson was
+already paid for — but anyio will run dozens of agent loops in threads, and the
+resulting OOM *inside* the cgroup kills the runs already in flight along with
+the surplus that caused it. `AGENT_SIDECAR_MAX_CONCURRENT` (default 2, matching
+the one CPU) now refuses the surplus with `429` and `degraded: true`, which
+loses one caller instead of all of them.
+
+Still open, and deliberately: there is **no rate limiting**. The bearer token is
+the control, and the concurrency bound caps what a leaked one could consume at
+any instant — but not over time. Worth revisiting if that token is ever shared
+more widely than the operator.
 
 Two traps found while setting this up, both worth knowing:
 
