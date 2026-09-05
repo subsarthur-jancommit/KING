@@ -617,10 +617,11 @@ curl -s -X POST http://127.0.0.1:8100/run \
 {"result": "…", "runner": "smolagents", "model": "agy/claude-sonnet-4-6",
  "steps": 2, "step_errors": [],
  "tokens": {"input": 13993, "output": 603, "total": 14596},
- "tools": {"enabled": true, "offered": 110,
-           "selected": ["omniroute_web_search", "…"],
+ "served_by": "claude-sonnet-4-6",
+ "tools": {"enabled": true, "offered": 120,
+           "selected": ["omniroute_web_search", "get_neighbors", "…"],
            "missing": [], "misdirected": []},
- "degraded": false}
+ "model_overridden": false, "degraded": false}
 ```
 
 `tokens` is what the run cost. smolagents computes it and prints it to the
