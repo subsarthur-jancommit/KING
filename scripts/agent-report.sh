@@ -91,6 +91,18 @@ if unmeasured:
     print(f"  unmeasured      {unmeasured} run(s) reported no token counts")
 print(f"  seconds med/max {sorted(seconds)[len(seconds) // 2]:.1f} / {max(seconds):.1f}")
 
+overridden = [r for r in runs if r.get("model_overridden")]
+if overridden:
+    # The gateway reroutes on prompt content and can land anywhere, so the
+    # model a run asked for and the model that answered are different
+    # questions. This counts how often they disagreed.
+    pairs = collections.Counter(
+        f"{r.get('model')} -> {r.get('served_by')}" for r in overridden
+    )
+    print(f"  model overridden {len(overridden)} of {len(runs)} run(s)")
+    for pair, n in pairs.most_common(5):
+        print(f"    {n:>4}  {pair}")
+
 by_caller = collections.Counter(r.get("caller") or "?" for r in runs)
 print("  by caller")
 for name, n in by_caller.most_common():
