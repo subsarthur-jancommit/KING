@@ -735,3 +735,25 @@ def test_zero_disables_the_concurrency_bound(monkeypatch):
     slots = server._RunSlots(0)
     for _ in range(50):
         assert slots.try_acquire() is True
+
+
+def test_a_rejected_run_is_journalled(client, monkeypatch, tmp_path):
+    """Found by reading the report the journal feeds.
+
+    Rejections were the one outcome not recorded, which meant the journal
+    looked calmest exactly when capacity was being hit hardest — the opposite
+    of the trend it exists to surface.
+    """
+    journal = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(journal))
+    monkeypatch.setattr(server, "RUN_SLOTS", server._RunSlots(1), raising=True)
+    server.RUN_SLOTS.try_acquire()
+
+    resp = client.post("/run", json={"task": "t"})
+
+    import json as _json
+
+    assert resp.status_code == 429
+    entry = _json.loads(journal.read_text(encoding="utf-8").strip())
+    assert entry["degraded"] is True
+    assert "already in flight" in entry["error"]

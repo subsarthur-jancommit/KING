@@ -205,6 +205,21 @@ async def run(request: Request) -> JSONResponse:
     # Taken here, after validation, so a malformed request never occupies a
     # slot — and released in `finally` so a crashing run does not leak one.
     if not RUN_SLOTS.try_acquire():
+        # Journalled like any other outcome. A rejection is the signal that the
+        # service is saturated, which is exactly the trend the journal exists to
+        # make answerable — leaving it out would mean the record looks calmest
+        # at the moment capacity is being hit hardest.
+        _journal(
+            {
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "runner": runner,
+                "model": settings.model_id,
+                "task": task[:200],
+                "seconds": 0.0,
+                "error": f"rejected: {RUN_SLOTS.limit} run(s) already in flight",
+                "degraded": True,
+            }
+        )
         return JSONResponse(
             {
                 "error": (
