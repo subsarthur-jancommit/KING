@@ -87,40 +87,49 @@ Two things to know about it:
 
 ## 4. Routing
 
-### Open: the agent falls through `paid-first` and nothing said so
+### The gateway reroutes on prompt content, overriding the model you asked for
 
-Found within minutes of `served_by` existing, which is the argument for having
-added it.
+The `served_by` field found this within minutes of existing, and the first
+conclusion drawn from it was wrong — which is worth recording, because the
+wrong version is more plausible than the right one.
 
-| Caller | Requested | Actually served |
-|---|---|---|
-| `POST /run` (agent loop) | `paid-first` | **`big-pickle`** — the free tier |
-| `POST /v1/chat/completions` | `paid-first` | `claude-opus-4-6-thinking-high` |
-| `ask_model` over MCP | `paid-first` | `claude-opus-4-6-thinking-high` |
+**What is actually true.** Same key, same endpoint, same explicitly requested
+model — `agy/claude-sonnet-4-6`, not a combo:
 
-Reproduced twice for the agent, with `step_errors: []` both times — so the
-fallthrough happens **inside the combo**, where it is invisible to the caller
-by design, and the agent never had anything to report.
+| Messages sent | Served by |
+|---|---|
+| a plain user message | `claude-sonnet-4-6` |
+| a short system prompt + user | `claude-sonnet-4-6` |
+| **smolagents' agent system prompt + user** | **`big-pickle`** |
 
-What has been ruled out: the `agy` tiers are not down (all five tiers answer),
-and they are not refusing tool calls — probed directly with a tool definition,
-`agy/claude-opus-4-6-thinking-high` returns `tool_calls` normally, and
-`paid-first` with that same payload is served by Opus.
+Nothing about the request names a combo or a fallback. The gateway classifies
+the *content* and routes accordingly, and a prompt shaped like an agent's — the
+Thought / Code / Observation cycle, references to tools and code blobs — is
+routed to the free tier no matter which model was asked for.
 
-What is not yet established is why the agent's request differs enough to fall
-through. It sends seven MCP tool schemas and a longer system prompt than the
-probe did, which is the obvious suspect and is not yet evidence.
-`omniroute_explain_route` looked like the way to settle it and is **not** —
-tried both id forms the gateway exposes for a real call, the body's
-`chatcmpl-…` and the `x-request-id` header UUID, and both come back
-`comboUsed: unknown, providerSelected: unknown, modelUsed: unknown`. It has no
-record of these requests, so capturing a request id in the sidecar would buy
-nothing. Recorded so the next person does not spend the same hour.
+**How it was narrowed**, since eight plausible causes were eliminated first:
+tool schemas, a system message as such, `stop` sequences, `max_tokens`,
+streaming, the Docker-internal network path, the smolagents client itself, and
+prompt length (37,000 tokens of filler still reached Opus). The isolating test
+was replaying the agent's *own* two messages through a plain client, which
+reproduced it exactly.
 
-**Why it matters more than it looks.** `paid-first` exists so that work worth
-doing well is done well. An agent that silently receives the free tier defeats
-that intent completely, and before this the response said `model: paid-first`
-and looked correct.
+**The first conclusion was wrong.** It read as "the agent falls through
+`paid-first` to the free tier", which fitted the combo's fallback story
+perfectly and was checked against a direct model request only afterwards. Asking
+for `agy/claude-sonnet-4-6` explicitly and being served `big-pickle` is not
+fallthrough — it is override, and it affects every caller, not just combos.
+
+**What it costs.** Every agent run this deployment has ever made has been served
+by the free tier regardless of the model requested, including the acceptance
+runs. That explains the measurement that looked so tidy earlier: the free-tier
+default answered exactly as well as `agy/claude-sonnet-4-6`, because both were
+`big-pickle`.
+
+**Not yet fixed.** `omniroute/open-sse/services/combo/autoStrategy.ts` runs an
+intent classifier that is active by default, while `taskAwareRouter` and
+`complexityRouter` ship disabled. `omniroute/` is a vendored subtree that must
+not be edited, so any fix is a setting or nothing.
 
 ### The ladder was probed, not assumed — 2026-09-05
 
