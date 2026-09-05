@@ -227,6 +227,25 @@ asked agy/claude-sonnet-4-6  -> served big-pickle  degraded=true
 asked opencode/big-pickle    -> served big-pickle  degraded=false
 ```
 
+**It can send private work off the machine.** This is the consequence that
+matters most, and it is not about cost. Requesting the *local* model:
+
+```
+plain prompt        provider=ollama  ->  qwen2.5:1.5b-instruct-q4_K_M   (stays here)
+agent-shaped prompt provider=oc      ->  big-pickle                     (leaves)
+```
+
+So "point at ollama and nothing egresses" holds for a plain prompt and **not**
+unconditionally. A prompt that trips the content switch — one stating an intent
+to reason or to write code — can be forwarded to a third-party provider with no
+error, no warning, and a normal-looking answer. Anything routed to the local
+model *because* it must not leave the host should have `served_by` checked, and
+the sidecar's `model_overridden` flag exists partly for this.
+
+A caller going direct to `/v1/chat/completions` gets no such flag. The
+`x-omniroute-provider` response header is the equivalent there, and it is on
+every response.
+
 **It goes both ways**, which the flag caught within the hour. A later run asking
 for `opencode/big-pickle` — the free tier — was served by
 `gemini-3.7-flash-high`, spending subscription quota nobody requested:
@@ -1240,6 +1259,7 @@ is worse than one that stops.
 | **Credential rotation** | Deferred by the operator, to be done in one pass at the end. `./scripts/verify-credentials.sh` proves each key afterwards with real calls — six checks, two of which assert a *rejection*, all passing as of 2026-09-05 | The list now includes the OmniRoute admin password, Neon connection string, Upstash token, two `/v1` keys, both Langfuse pairs, the `oma_` token, webhook HMAC secret, `GRAPHIFY_API_KEY`, the OpenRouter key, the Tavily key, the E2B key, the Modal token, `AGENT_SIDECAR_AUTH_TOKEN`, and the `agent-sidecar-mcp` key once it exists |
 | **OmniRoute admin password was reset** | Done 2026-09-04 | The old one was lost — `POST /api/auth/login` rejected both the 24-character `INITIAL_PASSWORD` in `omniroute/.env` and a value the operator supplied, and no OIDC is configured. Recovered through OmniRoute's own mechanism: the hash lives in `key_value`/`settings`/`password`, and `ensurePersistentManagementPasswordHash` re-hashes a non-bcrypt value there on next login, so writing a plaintext password into that row restores access with no restart. Database backed up first to `db_backups/manual_20260904T153154Z_*`. The new password is with the operator and is first on the rotation list |
 | Agent tools | **Live 2026-09-04** | `agent_tools_active: true`. Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and answered in 2 steps with no step errors and `degraded: false` |
+| **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served by `oc/big-pickle` when the prompt trips the gateway's content-based reroute. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree |
 | `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |
 | OpenRouter balance | Low, and the failure is shaped by `max_tokens` | A 402 is not a flat "out of credits": it reads *"You requested up to 65536 tokens, but can only afford 7040"*. The cost of the **reservation** is what fails, so the same balance serves a 400-token request and refuses a 65k one. `paid-first` tier 3 answered normally when probed — keep `max_tokens` modest on OpenRouter tiers and it keeps working |
 | Tavily credit | Finite | No fallback by design — it will fail loudly |
@@ -1273,11 +1293,10 @@ Each of these is running, not planned.
    likely timezone artefact.
 4. **Bulk classification at zero cost.** An Activepieces flow over
    `free-then-local` for hundreds of items, running unattended.
-5. **Work that must not leave the machine.** Point at
-   `ollama/qwen2.5:1.5b-instruct-q4_K_M` and nothing egresses. Verified
-   2026-09-05: answered through the gateway in 9.8 s, served by exactly the
-   model requested — one of the few requests that is *not* rerouted, since a
-   plain prompt does not trigger the content-based switch.
+5. **Work that must not leave the machine — with a caveat that matters.**
+   `ollama/qwen2.5:1.5b-instruct-q4_K_M` answers in 9.8 s and nothing egresses
+   **for a plain prompt**. It is not an unconditional guarantee: see the
+   confidentiality note in §5b. Check `served_by` before trusting it.
 6. **Unattended monitoring — that currently fails *quietly*.** The gateway is
    checked every 15 minutes and a dead-man switch watches the monitor; both were
    verified running on 2026-09-05. But the alert flow normalises what it
