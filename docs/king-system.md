@@ -146,10 +146,12 @@ for `agy/claude-sonnet-4-6` explicitly and being served `big-pickle` is not
 fallthrough — it is override, and it affects every caller, not just combos.
 
 **What it costs.** Every agent run this deployment has ever made has been served
-by the free tier regardless of the model requested, including the acceptance
-runs. That explains the measurement that looked so tidy earlier: the free-tier
-default answered exactly as well as `agy/claude-sonnet-4-6`, because both were
-`big-pickle`.
+by something other than the model requested, including the acceptance runs.
+That explains the measurement that looked so tidy earlier: the free-tier
+default answered exactly as well as `agy/claude-sonnet-4-6`, because on
+2026-09-04 both were `big-pickle`. One day later both were
+`gemini-3.7-flash-high` — see the destination note further down; the model that
+answers is not a fixed property of this fault.
 
 **The mechanism, from the gateway's own header.** `x-omniroute-decision` names
 the strategy it chose, and that is what changes:
@@ -216,16 +218,60 @@ they ask for. The override is confined to agent-shaped prompts, which means it
 is confined to the sidecar.
 
 **What was done about it.** Nothing can be fixed inside `omniroute/`, and the
-one settings lever was tested and does nothing. So the override is now
-*reported* instead: asking for a `provider/model` and being served something
-else lands in `step_errors` and sets `degraded`, using the same contract every
-other degradation here already uses. Live:
+one settings lever was tested and does nothing. So the override is *reported*
+instead — `summarise()` in `outcome.py` compares the model asked for against
+`served_by` and carries the answer in `model_overridden`.
+
+It was folded into `degraded` first, which is the obvious design and the wrong
+one. The gateway does this on essentially every agent run, so `degraded` went
+true every time and stopped distinguishing anything; a flag that is always on
+trains the reader to ignore the one signal that means the answer itself may be
+wrong. `degraded` keeps its narrow meaning — a step failed, or a configured
+tool did not load — and the routing fact rides in its own field:
 
 ```
-asked agy/claude-sonnet-4-6  -> served big-pickle  degraded=true
-   "model override: asked for agy/claude-sonnet-4-6, served by big-pickle"
-asked opencode/big-pickle    -> served big-pickle  degraded=false
+2026-09-05, both through POST /run:
+asked agy/claude-sonnet-4-6  -> served gemini-3.7-flash-high
+   model_overridden=true   degraded=false   step_errors=[]
+asked opencode/big-pickle    -> served gemini-3.7-flash-high
+   model_overridden=true   degraded=false   step_errors=[]
 ```
+
+**The destination is not stable, and that is the part worth carrying
+forward.** Every measurement above from 2026-09-04 landed on `oc/big-pickle`,
+three times out of three, which made "the override sends everything to the free
+tier" look like a description of the mechanism. Re-measured one day later, with
+nothing changed on this side, both requests were served by
+`gemini-3.7-flash-high` — a different provider, a different company, a
+different jurisdiction.
+
+So the second line above is the one that changed meaning. `opencode/big-pickle`
+was the control on 2026-09-04: ask for what `auto` picks anyway and the
+override becomes invisible. It is not a control any more, and a check built on
+it would now report enforcement where there is none. The override does not
+route to a known model; it routes to whatever `auto` currently prefers, and
+that is a moving target this repo does not control.
+
+**One override is treated differently.** Naming `ollama/...` is how a caller
+says the work must not leave this host, so that override alone is appended to
+`step_errors` and does set `degraded`:
+
+```
+local-only work left the host: asked for ollama/qwen2.5:1.5b-instruct-q4_K_M,
+served by big-pickle
+```
+
+It cannot prevent the egress — by the time a response exists the request has
+already been served elsewhere. It can refuse to be quiet about it, and it
+should not be filed under the flag someone has learned to ignore.
+
+**And it can be re-tested.** `./scripts/check-model-routing.sh` asks for the
+local model twice — once plain, once with an agent-shaped system line — and
+prints the provider that answered each. It probes with the local model on
+purpose: that is the one destination the reroute never selects, so "served by
+something else" is unambiguous. It exits non-zero while the override
+reproduces. Run it after any `git subtree pull`, which is the only way this
+can change.
 
 **And it escapes the API key's model restrictions.** This is the more serious
 half, because those restrictions are what §8 uses as access control.
@@ -1120,6 +1166,8 @@ reporting healthy. Each guard below exists because of a specific one.
 | `monitor-deadman.timer` | 15 min | That the monitor **itself** is still running |
 | `codegraph-refresh.timer` | Daily | The graph ageing silently |
 | `/audit/runs.jsonl` | Every agent run | Cost, tool use, and degradation trends that were previously unrecoverable |
+| `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Six real calls, not presence tests; two of them assert that a *wrong* token is rejected |
+| `check-model-routing.sh` | After any `git subtree pull` | Whether the gateway still overrides the model you asked for. Exits non-zero while it does |
 
 ### The alarm that nobody hears
 
@@ -1320,8 +1368,8 @@ is worse than one that stops.
 | **Credential rotation** | Deferred by the operator, to be done in one pass at the end. `./scripts/verify-credentials.sh` proves each key afterwards with real calls — six checks, two of which assert a *rejection*, all passing as of 2026-09-05 | The list now includes the OmniRoute admin password, Neon connection string, Upstash token, two `/v1` keys, both Langfuse pairs, the `oma_` token, webhook HMAC secret, `GRAPHIFY_API_KEY`, the OpenRouter key, the Tavily key, the E2B key, the Modal token, `AGENT_SIDECAR_AUTH_TOKEN`, and the `agent-sidecar-mcp` key once it exists |
 | **OmniRoute admin password was reset** | Done 2026-09-04 | The old one was lost — `POST /api/auth/login` rejected both the 24-character `INITIAL_PASSWORD` in `omniroute/.env` and a value the operator supplied, and no OIDC is configured. Recovered through OmniRoute's own mechanism: the hash lives in `key_value`/`settings`/`password`, and `ensurePersistentManagementPasswordHash` re-hashes a non-bcrypt value there on next login, so writing a plaintext password into that row restores access with no restart. Database backed up first to `db_backups/manual_20260904T153154Z_*`. The new password is with the operator and is first on the rotation list |
 | Agent tools | **Live 2026-09-04** | `agent_tools_active: true`. Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and answered in 2 steps with no step errors and `degraded: false` |
-| **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here |
-| **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served by `oc/big-pickle` when the prompt trips the gateway's content-based reroute. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree |
+| **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here — the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` on the VPS says whether it still reproduces, and exits non-zero while it does; run it after any `git subtree pull` |
+| **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served by `oc/big-pickle` when the prompt trips the gateway's content-based reroute. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
 | `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |
 | OpenRouter balance | Low, and the failure is shaped by `max_tokens` | A 402 is not a flat "out of credits": it reads *"You requested up to 65536 tokens, but can only afford 7040"*. The cost of the **reservation** is what fails, so the same balance serves a 400-token request and refuses a 65k one. `paid-first` tier 3 answered normally when probed — keep `max_tokens` modest on OpenRouter tiers and it keeps working |
 | Tavily credit | Finite | No fallback by design — it will fail loudly |
@@ -1384,9 +1432,9 @@ actually showed.
 
 1. **Rotate credentials.** The one deferred item that grows with every session.
 2. **Make silent degradation visible — done for the agent, still open for the
-   flows.** The agent now reports `served_by` on every run and marks a model
-   override as `degraded`, which is how the gateway's content-based rerouting
-   was found at all. The flows still cannot see which tier served them: the AI
+   flows.** The agent now reports `served_by` on every run and flags a model
+   override in `model_overridden`, which is how the gateway's content-based
+   rerouting was found at all. The flows still cannot see which tier served them: the AI
    piece returns text, not a model name. An HTTP step against
    `/v1/chat/completions` would expose the `model` field, and the
    `x-omniroute-decision` header would expose the *strategy* — which is the

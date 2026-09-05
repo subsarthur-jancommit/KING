@@ -11,6 +11,11 @@
 #   - a key's `allowed_models` is not enforced on the rerouted path: a key
 #     permitted only the local model was served `oc/big-pickle`
 #
+# The destination is not fixed. On 2026-09-04 every rerouted request landed on
+# `oc/big-pickle`; on 2026-09-05, with nothing changed here, both landed on
+# `gemini-3.7-flash-high`. So do not look for a particular provider in the
+# output — look for the two lines disagreeing.
+#
 # It lives in `omniroute/`, a vendored subtree this repo must not edit, so
 # there is nothing to fix here — only something to watch. Run this after any
 # `git subtree pull`, or whenever you want to know whether it still happens.

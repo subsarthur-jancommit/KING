@@ -449,6 +449,21 @@ list completed a `/v1/chat/completions` call. Scopes gate the management API,
 not inference — so a documented claim that a search-scoped key gets "403 on
 every real model" cannot be true for the stated reason.
 
+**And the coincidence expired.** Re-measured 2026-09-05, one day later, nothing
+changed on this side: both a request for `agy/claude-sonnet-4-6` and one for
+`opencode/big-pickle` were served by `gemini-3.7-flash-high`. So the destination
+of the reroute moves. The bad control from 2026-09-04 would now *appear to
+detect a bypass* — same test, same key, opposite verdict, and neither reading
+came from the control working.
+
+That is the sharper version of the lesson. The first test was not merely
+uninformative; it was reading a coincidence that had a shelf life of about a
+day. Anything built on "the reroute goes to `big-pickle`" was already wrong by
+the time it was written down. `scripts/check-model-routing.sh` therefore probes
+with the local model, which is the one destination the reroute never selects,
+and reports whether the two prompts *disagree* rather than looking for a
+particular provider name.
+
 **Rule.** When testing whether a control holds, choose a case where the control
 and the bypass predict *different* outcomes. If the allowed value is also the
 value the bypass produces, a pass proves nothing. And "not shown to be
