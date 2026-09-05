@@ -176,6 +176,20 @@ setting or nothing — and the first setting that looked right is now ruled out.
 `-request-id` are on every response. Reading them first would have skipped most
 of the eight eliminations above.
 
+**It does not touch the flows, which was checked rather than hoped.** The real
+`web_research` synthesis prompt — instructions, rules, search results — was
+probed against both combos:
+
+```
+websearch-tiers -> claude-opus-4-6-thinking-high   strategy=priority
+paid-first      -> claude-opus-4-6-thinking-high   strategy=priority
+```
+
+`strategy=priority` is the combo's own ladder working as designed. So the
+`auto/*` retirement earlier today is real: flow prompts are served by the tier
+they ask for. The override is confined to agent-shaped prompts, which means it
+is confined to the sidecar.
+
 **What was done about it.** Nothing can be fixed inside `omniroute/`, and the
 one settings lever was tested and does nothing. So the override is now
 *reported* instead: asking for a `provider/model` and being served something
