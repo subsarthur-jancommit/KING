@@ -410,6 +410,12 @@ a fabricated `Output:` line and the code it had not been able to run.
 `degraded: true` means at least one step failed and the answer was produced
 despite it. **Treat that as "do not trust this answer".**
 
+`degraded` is present on **every** response, including the HTTP 500 a crashed
+run returns. That is deliberate: a body that omitted it there would give
+`body.get("degraded")` → `None` → falsy, which is indistinguishable from a
+clean run to any caller that branches on the field rather than the status code
+— and branching on the field is what this section tells them to do.
+
 ### Two agent kinds, and why holding tools changes which one you get
 
 Turning the tools on forced a design decision that turned out to be the right

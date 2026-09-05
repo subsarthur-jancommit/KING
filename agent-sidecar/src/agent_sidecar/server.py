@@ -197,11 +197,25 @@ async def run(request: Request) -> JSONResponse:
         # workflow step whose only view of this service is the response body;
         # a bare 500 would make every failure look identical. The type name is
         # included for the same reason.
+        #
+        # `degraded` and `step_errors` are present here too, and that is the
+        # point: the documented contract is "read degraded before you read
+        # result", and a body that omits the field on the one path where
+        # everything failed makes `body.get("degraded")` return None — falsy,
+        # i.e. indistinguishable from a clean run to any caller that branches
+        # on it rather than on the status code.
+        #
+        # No `result` key is invented to match the success shape. There is no
+        # result, and an empty string here would read as "the agent answered
+        # nothing" rather than "the agent never ran".
         return JSONResponse(
             {
                 "error": f"{type(exc).__name__}: {exc}",
                 "runner": runner,
                 "model": settings.model_id,
+                "steps": None,
+                "step_errors": [f"{type(exc).__name__}: {exc}"],
+                "degraded": True,
             },
             status_code=500,
         )

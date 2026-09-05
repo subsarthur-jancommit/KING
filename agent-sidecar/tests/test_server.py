@@ -529,3 +529,30 @@ def test_run_is_not_degraded_when_every_tool_loaded(client, monkeypatch):
 
     assert body["degraded"] is False
     assert body["tools"]["selected"] == ["omniroute_web_search"]
+
+
+def test_a_crashed_run_is_still_marked_degraded(client, monkeypatch):
+    """The field the documentation tells callers to branch on must always exist.
+
+    Before this, a runner that raised produced {error, runner, model} and
+    nothing else. The status code was 500, but a caller reading the body — which
+    is what docs/king-system.md tells them to do, "read degraded before you read
+    result" — got None from `degraded`, which is falsy, which is exactly what a
+    clean run looks like.
+    """
+
+    def _explodes(task, settings=None):
+        raise RuntimeError("the model provider hung up")
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _explodes, raising=True)
+
+    resp = client.post("/run", json={"task": "t"})
+    body = resp.json()
+
+    assert resp.status_code == 500
+    assert body["degraded"] is True
+    assert "RuntimeError" in body["error"]
+    assert body["step_errors"] == ["RuntimeError: the model provider hung up"]
+    # No fabricated `result`: there is no answer, and an empty string would read
+    # as "the agent answered nothing" rather than "the agent never ran".
+    assert "result" not in body
