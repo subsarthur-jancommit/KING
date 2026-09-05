@@ -356,6 +356,42 @@ is not evidence it is measuring reality.
 
 ---
 
+## 17. Published a conclusion, then ran the control that broke it
+
+**What happened.** A new `served_by` field showed that an agent run requesting
+`paid-first` was answered by `big-pickle`. I wrote that up and committed it as
+"the agent falls through `paid-first` to the free tier" — a combo falling back
+is what combos are *for*, so the story needed no work to believe.
+
+The control case took one command and I ran it afterwards: request
+`agy/claude-sonnet-4-6`, a direct model with no ladder to fall through. Same
+result. It was never fallthrough. The gateway switches routing strategy on the
+prompt's content and overrides the model named in the request, which affects
+every caller rather than only combos.
+
+**Then I did it again.** Bisection showed the two trigger lines were the two
+mentioning reasoning and code, which matches `intentClassifier.ts` exactly, and
+`autoStrategy.ts` gates that on `intentDetectionEnabled`. I nearly wrote "the
+fix is to disable intent detection". Setting it to `false` on the live gateway
+changed nothing — `strategy=auto` before, during and after.
+
+**Why the first version was more believable than the truth.** It fitted a
+mechanism that exists and is documented. Fallthrough is real, combos do it, and
+the observation was consistent with it. Consistent is not the same as caused,
+and the difference is one control case.
+
+**What it cost.** Two commits of wrong documentation in a file whose whole
+value is being trustworthy, and an hour eliminating eight hypotheses that
+`x-omniroute-decision` — a header present on every response the whole time —
+would have answered in one request.
+
+**Rule.** Before publishing a cause, run the case that the cause predicts will
+behave *differently*. If the explanation is "the combo fell through", the
+control is a request with no combo. And read the diagnostic headers the service
+already returns before eliminating anything by hand.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:
