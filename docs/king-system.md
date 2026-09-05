@@ -805,6 +805,18 @@ to avoid.
 Verified end to end: asked for graph statistics, the agent called `graph_stats`
 and returned **59,410 nodes and 163,526 edges** in two steps, with `missing: []`.
 
+And verified working *together*, which is the part that matters — one task
+needing both servers:
+
+```
+task    "graph_stats for the node count, then web search for Caddy's stable version"
+result  nodes=59410, caddy=2.11.4
+        3 steps, 15,889 tokens, degraded=false
+```
+
+A private code fact and a live web fact in one answer, from two independent
+services, neither of which cost Claude any context.
+
 The two servers stay independent — separate service, separate key, separate
 failure. Without `GRAPHIFY_API_KEY` the second one is simply absent and the
 agent keeps its web search; a graph outage costs it four tools, not eleven.

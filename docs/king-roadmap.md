@@ -208,8 +208,12 @@ This phase is not optional and not a footnote. Phase 3 must not ship without it.
 
 ### Phase 3 — Give the agent tools — **done 2026-09-04**
 
-Live. The gateway offers 110 tools; the agent holds seven, by allowlist, and
-`vps_exec` can never be among them whatever the configuration says.
+Live. Two MCP servers offer 120 tools between them — OmniRoute's 110 and the
+code graph's ten — and the agent holds eleven by allowlist. `vps_exec` can
+never be among them whatever the configuration says.
+
+Proven with a task needing both: `nodes=59410, caddy=2.11.4` in three steps, a
+private code fact and a live web fact in one answer.
 
 Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and
 answered in 2 steps, no step errors, `degraded: false`.
