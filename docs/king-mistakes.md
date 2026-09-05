@@ -287,6 +287,41 @@ confirm a run exists for that commit — **absence of red is not green.**
 
 ---
 
+## 15. Fixed a tool failure by guessing, and the guess made it worse
+
+**What happened.** The newly tool-enabled agent could not search. Its run
+records showed it calling `omniroute_web_search` with
+`provider: "duckduckgo-free"` — a provider the gateway advertises and holds no
+credential for — then retrying other dead ones until the step budget ran out.
+
+The fix looked obvious. A direct MCP `tools/call` omitting `provider` had just
+been verified working, served by Tavily. So: instruct the agent not to set the
+field and let the gateway auto-select. That shipped, was rebuilt, redeployed
+and re-tested.
+
+The next run failed differently and more informatively: **`Argument provider is
+required`**, three times in one run.
+
+**Why the obvious fix was wrong.** The direct probe and the agent's call do not
+travel the same path. smolagents validates tool arguments **client-side**
+against the MCP tool's declared input schema before a request is ever sent, and
+that schema marks `provider` required. The server is lenient and accepts the
+call without it — which is precisely why the probe succeeded and produced a
+confident, wrong conclusion.
+
+The real fix was the opposite instruction: name `tavily-search`, the one
+provider of twenty reporting `cred=configured`.
+
+**What would have caught it.** Reading the tool's input schema — one call away
+— instead of generalising from a probe that exercised a different code path.
+
+**Rule.** A successful probe proves the path *the probe took* works. It does not
+prove another caller takes that path. Where a client and a server disagree
+about a contract, the strict one decides, and the client is usually the strict
+one.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:
