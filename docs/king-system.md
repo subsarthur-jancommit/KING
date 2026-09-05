@@ -203,6 +203,52 @@ setting or nothing — and the first setting that looked right is now ruled out.
 `-request-id` are on every response. Reading them first would have skipped most
 of the eight eliminations above.
 
+
+### What the reroute lands on is less reliable than what it leaves
+
+Measured 2026-09-05 from `/api/usage/call-logs`, 500 completed calls spanning
+2026-08-30 to 2026-09-05, grouped by provider and model:
+
+```
+provider       model                            calls  failed   rate
+opencode       big-pickle                         102       0     0%
+antigravity    claude-opus-4-6-thinking-high       75      15    20%
+antigravity    claude-sonnet-4-6                   68       5     7%
+antigravity    gemini-3.7-flash-high               56      12    21%
+ollama         qwen2.5:1.5b-instruct-q4_K_M        55      18    33%
+
+top failure signature:  502 "Provider returned empty content"  x36
+```
+
+Every 502 in the window is antigravity's. The free tier that the routing design
+treats as the fallback of last resort did not fail once in 102 calls.
+
+That inverts an assumption worth stating plainly, because `paid-first` is built
+on it: `agy` is the strongest and cheapest-per-call tier, and it is also the
+least reliable one here. Its leading model — the first rung of `paid-first` —
+fails one attempt in five.
+
+**Two caveats, or this reads as worse than it is.** These are *per-attempt*
+rates, not per-request. A `priority` combo whose first rung 502s falls through
+and logs both the failure and the eventual success, so a share of the 20% on
+`claude-opus-4-6-thinking-high` is the ladder doing exactly its job — the caller
+still got an answer. And `ollama`'s 33% is the documented
+`RATE_LIMIT_MAX_WAIT_MS` 504 against a cold local model, which is why the
+monitor excludes it from the breach ratio.
+
+**What survives both caveats is the sidecar's case.** It names a model directly,
+so there is no ladder underneath it to absorb a failure — and the content
+reroute moves its traffic from `big-pickle`, which has not failed here, onto
+`gemini-3.7-flash-high`, which fails about a fifth of the time. So the override
+is not only a cost and confidentiality problem, as recorded above. It is a
+reliability downgrade, in the one place with nothing to catch it.
+
+Not proven, and worth measuring before acting on: whether `auto` retries after
+a 502. This session made roughly eight sidecar runs and all of them succeeded,
+which is unremarkable at a 21% per-attempt rate but is also consistent with a
+retry absorbing failures invisibly. `served_by` in the run journal is where that
+answer will come from once there are enough runs.
+
 **It does not touch the flows, which was checked rather than hoped.** The real
 `web_research` synthesis prompt — instructions, rules, search results — was
 probed against both combos:
@@ -1406,6 +1452,7 @@ is worse than one that stops.
 | Agent tools | **Live 2026-09-04** | `agent_tools_active: true`. Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and answered in 2 steps with no step errors and `degraded: false` |
 | **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here — the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` on the VPS says whether it still reproduces, and exits non-zero while it does; run it after any `git subtree pull` |
 | **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served elsewhere when the prompt trips the gateway's content-based reroute — for the sidecar's own prompt that destination is `gemini-3.7-flash-high`, i.e. Google, measured 3 of 3 on 2026-09-05. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
+| **`agy` is the least reliable tier, not the most** | Measured 2026-09-05 | Over 500 calls since 2026-08-30, every 502 belongs to antigravity — `claude-opus-4-6-thinking-high` 20% of attempts, `gemini-3.7-flash-high` 21%, against `opencode/big-pickle` at 0 of 102. Combo fallthrough absorbs some of that for flows; the sidecar names a model directly and has nothing underneath it, and the content reroute moves it from the 0% model to the 21% one. §4 has the table and the caveats |
 | **Every alert ever raised was discarded** | Measured 2026-09-05 | `gateway_monitor` detects breaches and HMAC-POSTs them to `gateway_alerts`, which shapes the payload and returns it. Fourteen deliveries since 2026-08-29, five of them on 2026-09-05, all `SUCCEEDED`, and the `gateway_alerts` table still has **0 rows**. The fix is two steps in one edit — §7 has the exact mapping, including why the obvious one-step version writes a null `provider` for every monitor alert. Both are edits to live automation, so they wait on the operator |
 | **The gateway runs a TLS binary with a known CVE** | Found 2026-09-05 | `omniroute:base` was built 2026-08-27 and carries `tls-client-linux-ubuntu-amd64-1.15.1.so`, the binary OmniRoute PR #12612 pinned *away from* over CVE-2025-68121. Verified against the advisory rather than that PR: GHSA-h355-32pf-p2xm is **medium, CVSS 4.8** — a `crypto/tls` session-resumption flaw where a mutated `ClientCAs`/`RootCAs` pool may resume a session it should reject — not the "CVSS 9.8 out-of-bounds read" the PR claims. Rebuilding is what would replace it, and rebuilding is exactly what the upstream break prevents, so the two open items are one problem: the image is frozen at 2026-08-27 until `tls-client-node` is fixed |
 | `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |
