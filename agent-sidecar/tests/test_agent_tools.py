@@ -12,6 +12,7 @@ import pytest
 
 from agent_sidecar.config import load_settings
 from agent_sidecar.mcp_tools import NEVER_REGISTER, select_agent_tools
+from agent_sidecar import smol_runner
 from agent_sidecar.smol_runner import uses_tool_calling
 
 
@@ -132,3 +133,107 @@ def test_tool_runs_use_tool_calling_not_code_execution():
     # CodeAgent in the sandbox.
     assert uses_tool_calling([object()]) is True
     assert uses_tool_calling([]) is False
+
+
+# --------------------------------------------------------------------------
+# _load_tools: the failure paths. None of these had a test, and every one of
+# them exists so that a gateway problem does not become a 500 — which means a
+# bug in them would be invisible in exactly the situation they were written for.
+# --------------------------------------------------------------------------
+
+
+def test_no_mcp_key_means_no_tools_and_says_so(monkeypatch):
+    monkeypatch.delenv("OMNIROUTE_MCP_API_KEY", raising=False)
+    tools, client, report = smol_runner._load_tools(_settings(monkeypatch))
+
+    assert tools == []
+    assert client is None
+    # enabled=False is the honest signal: not "the gateway had no tools", but
+    # "tool loading was never attempted".
+    assert report["enabled"] is False
+
+
+def test_allowlist_of_none_skips_loading_even_with_a_key(monkeypatch):
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+    tools, client, report = smol_runner._load_tools(_settings(monkeypatch, "none"))
+
+    assert (tools, client) == ([], None)
+    assert report["enabled"] is False
+
+
+def test_an_unreachable_gateway_is_reported_not_raised(monkeypatch):
+    """A gateway blip must not turn every agent run into a 500.
+
+    The agent without tools is the agent this service shipped with for weeks.
+    But it must not degrade *quietly* either, so the reason travels back in the
+    report and /run folds it into `degraded`.
+    """
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise ConnectionError("gateway refused the connection")
+
+    monkeypatch.setattr("smolagents.MCPClient", _Boom, raising=True)
+
+    tools, client, report = smol_runner._load_tools(_settings(monkeypatch, "omniroute_web_search"))
+
+    assert (tools, client) == ([], None)
+    assert report["enabled"] is True
+    assert "ConnectionError" in report["error"]
+    assert "gateway refused" in report["error"]
+
+
+def test_a_failure_after_connecting_still_closes_the_connection(monkeypatch):
+    """The one that leaks if nobody checks.
+
+    MCPClient connects inside __init__, so a failure in get_tools() leaves a
+    live transport behind. Without the disconnect in that branch the sidecar
+    would accumulate open sessions against the gateway, one per failed run.
+    """
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+    closed = []
+
+    class _HalfBroken:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_tools(self):
+            raise RuntimeError("tool listing blew up")
+
+        def disconnect(self):
+            closed.append(True)
+
+    monkeypatch.setattr("smolagents.MCPClient", _HalfBroken, raising=True)
+
+    tools, client, report = smol_runner._load_tools(_settings(monkeypatch, "omniroute_web_search"))
+
+    assert (tools, client) == ([], None)
+    assert closed == [True], "the transport was left open after a failed get_tools()"
+    assert "RuntimeError" in report["error"]
+
+
+def test_a_working_gateway_returns_tools_and_the_client_to_close(monkeypatch):
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+
+    class _Working:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_tools(self):
+            return [_Tool("omniroute_web_search"), _Tool("omniroute_switch_combo")]
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr("smolagents.MCPClient", _Working, raising=True)
+
+    tools, client, report = smol_runner._load_tools(_settings(monkeypatch, "omniroute_web_search"))
+
+    assert [t.name for t in tools] == ["omniroute_web_search"]
+    # The caller gets the client back precisely so run() can close it in a
+    # finally block — the tool list stays usable outside a `with`, the
+    # transport does not close itself.
+    assert client is not None
+    assert report["enabled"] is True
+    assert report["offered"] == 2
