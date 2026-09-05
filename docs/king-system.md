@@ -544,6 +544,24 @@ must not silently look like it logged either, so the failure goes to stderr and
 into the container log. That path has a test, because "best-effort" is the kind
 of promise that quietly stops being true.
 
+Read it with `./scripts/agent-report.sh [days]`, which is the half that stops
+the journal being data nobody looks at:
+
+```
+agent runs — all time
+  runs            1
+  degraded        0  (0%)
+  tokens in/out   3,884 / 143
+  seconds med/max 11.1 / 11.1
+  by model
+       1  opencode/big-pickle
+```
+
+Runs with no token counts are reported separately rather than summed as zero —
+`null` means not measured, and zero would claim the call was free. Unparseable
+lines are counted rather than skipped in silence: one truncated last line is
+normal when reading mid-write, a journal full of them is not.
+
 ### What contains it, and what does not
 
 `/run` requires a bearer token and fails closed without one configured — 503,
