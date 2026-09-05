@@ -835,8 +835,24 @@ inverting the point. One client per server, connected independently, and each
 failure reported in `tools.error` rather than swallowed.
 
 The claim in the paragraph above was written before it was tested, and testing
-it is what found the regression. Re-measured after the fix, with the graph
-pointed at a dead port:
+it is what found the regression. Measured in **both** directions after the fix.
+
+With an invalid `OMNIROUTE_MCP_API_KEY` — which is what a rotation looks like
+before the new key is in place:
+
+```
+tools loaded  4          the code graph's, unaffected
+offered       10         codegraph only
+missing       7          the OmniRoute ones
+error         http://omniroute-base:20128/api/mcp/stream: TimeoutError after 30s
+```
+
+**A revoked key presents as a timeout, not an auth error.** Worth knowing
+before rotating anything: the symptom is a 30-second pause and
+`TimeoutError`, not `403 invalid key`, so the obvious reading is "the gateway
+is down" rather than "I have not updated this key yet".
+
+And with the code graph pointed at a dead port:
 
 ```
 tools loaded  7          (was 0)
