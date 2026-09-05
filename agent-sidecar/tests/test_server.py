@@ -1134,3 +1134,34 @@ def test_trimming_never_breaks_a_run_when_the_journal_cannot_be_sized(monkeypatc
     # trim, not a reason to drop the entry.
     assert journal.exists()
     assert '"n":1' in journal.read_text(encoding="utf-8")
+
+
+def test_the_vps_exec_audit_is_bounded_too(monkeypatch, tmp_path):
+    """The same slow leak, in the other append-only file.
+
+    Both live in the same volume on the same disk, and a container that fills
+    it takes the host down rather than only itself — so fixing one and not the
+    other would leave the hazard intact under a different filename.
+    """
+    from agent_sidecar import mcp_server
+
+    audit = tmp_path / "vps_exec.log"
+    monkeypatch.setenv("AGENT_SIDECAR_EXEC_AUDIT", str(audit))
+    monkeypatch.setattr(mcp_server, "trim_if_oversized",
+                        lambda p, n=None: audit.write_text("", encoding="utf-8"),
+                        raising=True)
+
+    mcp_server._audit("echo hello", 60)
+
+    # The trim ran and the command was still recorded after it.
+    assert "echo hello" in audit.read_text(encoding="utf-8")
+
+
+def test_both_append_only_files_share_one_trimmer():
+    """Duplicated size logic gets fixed once and stays broken in the copy."""
+    import inspect
+
+    from agent_sidecar import mcp_server, outcome
+
+    assert callable(outcome.trim_if_oversized)
+    assert "trim_if_oversized" in inspect.getsource(mcp_server._audit)

@@ -123,7 +123,7 @@ def journal(entry: dict) -> None:
         directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        _trim_if_oversized(path)
+        trim_if_oversized(path)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, separators=(",", ":"), default=str) + "\n")
     except Exception as exc:  # noqa: BLE001 - see docstring
@@ -131,19 +131,25 @@ def journal(entry: dict) -> None:
 
 
 
-def _trim_if_oversized(path: str) -> None:
+def trim_if_oversized(path: str, max_bytes: int = _JOURNAL_MAX_BYTES) -> None:
     """Keep the newest half when the journal passes its cap.
+
+    Shared by the run journal and the vps_exec audit — both are append-only
+    files on a disk that a full container takes the whole host down with, and
+    duplicating the logic would mean fixing it twice.
 
     Halving rather than emptying: truncating at the cap would make the history
     vanish periodically and without warning, which is worse than a bounded
     window. A note is written into the file saying a trim happened, so a reader
-    never mistakes a trimmed journal for the whole story.
+    never mistakes a trimmed file for the whole story. The note is JSON, which
+    the audit log is not — a line that does not parse is a louder signal there
+    than a silently shorter file.
 
     One stat() per write; the rewrite only happens at the cap, which at ~400
     bytes an entry is roughly every 12,000 runs.
     """
     try:
-        if os.path.getsize(path) < _JOURNAL_MAX_BYTES:
+        if os.path.getsize(path) < max_bytes:
             return
     except OSError:
         return  # not there yet, or unreadable — the append will report it
@@ -156,7 +162,7 @@ def _trim_if_oversized(path: str) -> None:
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "caller": "journal",
             "note": (
-                f"trimmed at {_JOURNAL_MAX_BYTES} bytes; "
+                f"trimmed at {max_bytes} bytes; "
                 f"{len(lines) - len(kept)} older entries dropped"
             ),
         },

@@ -31,7 +31,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import load_settings
-from .outcome import journal_run, summarise
+from .outcome import journal_run, summarise, trim_if_oversized
 
 # MCP ships DNS-rebinding protection that validates the Host header against an
 # allow-list defaulting to localhost only. Behind a reverse proxy the header is
@@ -260,6 +260,12 @@ def _audit(command: str, timeout: int) -> None:
     path = os.environ.get("AGENT_SIDECAR_EXEC_AUDIT", "/audit/vps_exec.log")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Bounded for the same reason the run journal is: an append-only file
+        # nothing rotates is a slow leak, and a full disk takes down every
+        # container on this host rather than only the one that filled it.
+        # 2 MB rather than the journal's 5 — a command line is far shorter than
+        # a run record, so this still holds tens of thousands of commands.
+        trim_if_oversized(path, 2 * 1024 * 1024)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(
                 f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}"
