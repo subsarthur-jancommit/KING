@@ -148,10 +148,10 @@ fallthrough — it is override, and it affects every caller, not just combos.
 **What it costs.** Every agent run this deployment has ever made has been served
 by something other than the model requested, including the acceptance runs.
 That explains the measurement that looked so tidy earlier: the free-tier
-default answered exactly as well as `agy/claude-sonnet-4-6`, because on
-2026-09-04 both were `big-pickle`. One day later both were
-`gemini-3.7-flash-high` — see the destination note further down; the model that
-answers is not a fixed property of this fault.
+default answered exactly as well as `agy/claude-sonnet-4-6`, because under that
+probe's prompt both were `big-pickle`. Under the prompt the sidecar really
+sends, both are `gemini-3.7-flash-high` — see the destination note further
+down; which model answers is not a fixed property of this fault.
 
 **The mechanism, from the gateway's own header.** `x-omniroute-decision` names
 the strategy it chose, and that is what changes:
@@ -237,20 +237,27 @@ asked opencode/big-pickle    -> served gemini-3.7-flash-high
    model_overridden=true   degraded=false   step_errors=[]
 ```
 
-**The destination is not stable, and that is the part worth carrying
-forward.** Every measurement above from 2026-09-04 landed on `oc/big-pickle`,
-three times out of three, which made "the override sends everything to the free
-tier" look like a description of the mechanism. Re-measured one day later, with
-nothing changed on this side, both requests were served by
-`gemini-3.7-flash-high` — a different provider, a different company, a
-different jurisdiction.
+**The destination depends on the prompt too, which is the part worth carrying
+forward.** The bisection above established that prompt content decides the
+*strategy*. It does not stop there: content also decides where `auto` then
+lands. Measured within the same five minutes on 2026-09-05, both deterministic:
 
-So the second line above is the one that changed meaning. `opencode/big-pickle`
-was the control on 2026-09-04: ask for what `auto` picks anyway and the
-override becomes invisible. It is not a control any more, and a check built on
-it would now report enforcement where there is none. The override does not
-route to a known model; it routes to whatever `auto` currently prefers, and
-that is a moving target this repo does not control.
+```
+one-line trigger, via /v1        -> oc/big-pickle             6 of 6
+smolagents system prompt, /run   -> gemini-3.7-flash-high     3 of 3
+```
+
+Same key, same requested model, same gateway, same minute. The only difference
+is the prompt. So every `oc/big-pickle` figure recorded on 2026-09-04 was a
+measurement of the *probe's* prompt, and generalising it to what the sidecar
+actually sends was not warranted — see mistakes entry 20.
+
+Two consequences. The second line of the block above is not a control any more:
+`opencode/big-pickle` was chosen on 2026-09-04 as "the model `auto` picks
+anyway", which held for the probe's prompt and does not hold for the sidecar's.
+And any check that looks for a particular provider name is testing the prompt
+it happens to send, not the fault. `scripts/check-model-routing.sh` reports
+whether two prompts *disagree*, which is why it survives this.
 
 **One override is treated differently.** Naming `ollama/...` is how a caller
 says the work must not leave this host, so that override alone is appended to
@@ -1369,7 +1376,7 @@ is worse than one that stops.
 | **OmniRoute admin password was reset** | Done 2026-09-04 | The old one was lost — `POST /api/auth/login` rejected both the 24-character `INITIAL_PASSWORD` in `omniroute/.env` and a value the operator supplied, and no OIDC is configured. Recovered through OmniRoute's own mechanism: the hash lives in `key_value`/`settings`/`password`, and `ensurePersistentManagementPasswordHash` re-hashes a non-bcrypt value there on next login, so writing a plaintext password into that row restores access with no restart. Database backed up first to `db_backups/manual_20260904T153154Z_*`. The new password is with the operator and is first on the rotation list |
 | Agent tools | **Live 2026-09-04** | `agent_tools_active: true`. Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and answered in 2 steps with no step errors and `degraded: false` |
 | **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here — the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` on the VPS says whether it still reproduces, and exits non-zero while it does; run it after any `git subtree pull` |
-| **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served by `oc/big-pickle` when the prompt trips the gateway's content-based reroute. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
+| **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served elsewhere when the prompt trips the gateway's content-based reroute — for the sidecar's own prompt that destination is `gemini-3.7-flash-high`, i.e. Google, measured 3 of 3 on 2026-09-05. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
 | `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |
 | OpenRouter balance | Low, and the failure is shaped by `max_tokens` | A 402 is not a flat "out of credits": it reads *"You requested up to 65536 tokens, but can only afford 7040"*. The cost of the **reservation** is what fails, so the same balance serves a 400-token request and refuses a 65k one. `paid-first` tier 3 answered normally when probed — keep `max_tokens` modest on OpenRouter tiers and it keeps working |
 | Tavily credit | Finite | No fallback by design — it will fail loudly |

@@ -449,26 +449,61 @@ list completed a `/v1/chat/completions` call. Scopes gate the management API,
 not inference — so a documented claim that a search-scoped key gets "403 on
 every real model" cannot be true for the stated reason.
 
-**And the coincidence expired.** Re-measured 2026-09-05, one day later, nothing
-changed on this side: both a request for `agy/claude-sonnet-4-6` and one for
-`opencode/big-pickle` were served by `gemini-3.7-flash-high`. So the destination
-of the reroute moves. The bad control from 2026-09-04 would now *appear to
-detect a bypass* — same test, same key, opposite verdict, and neither reading
-came from the control working.
-
-That is the sharper version of the lesson. The first test was not merely
-uninformative; it was reading a coincidence that had a shelf life of about a
-day. Anything built on "the reroute goes to `big-pickle`" was already wrong by
-the time it was written down. `scripts/check-model-routing.sh` therefore probes
-with the local model, which is the one destination the reroute never selects,
-and reports whether the two prompts *disagree* rather than looking for a
-particular provider name.
+**And the coincidence was narrower than it looked.** `big-pickle` is where the
+reroute lands *for that probe's prompt*. Under the prompt the sidecar actually
+sends, it lands on `gemini-3.7-flash-high` — see entry 20. So the bad control
+was not just uninformative; it was uninformative in a way that would flip to
+the opposite verdict on a different prompt, with nothing changed.
+`scripts/check-model-routing.sh` therefore reports whether two prompts
+*disagree* rather than looking for a particular provider name.
 
 **Rule.** When testing whether a control holds, choose a case where the control
 and the bypass predict *different* outcomes. If the allowed value is also the
 value the bypass produces, a pass proves nothing. And "not shown to be
 bypassable" is a statement about what you tested, not about the system — say so
 in those words, or go and test it.
+
+---
+
+## 20. Generalising a measurement across the one variable I had proved it depends on
+
+**What happened.** I had already established, by bisecting the system prompt
+line by line, that OmniRoute's routing is decided by prompt *content*. Then I
+measured where a rerouted request lands using a one-line probe, got
+`oc/big-pickle` three times out of three, and wrote "every agent run is served
+by the free tier" — a claim about the sidecar, whose prompt is the 9,867-character
+smolagents system prompt, not my one line.
+
+**What it actually does.** Measured within five minutes of each other, same key,
+same requested model, both perfectly deterministic:
+
+```
+one-line trigger, via /v1        -> oc/big-pickle             6 of 6
+smolagents system prompt, /run   -> gemini-3.7-flash-high     3 of 3
+```
+
+Content decides the strategy *and* the destination. I knew the first half and
+assumed the second half away.
+
+**How I nearly shipped it.** I saw the two results disagree, and my first
+explanation was that the destination had drifted overnight — which fit both
+observations and was wrong. I committed that. What killed it was the cheap
+control: re-run the old probe *now*. Six out of six `oc`, at the same moment the
+sidecar was getting `gemini`. Time was not the variable; the prompt was, and
+nothing about "it changed since yesterday" would have survived one repetition of
+yesterday's test.
+
+**Why it matters beyond tidiness.** The reroute sends work to a third party. Which
+third party is a confidentiality question, and the honest answer for the sidecar
+is Google, not the free tier I had recorded. A reader deciding whether local-only
+work is safe would have been reading a figure measured on a prompt nobody sends.
+
+**Rule.** When a system has been shown to depend on some variable, every later
+measurement of that system is scoped to the value you used — write the value
+down beside the number, and re-measure before generalising. And when two results
+disagree, re-run the *old* one before inventing a story that explains the
+difference; "it changed since yesterday" is the explanation that fits everything
+and predicts nothing.
 
 ---
 

@@ -11,10 +11,13 @@
 #   - a key's `allowed_models` is not enforced on the rerouted path: a key
 #     permitted only the local model was served `oc/big-pickle`
 #
-# The destination is not fixed. On 2026-09-04 every rerouted request landed on
-# `oc/big-pickle`; on 2026-09-05, with nothing changed here, both landed on
-# `gemini-3.7-flash-high`. So do not look for a particular provider in the
-# output — look for the two lines disagreeing.
+# The destination is not fixed either, and it moves with the prompt, not with
+# time. Measured 2026-09-05 within five minutes, same key, same asked-for model:
+# this script's one-line trigger lands on `oc/big-pickle` (6 of 6) while the
+# sidecar's full smolagents prompt lands on `gemini-3.7-flash-high` (3 of 3).
+# So do not look for a particular provider in the output — look for the two
+# lines disagreeing. That is what this checks, and it is why it still works
+# when the destination changes.
 #
 # It lives in `omniroute/`, a vendored subtree this repo must not edit, so
 # there is nothing to fix here — only something to watch. Run this after any
