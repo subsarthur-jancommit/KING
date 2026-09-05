@@ -264,17 +264,41 @@ check_openhands() {
   fi
 }
 
+# Split out of check_agent_sidecar_http so the self-test can drive it without
+# standing up the whole profile, the same way check_agent_tools_wiring is.
+check_sidecar_bearer() {
+  local token="$1"
+  if [ -z "$token" ]; then
+    # Deliberately a failure, not a warning. Unset does not mean "open" — the
+    # service fails closed and answers 503 to every /run — but it does mean a
+    # container that passes its healthcheck, reports healthy in `docker ps`,
+    # and serves nothing. That is the exact fault class this script exists for,
+    # and it cost CI weeks of silent non-coverage before anyone noticed.
+    fail "AGENT_SIDECAR_AUTH_TOKEN is unset in agent-sidecar/.env. The wrapper will report healthy and answer 503 to every /run."
+    return
+  fi
+  check_secret "AGENT_SIDECAR_AUTH_TOKEN" "$token" 'changeme' 24
+}
+
 check_agent_sidecar_http() {
   echo "profile: agent-sidecar-http"
   # Same image, same runners, same executor decision — so reuse that profile's
   # checks rather than drifting a second copy of them.
   check_agent_sidecar
 
-  # What is genuinely different: this one is long-lived and publishes a port,
-  # and it has no authentication of its own. Its whole safety argument is that
-  # only things already inside the compose network can reach it.
+  # What is genuinely different: this one is long-lived, publishes a port, and
+  # is reachable from outside the compose network through Caddy at
+  # /king-agent/. Its safety argument is the bearer token, not the network.
+  #
+  # This comment used to say the endpoint had no authentication of its own and
+  # that only the compose network protected it. That was true when written and
+  # stopped being true when AGENT_SIDECAR_AUTH_TOKEN went in. A stale security
+  # comment is worse than none: it points the operator at the wrong worry and
+  # at a boundary that is no longer the one doing the work.
+  check_sidecar_bearer "$(lookup AGENT_SIDECAR_AUTH_TOKEN agent-sidecar/.env)"
+
   check_bind_host "AGENT_SIDECAR_HTTP_BIND_HOST" "$(lookup AGENT_SIDECAR_HTTP_BIND_HOST)" \
-    "This endpoint has NO authentication and runs model-generated code. Do not expose it."
+    "This endpoint runs model-generated code. Keep it on loopback and reach it through Caddy, which requires the bearer above."
 }
 
 check_workflow() {
@@ -732,6 +756,16 @@ exit 1
   assert_eq "key + allowlist warns only about manage scope" "$warnings" 1
   warnings=0; check_agent_tools_wiring "k" "NONE" >/dev/null
   assert_eq "key + none warns twice, and is case-insensitive" "$warnings" 2
+
+  echo "self-test: check_sidecar_bearer"
+  errors=0; check_sidecar_bearer "" >/dev/null
+  assert_eq "unset bearer fails (healthy container, 503 to everything)" "$errors" 1
+  errors=0; check_sidecar_bearer "changeme" >/dev/null
+  assert_eq "the published placeholder fails" "$errors" 1
+  errors=0; check_sidecar_bearer "tooshort" >/dev/null
+  assert_eq "a short token fails" "$errors" 1
+  errors=0; check_sidecar_bearer "0123456789abcdef0123456789abcdef" >/dev/null
+  assert_eq "a real 32-char token passes" "$errors" 0
 
   echo "self-test: lookup"
   local tmp; tmp=$(mktemp)
