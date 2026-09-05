@@ -184,6 +184,43 @@ and runs model-generated code, so it stays loopback-only and is never proxied.
 
 See [`docs/integrations/activepieces-workflow.md`](docs/integrations/activepieces-workflow.md).
 
+### Agent sidecar
+
+A [smolagents](https://github.com/huggingface/smolagents) agent behind an HTTP
+endpoint, running on whichever OmniRoute model the caller names. This is what
+turns the gateway from a router into something that can be given a task.
+
+```bash
+curl -s -X POST http://127.0.0.1:8100/run   -H 'Content-Type: application/json'   -H "Authorization: Bearer $AGENT_SIDECAR_AUTH_TOKEN"   -d '{"task":"…","model":"agy/claude-sonnet-4-6","max_steps":6}'
+```
+
+**Two agent kinds, chosen by whether the run has tools.** Without tools it is a
+`CodeAgent` writing Python into an e2b/modal sandbox. With tools it is a
+`ToolCallingAgent` that executes no arbitrary code at all — which is both the
+only shape MCP tools work in, and the right one for something that reads web
+pages, since an injected page can never become code on the host.
+
+**The tool list is an allowlist, seven of the gateway's 110.** OmniRoute tags
+twelve tools "phase 1", but that marks usefulness to an MCP client, and two of
+the twelve rewrite live routing. On top of the allowlist, `vps_exec`,
+`run_agent` and `ask_model` are in a `NEVER_REGISTER` set that no configuration
+can override — being *offered* one is reported as `misdirected`, because it
+means `OMNIROUTE_MCP_URL` is pointed at this service instead of the gateway.
+
+**Every response says how much to trust it.** `degraded` is true when any step
+errored or a configured tool failed to load, and it is present even on the 500
+a crashed run returns. `tokens` says what the run cost. `tools` says which ones
+it actually held.
+
+**Every run is journalled** to `/audit/runs.jsonl`; read it with
+`./scripts/agent-report.sh [days]` for cost, degradation rate and tool use over
+time.
+
+It is reachable from Claude through Caddy at
+`https://gateway.arject.co/king-agent/mcp`, which also exposes `vps_exec` — an
+audited shell on the VPS, off unless `AGENT_SIDECAR_EXEC_ENABLED` is set, and
+never reachable by the agent itself.
+
 ### Observability
 
 OmniRoute already records every call it routes to a `call_logs` table, with
