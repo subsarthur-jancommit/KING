@@ -131,7 +131,7 @@ def journal(entry: dict) -> None:
 
 
 
-def trim_if_oversized(path: str, max_bytes: int = _JOURNAL_MAX_BYTES) -> None:
+def trim_if_oversized(path: str, max_bytes: int | None = None) -> None:
     """Keep the newest half when the journal passes its cap.
 
     Shared by the run journal and the vps_exec audit — both are append-only
@@ -148,6 +148,13 @@ def trim_if_oversized(path: str, max_bytes: int = _JOURNAL_MAX_BYTES) -> None:
     One stat() per write; the rewrite only happens at the cap, which at ~400
     bytes an entry is roughly every 12,000 runs.
     """
+    # Resolved at call time, not bound as a default: a default argument is
+    # evaluated once when the function is defined, so the module constant
+    # would be frozen at import and could never be overridden — which is
+    # exactly how the first version of this passed locally and failed in CI.
+    if max_bytes is None:
+        max_bytes = _JOURNAL_MAX_BYTES
+
     try:
         if os.path.getsize(path) < max_bytes:
             return
