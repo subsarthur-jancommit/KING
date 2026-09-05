@@ -341,14 +341,22 @@ This runs on every push/PR touching `omniroute/**` or the compose files, and
 via manual `workflow_dispatch`.
 
 **It is currently red, for a reason outside this repository.** `tls-client-node`
-looks for a release asset named
-`tls-client-linux-ubuntu-amd64-1.16.0.so`; upstream renamed its assets to
-`tls-client-xgo-1.16.0-linux-amd64.so`, so the download is skipped and a
-deliberate guard in `omniroute/Dockerfile` fails the build rather than shipping
-an image with no TLS client. It is not rate limiting, `0.2.0` is already the
-newest release on npm, and `omniroute/` is a vendored subtree that must not be
-edited — the three escapes are documented in `docs/king-mistakes.md` so nobody
-re-diagnoses it. Three jobs that build `omniroute:base` are blocked behind it.
+resolves its native binary from `bogdanfinn/tls-client` releases at build time,
+with no pin, and builds the filename from a naming scheme upstream abandoned:
+v1.15.1 published both `tls-client-linux-ubuntu-amd64-1.15.1.so` and
+`tls-client-xgo-1.15.1-linux-amd64.so`, and v1.16.0 (2026-09-02) kept only the
+`xgo` name. The download is skipped and a deliberate guard in
+`omniroute/Dockerfile` fails the build rather than shipping an image with no TLS
+client.
+
+So the same commit builds green one day and red the next: the build is not
+reproducible, which is the defect underneath the symptom. It is not rate
+limiting, `0.2.0` is already the newest release on npm, and `omniroute/` is a
+vendored subtree that must not be edited — the three escapes are documented in
+[`docs/king-mistakes.md`](docs/king-mistakes.md) so nobody re-diagnoses it.
+Three jobs that build `omniroute:base` are blocked behind it, in this workflow
+and in the STAX one below. No commit in this repository caused it, and reverting
+one will not clear it.
 
 ### STAX smoke test
 

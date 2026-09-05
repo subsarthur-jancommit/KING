@@ -507,6 +507,49 @@ and predicts nothing.
 
 ---
 
+## 21. Blaming a commit for a break whose cause was not a commit
+
+**What happened.** `omniroute-smoke` was green at `49fd3bd` and red at
+`f6d0ec9`, so I wrote "red since `f6d0ec9`" into two documents. That sentence
+reads as a cause, and I meant it as one.
+
+**Why it is wrong.** The build downloads a native binary from a third party's
+GitHub releases at build time, resolving the version *then* rather than from a
+pin. The timeline:
+
+```
+49fd3bd            2026-08-31 17:08 UTC   last green
+tls-client v1.16.0 2026-09-02 15:06 UTC   upstream drops the old asset names
+f6d0ec9            2026-09-04 04:34 UTC   first red
+```
+
+The break entered between the two runs, from outside the repository. And
+`f6d0ec9` touches `agent-sidecar/` and `docker-compose.yml` — none of which are
+inputs to `omniroute/Dockerfile`'s npm install. It could not have caused this
+even in principle.
+
+**The shape of the error.** A bisect answers "which commit did it first show up
+at", and I read the answer to "what changed". Those coincide only when commits
+are the sole input, which is exactly what a build that fetches an unpinned
+artifact at build time is not. There were no CI runs for three days — because
+`stax-smoke` did not run on push to main, entry 14 — so the green-to-red edge
+had three days of external history folded into it.
+
+**What it cost.** Not much here, because the log named the real cause on the
+next line. But the recorded sentence would have sent the next reader to
+`git revert f6d0ec9`, and reverting an innocent commit does not fix the build —
+it just loses the work and appears to confirm that the revert was needed when
+the build stays red.
+
+**Rule.** Before attributing a break to a commit, ask what else could have
+changed between the last pass and the first failure — the clock, an upstream
+release, a rate limit, a rotated key. If the build fetches anything unpinned,
+commits are not the only input and a bisect cannot answer the question you are
+asking. And write "first observed at", not "since", unless you have shown the
+commit is capable of causing it.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:
@@ -519,6 +562,11 @@ Three shapes account for nearly every entry:
 3. **Confidence ahead of evidence** — optimising costs before knowing them,
    improving a prompt without a score, calling a component dead without a
    positive control.
+4. **Attributing a change to the variable that was being watched** — the
+   destination "moved overnight" when it moved with the prompt, the build broke
+   "at a commit" when it broke at an upstream release. Both times the real
+   variable was one nobody was holding still, and both times the story that fit
+   the two observations was available before the cheap control that killed it.
 
 The standing rule that comes out of all three, and the one most worth keeping:
 **anything that cannot be measured is treated as a failure, not a pass.**
@@ -528,24 +576,49 @@ The standing rule that comes out of all three, and the one most worth keeping:
 
 ## Not ours — recorded so it is not diagnosed a second time
 
-`omniroute-smoke` has been red since `f6d0ec9` (2026-09-04); `49fd3bd` was the
-last green. Nothing in this repo causes it.
+`omniroute-smoke` is red, and since 2026-09-05 so are the three `stax-smoke`
+jobs that build the gateway image. Nothing in this repo causes it, and — see
+entry 21 — no commit in this repo causes it either.
 
 `tls-client-node@0.2.0` downloads a native binary from `bogdanfinn/tls-client`
-releases, looking for `tls-client-linux-ubuntu-amd64-1.16.0.so`. Upstream
-renamed its release assets — v1.16.0 ships `tls-client-xgo-1.16.0-linux-amd64.so`.
-The name the package wants no longer exists, the download is skipped, and the
+releases at image-build time. It resolves the version then, not from a pin, and
+constructs the filename from a naming scheme upstream has since abandoned:
+
+```
+v1.15.1  2026-06-08   tls-client-linux-ubuntu-amd64-1.15.1.so   <- both schemes
+                      tls-client-xgo-1.15.1-linux-amd64.so
+v1.16.0  2026-09-02   tls-client-xgo-1.16.0-linux-amd64.so      <- xgo only
+```
+
+v1.15.1 published both names, so the package worked. v1.16.0 dropped the
+`ubuntu` and `alpine` names, the package kept asking for
+`tls-client-linux-ubuntu-amd64-1.16.0.so`, the download is skipped, and the
 deliberate guard at `omniroute/Dockerfile:111` exits 1. That guard is behaving
 correctly: the alternative is shipping an image whose TLS client is absent.
+
+**The underlying defect is that the build is not reproducible.** Nothing here
+pins the binary, so the same commit builds green one day and red the next
+because a third party published a release. Even once `tls-client-node` fixes
+the name, the next rename breaks it again — a fix upstream restores the build,
+it does not make it deterministic.
 
 Three checks close the obvious escape routes, so none of them is worth retrying:
 
 - **Not rate limiting.** A GitHub token changes nothing; the asset is genuinely
-  named something else.
+  named something else. Confirmed against the release API on 2026-09-05: v1.16.0
+  lists exactly one linux-amd64 asset, and it is the `xgo` name.
 - **Nothing to upgrade to.** `0.2.0` is already the newest release on npm.
 - **Nothing to inject.** `omniroute/Dockerfile` declares no ARG for a token or
   a binary path, and `omniroute/` is a squashed subtree that must not be edited.
 
 It clears when `tls-client-node` publishes a fix, or when a newer omniroute
-release arrives via `git subtree pull`. Until then this job stays red, and that
+release arrives via `git subtree pull`. Until then those jobs stay red, and that
 is the correct state.
+
+**What still gets tested.** The `agent-sidecar-unit` job builds the sidecar
+image alone and runs the suite with no OmniRoute reachable, so it does not
+depend on the gateway image and is green throughout. `preflight`, `codegraph`
+and `observability` are green too. What is lost is the *integration* half —
+the sidecar's pytest run against a live OmniRoute, and the end-to-end HTTP
+checks. Unit coverage in CI is not a substitute for those; it is what remains
+of them.
