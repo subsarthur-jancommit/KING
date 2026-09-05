@@ -200,17 +200,20 @@ curl -s -X POST http://127.0.0.1:8100/run   -H 'Content-Type: application/json' 
 only shape MCP tools work in, and the right one for something that reads web
 pages, since an injected page can never become code on the host.
 
-**The tool list is an allowlist, seven of the gateway's 110.** OmniRoute tags
-twelve tools "phase 1", but that marks usefulness to an MCP client, and two of
-the twelve rewrite live routing. On top of the allowlist, `vps_exec`,
+**The tool list is an allowlist — eleven, from two MCP servers.** Seven come
+from OmniRoute's 110 and four from the code graph's ten, so "what calls this
+function" costs the agent a tool call instead of costing Claude twenty files of
+context. OmniRoute tags twelve of its tools "phase 1", but that marks usefulness
+to an MCP client, and two of the twelve rewrite live routing. On top of the allowlist, `vps_exec`,
 `run_agent` and `ask_model` are in a `NEVER_REGISTER` set that no configuration
 can override — being *offered* one is reported as `misdirected`, because it
 means `OMNIROUTE_MCP_URL` is pointed at this service instead of the gateway.
 
 **Every response says how much to trust it.** `degraded` is true when any step
-errored or a configured tool failed to load, and it is present even on the 500
-a crashed run returns. `tokens` says what the run cost. `tools` says which ones
-it actually held.
+errored, a configured tool failed to load, or the gateway served a different
+model than the one asked for — which it does, in both directions, based on
+prompt content. `tokens` says what the run cost, `served_by` which model
+actually answered, and `tools` which ones it held.
 
 **Every run is journalled** to `/audit/runs.jsonl`; read it with
 `./scripts/agent-report.sh [days]` for cost, degradation rate and tool use over
