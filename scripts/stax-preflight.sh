@@ -145,6 +145,33 @@ check_base() {
   fi
 }
 
+# Split out of check_agent_sidecar so the self-test can drive all four
+# combinations directly. The agent's tools need BOTH an allowlist and a
+# manage-scoped key, and having only one is silent in the worst way: the agent
+# runs, answers from training data, and sounds exactly like one that searched.
+# /healthz reports it as agent_tools_active:false — but that is after the
+# deploy, and this runs before it.
+check_agent_tools_wiring() {
+  local mcp_key="$1" tool_list="$2" lowered
+  lowered=$(printf '%s' "$tool_list" | tr '[:upper:]' '[:lower:]')
+
+  if [ -n "$mcp_key" ]; then
+    if [ "$lowered" = "none" ]; then
+      warn "OMNIROUTE_MCP_API_KEY is set but AGENT_SIDECAR_AGENT_TOOLS=none — a manage-scoped key is provisioned and nothing uses it."
+    else
+      pass "OMNIROUTE_MCP_API_KEY is set; the agent can load its tool allowlist."
+    fi
+    warn "OMNIROUTE_MCP_API_KEY carries manage scope — the most privileged credential in this stack. Rotate it with the rest."
+    return
+  fi
+
+  if [ "$lowered" = "none" ]; then
+    pass "No MCP key and AGENT_SIDECAR_AGENT_TOOLS=none — the agent is deliberately toolless."
+  else
+    warn "OMNIROUTE_MCP_API_KEY is unset, so the agent starts with NO tools and will not fail — it answers from training data instead. Set the key, or set AGENT_SIDECAR_AGENT_TOOLS=none to say you meant it."
+  fi
+}
+
 check_agent_sidecar() {
   echo "profile: agent-sidecar"
   local executor
@@ -181,10 +208,13 @@ check_agent_sidecar() {
   else
     pass "OMNIROUTE_API_KEY is set."
   fi
-  if [ -n "$(lookup OMNIROUTE_MCP_API_KEY agent-sidecar/.env)" ]; then
-    warn "OMNIROUTE_MCP_API_KEY is set — that key carries manage/admin scope. Confirm you meant to."
-  fi
+  local mcp_key tool_list
+  mcp_key=$(lookup OMNIROUTE_MCP_API_KEY agent-sidecar/.env)
+  tool_list=$(lookup AGENT_SIDECAR_AGENT_TOOLS agent-sidecar/.env)
+  [ -n "$tool_list" ] || tool_list=$(lookup AGENT_SIDECAR_AGENT_TOOLS .env)
+  check_agent_tools_wiring "$mcp_key" "$tool_list"
 }
+
 
 check_openhands() {
   echo "profile: openhands"
@@ -608,6 +638,16 @@ self_test() {
   errors=0; DF_CMD="$stub/df-tight"   check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "too little disk fails" "$errors" 1
   errors=0; DF_CMD="$stub/df-roomy"   check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "enough disk passes" "$errors" 0
   rm -rf "$stub"
+
+  echo "self-test: check_agent_tools_wiring"
+  warnings=0; check_agent_tools_wiring "" "" >/dev/null
+  assert_eq "no key + default allowlist warns (silently toolless)" "$warnings" 1
+  warnings=0; check_agent_tools_wiring "" "none" >/dev/null
+  assert_eq "no key + none is a deliberate choice, no warning" "$warnings" 0
+  warnings=0; check_agent_tools_wiring "k" "omniroute_web_search" >/dev/null
+  assert_eq "key + allowlist warns only about manage scope" "$warnings" 1
+  warnings=0; check_agent_tools_wiring "k" "NONE" >/dev/null
+  assert_eq "key + none warns twice, and is case-insensitive" "$warnings" 2
 
   echo "self-test: lookup"
   local tmp; tmp=$(mktemp)
