@@ -229,6 +229,16 @@ publishes no ports, runs non-root with `no-new-privileges`, is capped at 1
 CPU and 1GB, and is only ever reached by an operator typing
 `docker compose run`. Those hold regardless of executor.
 
+> **Two of those four stopped being true.** The `agent-sidecar-http` profile
+> publishes `${AGENT_SIDECAR_HTTP_BIND_HOST:-127.0.0.1}:8100` and Caddy proxies
+> it to the public internet, so it is no longer port-less nor
+> operator-only-reachable. What replaced them: a bearer token that **fails
+> closed** (unset returns 503 on every request, not open access), a cap of two
+> concurrent runs, ceilings on steps and tokens, and execution moved off the
+> host. The two that still hold — non-root with `no-new-privileges`, 1 CPU and
+> 1 GB — are why the container cannot reach the host even now. See the section
+> below.
+
 **What would change the answer**: an HTTP endpoint, a webhook, a queue
 consumer — anything where task text originates outside your shell. Then
 prompt injection becomes remote code execution in that container, and
