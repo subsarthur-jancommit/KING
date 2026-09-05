@@ -1196,16 +1196,23 @@ the operator can.
 > ordinary prompts and are cost control, not access control, against a prompt
 > that trips the switch. Details and the measurement in §5b.
 >
-> The *scope* column (`manage`, `search`, `models,routing,health`) is a
-> different mechanism and was not shown to be bypassable — only the per-key
-> model allow/deny lists were.
+> **And scopes do not gate inference at all.** A temporary key with
+> `scopes: ["search"]` — no `models`, no `routing` — completed a call to
+> `/v1/chat/completions` on both a plain and an agent-shaped prompt. This is
+> not the content reroute; the plain prompt passed too. Scopes gate the
+> *management* API — `/api/mcp/stream` genuinely requires `manage`, verified
+> separately — and do not restrict `/v1`.
+>
+> So whatever stops `flow-search` reaching a real model, it is the per-key
+> model list rather than its scope. The two mechanisms are separate, and only
+> one of them is a boundary on inference — the one the reroute escapes.
 
 | Key | Access | Reason |
 |---|---|---|
 | `claude-code` | all | The operator's own interactive use |
 | `activepieces` | restricted, **includes `agy/*`** | Flows built deliberately |
 | `gateway-monitor-triage` | restricted, **excludes `agy/*`** | A 15-minute heartbeat doing triage has no use for frontier models and should not burn subscription quota |
-| `flow-search` | restricted to `["search"]` | Can call `/v1/search`; **403 on every real model** |
+| `flow-search` | restricted to `["search"]` | Intended to call `/v1/search` only. **Re-check what enforces this**: a key created with `scopes: ["search"]` and no model list completed a `/v1/chat/completions` call in testing, so the scope is not what stops it |
 | `agent-sidecar-mcp` | **`manage` scope** | The most privileged key in the stack. It is what lets the agent load tools at all, and it is first on the rotation list |
 
 ### Security review of the agent surface, 2026-09-05
