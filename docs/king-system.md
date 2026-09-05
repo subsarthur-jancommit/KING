@@ -258,6 +258,12 @@ step_errors      []
 `degraded` keeps its narrow meaning: a step failed, or a configured tool did not
 load.
 
+`./scripts/agent-report.sh` counts the rate against runs that actually recorded
+the field, and the first honest reading was **2 of 2 — every run that measured
+it**. That is the number that justifies the split: a flag true 100% of the time
+carries no information, and folding it into `degraded` would have destroyed a
+signal that does.
+
 A combo name is exempt, because it asks for a ladder rather than one model, and
 the provider prefix is stripped before comparing — `agy/claude-sonnet-4-6`
 answered by `claude-sonnet-4-6` is a match, and treating it otherwise would
