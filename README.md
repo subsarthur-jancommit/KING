@@ -18,39 +18,65 @@ ECC's own README states:
 > maintained or reviewed and may contain malware.
 
 The recommended path for Claude Code is the native plugin marketplace
-mechanism (not a manual `git clone` + script run), so that's what was used:
+mechanism (not a manual `git clone` + script run), so the marketplace is added
+that way:
 
 ```
-claude plugin marketplace add https://github.com/affaan-m/ECC
-claude plugin install ecc@ecc
+claude plugin marketplace add https://github.com/affaan-m/ECC.git
 ```
 
-This avoids stacking installation methods (plugin + manual `install.sh` +
-npm), which ECC's docs warn causes duplicated skills, commands, and hooks.
+### The plugin is deliberately NOT installed
 
-### What's installed
+`claude plugin details ecc@ecc` prices the whole plugin at **~40,637 tokens
+added to every session** — 380 skills and 68 agents covering Android, Flutter,
+Laravel, Perl, healthcare, DeFi and Cisco networking, none of which appear in
+this repository. Loading all of it would contradict ECC's own first principle,
+*"Optimize the context window."*
 
-- Plugin: `ecc@ecc` v2.2.0 — 380 skills, 68 agents, 7 lifecycle hooks
-  (`PreToolUse`, `PostToolUse`, `SessionStart`, etc.), 1 MCP server
-  (`chrome-devtools`).
-- Config: `hooks_enabled: true`, `hook_profile: standard`.
-- Manifest validated with `claude plugin validate`.
+So `enabledPlugins` was **removed** from `.claude/settings.json`. Only the
+marketplace declaration remains, and that is on purpose: it is what makes
+adding one more skill a single directory copy instead of a re-clone.
 
-### Project-level integration
+### What is installed
 
-[`.claude/settings.json`](.claude/settings.json) declares the `ecc`
-marketplace and enables the `ecc@ecc` plugin at **project scope**. Anyone who
-clones this repository and opens it in Claude Code gets the ECC marketplace
-and plugin automatically — no manual per-user setup required.
+Eleven skills, copied into `~/.claude/skills/`, chosen against what this
+repository actually contains:
+
+| Skill | Why it is here |
+|---|---|
+| `python-patterns`, `python-testing`, `tdd-workflow` | `agent-sidecar/` is Python with 100+ tests |
+| `docker-patterns`, `deployment-patterns` | Compose plus two Dockerfiles, deployed to a VPS |
+| `security-review` | `vps_exec`, the tool allowlist, secrets, bearer auth |
+| `mcp-server-patterns` | this repo builds and runs an MCP server |
+| `github-ops` | CI, and the `gh` workflows around it |
+| `error-handling` | the `degraded` / `step_errors` contract |
+| `verification-loop` | already this project's standing rule |
+| `context-budget` | the discipline that produced this section |
+
+Measured cost: roughly 1,100 tokens always-on — about **2.7%** of installing
+the plugin whole.
+
+### Adding a twelfth
+
+Take the single skill you need from the marketplace cache; do not enable the
+plugin to get it:
+
+```
+cp -r ~/.claude/plugins/cache/ecc/ecc/<version>/skills/<name> ~/.claude/skills/
+```
+
+All 286 are there to choose from. Skills load on the **next** session.
 
 ### Notes for contributors
 
-- Do not layer the manual `./install.sh` or `ecc-universal` npm install on
-  top of this project-scope plugin install — pick one method only.
-- Plugin changes take effect after restarting the Claude Code session.
-- Run `claude plugin list` to confirm `ecc@ecc` is enabled, and
-  `claude plugin details ecc@ecc` to see the current component inventory and
-  projected token cost.
+- Do not layer the manual `./install.sh` or the `ecc-universal` npm package on
+  top of this — ECC's docs warn that stacking install methods duplicates
+  skills, commands and hooks.
+- Do not re-add `enabledPlugins` to `.claude/settings.json` without re-reading
+  the token measurement above. Adding the marketplace while that key is present
+  silently switches all 380 on.
+- `CLAUDE.md` carries the working rule: read the relevant skill *before*
+  writing code, not as a review checklist afterwards.
 
 ## OmniRoute integration
 
