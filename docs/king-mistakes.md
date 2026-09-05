@@ -602,18 +602,50 @@ because a third party published a release. Even once `tls-client-node` fixes
 the name, the next rename breaks it again — a fix upstream restores the build,
 it does not make it deterministic.
 
-Three checks close the obvious escape routes, so none of them is worth retrying:
+Three checks close the obvious escape routes:
 
 - **Not rate limiting.** A GitHub token changes nothing; the asset is genuinely
   named something else. Confirmed against the release API on 2026-09-05: v1.16.0
   lists exactly one linux-amd64 asset, and it is the `xgo` name.
-- **Nothing to upgrade to.** `0.2.0` is already the newest release on npm.
-- **Nothing to inject.** `omniroute/Dockerfile` declares no ARG for a token or
-  a binary path, and `omniroute/` is a squashed subtree that must not be edited.
+- **Nothing to upgrade to.** `0.2.0` is the `latest` dist-tag and the newest
+  release in omniroute's `^0.2.0` range. (npm also carries a `1.0.4` published
+  2026-04-19, before `0.2.0` — outside the range, and not a fix to reach for.)
+- **A lever exists, and it cannot be reached from outside.** This is the one
+  worth stating precisely, because "nothing to inject" was recorded here first
+  and it is wrong. Reading the published postinstall of `tls-client-node@0.2.0`:
 
-It clears when `tls-client-node` publishes a fix, or when a newer omniroute
-release arrives via `git subtree pull`. Until then those jobs stay red, and that
-is the correct state.
+  ```js
+  const requestedVersion = process.env.TLS_CLIENT_VERSION || process.env.TLS_CLIENT_API_VERSION;
+  const metadata = await fetchJson(
+      requestedVersion ? `${base}/tags/v${normalizeVersion(requestedVersion)}` : `${base}/latest`);
+  ```
+
+  With no variable set it resolves `/releases/latest` — which is why a third
+  party's release broke a build nothing here had touched. `TLS_CLIENT_VERSION=1.15.1`
+  would pin it to a release that still publishes
+  `tls-client-linux-ubuntu-amd64-1.15.1.so`, and the build would pass.
+
+  It still cannot be done from outside. The failing `RUN` is at
+  `omniroute/Dockerfile:111`, and every `ARG` in that file is declared at 135,
+  140, 152 and 169 — all *after* it. A `--build-arg` has nothing to bind to, and
+  `env_file:` is runtime, not build time. Passing it needs one `ARG`/`ENV` pair
+  added above line 111, which is an edit to a squashed subtree the next
+  `git subtree pull` silently reverts.
+
+  Do **not** reach for `TLS_CLIENT_SKIP_DOWNLOAD=1`. It makes the postinstall
+  return early with an empty `bin/`, so the guard on the next line fails anyway
+  — and if the guard were ever removed it would ship exactly the image the guard
+  exists to prevent.
+
+  And do not synthesise a patched Dockerfile in the CI step. It would turn the
+  jobs green while testing an image the deployment does not build, which is the
+  first pattern in this document.
+
+The real fix belongs upstream — `tls-client-node` should construct the asset
+name from the scheme the release actually uses, or pin the version it was built
+against. Until then, it clears when that package publishes a fix or when a newer
+omniroute arrives via `git subtree pull`. Those jobs stay red, and that is the
+correct state.
 
 **What still gets tested.** The `agent-sidecar-unit` job builds the sidecar
 image alone and runs the suite with no OmniRoute reachable, so it does not

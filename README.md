@@ -351,9 +351,16 @@ client.
 
 So the same commit builds green one day and red the next: the build is not
 reproducible, which is the defect underneath the symptom. It is not rate
-limiting, `0.2.0` is already the newest release on npm, and `omniroute/` is a
-vendored subtree that must not be edited — the three escapes are documented in
-[`docs/king-mistakes.md`](docs/king-mistakes.md) so nobody re-diagnoses it.
+limiting, and `0.2.0` is the newest release in the range omniroute pins.
+
+There *is* a lever — the postinstall honours `TLS_CLIENT_VERSION`, and `1.15.1`
+would pin it to a release that still ships the name it looks for. It cannot be
+reached from outside: the failing `RUN` is at `omniroute/Dockerfile:111` and
+every `ARG` in that file is declared after it, so a `--build-arg` has nothing to
+bind to. Passing it means editing a vendored subtree that must not be edited.
+The full reasoning, including two workarounds that look like fixes and are not,
+is in [`docs/king-mistakes.md`](docs/king-mistakes.md) so nobody re-diagnoses it.
+
 Three jobs that build `omniroute:base` are blocked behind it, in this workflow
 and in the STAX one below. No commit in this repository caused it, and reverting
 one will not clear it.
