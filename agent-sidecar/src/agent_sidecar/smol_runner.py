@@ -28,20 +28,27 @@ from .mcp_tools import (
 from .omniroute_model import smolagents_model
 
 
-# One measured failure shaped this. omniroute_web_search exposes a `provider`
-# field, and the model helpfully fills it — with `duckduckgo-free`, a provider
-# the gateway lists but has no credential for — so the search returns nothing,
-# the model retries other unconfigured providers, and the run burns its whole
-# step budget without an answer. Called with no provider, the gateway
-# auto-selects the one that IS configured (Tavily, verified). So the single
-# most useful thing to tell a tool-using agent here is: name a query, not a
-# provider.
+# Two measured failures shaped this, and they pull in opposite directions.
+#
+# First: the model filled the tool's `provider` field with `duckduckgo-free`,
+# which the gateway lists but holds no credential for, so the search returned
+# nothing and the run burned its step budget retrying other dead providers.
+#
+# The obvious fix — "do not set provider" — was tried and was WRONG. The run
+# records came back with `Argument provider is required` three times: the MCP
+# tool's schema marks the field required, and smolagents validates arguments
+# client-side before the request is ever sent. (A direct MCP call without it
+# succeeds, because the server itself is lenient. Only the client is strict.)
+#
+# So the field must be set, and set to one that exists. Of the twenty search
+# and fetch providers the gateway advertises, exactly one reports
+# `cred=configured`: tavily-search, which serves both search and fetch.
 TOOL_AGENT_INSTRUCTIONS = (
-    "When you call omniroute_web_search or omniroute_web_fetch, pass only the "
-    "query (and max_results if useful). Do NOT set the `provider` field — the "
-    "gateway selects a configured provider automatically, and naming one that "
-    "is not configured makes the search return nothing. If a tool returns no "
-    "results, do not invent an answer: say you could not find it."
+    "For omniroute_web_search and omniroute_web_fetch you MUST set "
+    '`provider` to "tavily-search". It is the only provider with credentials '
+    "configured on this gateway; any other value returns no results. "
+    "If a tool returns nothing, say you could not find it — never invent an "
+    "answer or fall back to your own memory of the world."
 )
 
 
