@@ -610,9 +610,10 @@ Three checks close the obvious escape routes:
 - **Nothing to upgrade to.** `0.2.0` is the `latest` dist-tag and the newest
   release in omniroute's `^0.2.0` range. (npm also carries a `1.0.4` published
   2026-04-19, before `0.2.0` — outside the range, and not a fix to reach for.)
-- **A lever exists, and it cannot be reached from outside.** This is the one
-  worth stating precisely, because "nothing to inject" was recorded here first
-  and it is wrong. Reading the published postinstall of `tls-client-node@0.2.0`:
+- **A lever exists, it cannot be reached from outside, and it is not free.**
+  This is the one worth stating precisely, because "nothing to inject" was
+  recorded here first and it is wrong. Reading the published postinstall of
+  `tls-client-node@0.2.0`:
 
   ```js
   const requestedVersion = process.env.TLS_CLIENT_VERSION || process.env.TLS_CLIENT_API_VERSION;
@@ -621,16 +622,39 @@ Three checks close the obvious escape routes:
   ```
 
   With no variable set it resolves `/releases/latest` — which is why a third
-  party's release broke a build nothing here had touched. `TLS_CLIENT_VERSION=1.15.1`
-  would pin it to a release that still publishes
-  `tls-client-linux-ubuntu-amd64-1.15.1.so`, and the build would pass.
+  party's release broke a build nothing here had touched.
 
-  It still cannot be done from outside. The failing `RUN` is at
+  `TLS_CLIENT_VERSION=1.15.1` would pin it to a release that still publishes
+  `tls-client-linux-ubuntu-amd64-1.15.1.so`, and the build would pass. **But
+  1.15.1 is not a clean answer.** Upstream's own attempt at this, OmniRoute PR
+  #12612, pinned to *1.16.0* precisely to get off 1.15.1's Go runtime, citing
+  CVE-2025-68121. So the two candidates trade against each other:
+
+  ```
+  1.15.1   has the asset name the package builds   carries CVE-2025-68121
+  1.16.0   fixes the CVE                           has no linux-ubuntu asset
+  ```
+
+  There is no version of `tls-client` that both satisfies
+  `tls-client-node@0.2.0`'s linux/x64 naming and is free of that CVE. That bind
+  is why OmniRoute #12747 — the same failure, reported against Docker — is still
+  open, and why #12612 was closed without merging.
+
+  **Check the severity yourself; the PR's number is wrong.** #12612 describes
+  CVE-2025-68121 as "Trivy CRITICAL, CVSS 9.8 … out-of-bounds slice read in
+  net/http". The GitHub advisory (GHSA-h355-32pf-p2xm) records it as **medium,
+  CVSS 4.8**, `AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N`, and describes something
+  else entirely: during `crypto/tls` session resumption, a `Config` whose
+  `ClientCAs`/`RootCAs` were mutated between handshakes may resume a session it
+  should have rejected. Attack complexity high, confidentiality and integrity
+  impact low. Real, worth fixing, not an emergency — and not what the PR says.
+
+  Either way it cannot be done from outside. The failing `RUN` is at
   `omniroute/Dockerfile:111`, and every `ARG` in that file is declared at 135,
   140, 152 and 169 — all *after* it. A `--build-arg` has nothing to bind to, and
-  `env_file:` is runtime, not build time. Passing it needs one `ARG`/`ENV` pair
-  added above line 111, which is an edit to a squashed subtree the next
-  `git subtree pull` silently reverts.
+  `env_file:` is runtime, not build time. #12612's diff confirms the shape:
+  it inserts `ARG TLS_CLIENT_VERSION` / `ENV` immediately above that `RUN`,
+  inside a squashed subtree the next `git subtree pull` silently reverts.
 
   Do **not** reach for `TLS_CLIENT_SKIP_DOWNLOAD=1`. It makes the postinstall
   return early with an empty `bin/`, so the guard on the next line fails anyway
@@ -642,10 +666,11 @@ Three checks close the obvious escape routes:
   first pattern in this document.
 
 The real fix belongs upstream — `tls-client-node` should construct the asset
-name from the scheme the release actually uses, or pin the version it was built
-against. Until then, it clears when that package publishes a fix or when a newer
-omniroute arrives via `git subtree pull`. Those jobs stay red, and that is the
-correct state.
+name from the scheme the release actually uses. Until then, it clears when that
+package publishes a fix or when an omniroute release carrying one arrives via
+`git subtree pull`. **Neither has happened:** v3.8.50 (2026-08-26) is still the
+newest upstream release, and #12747 is open. Those jobs stay red, and that is
+the correct state.
 
 **What still gets tested.** The `agent-sidecar-unit` job builds the sidecar
 image alone and runs the suite with no OmniRoute reachable, so it does not
