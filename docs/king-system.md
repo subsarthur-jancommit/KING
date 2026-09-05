@@ -87,12 +87,32 @@ Two things to know about it:
 
 ## 4. Routing
 
-### Why `auto/*` is not the answer
+### `auto/*` is retired, and why
 
 `auto` ranks by **speed**, and the fastest provider is always the free one.
 Sixteen consecutive `auto` calls landed on `opencode/big-pickle`; none reached
 OpenRouter or `agy`. That is `auto` working correctly, and it is also why buying
 keys does not widen what `auto` serves. Paid capacity just sits there.
+
+Worse, the tie is inverted here. `agy` is subscription quota with **no marginal
+cost per call**, so the strongest models in this stack are also the cheapest
+ones to call — and `auto` is the one thing that will never reach them.
+
+It cannot be fixed from outside: the candidate pool excludes `agy` and
+`openrouter` entirely, and the strategy is pinned to LKGP at
+`virtualFactory.ts:812`, inside the vendored subtree this repo must not edit.
+
+**So nothing calls it any more.** Re-measured on 2026-09-04 before the switch:
+`auto/best-chat` was served by `big-pickle` three times out of three. The last
+caller was `web_research`, whose synthesis step now uses `websearch-tiers` —
+Opus thinking-high first. Verified end to end: the flow searched six sources,
+cited them, and reported that endoflife.date says 2 June 2026 while GitHub,
+Chocolatey and mise all say 3 June, instead of silently picking one.
+
+An audit of all six flows found no other `auto/*` caller. `search_web` was
+already on `websearch-tiers`, `review_code` on `paid-first`, `ask_free_model`
+stays on `free-then-local` deliberately, and both gateway flows are pure code
+steps that call no model at all.
 
 ### Three explicit combos
 
