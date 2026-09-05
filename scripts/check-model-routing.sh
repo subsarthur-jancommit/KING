@@ -30,6 +30,7 @@ set -eu
 
 BASE="${OMNIROUTE_BASE_URL:-http://localhost:20128}"
 MODEL="${CHECK_MODEL:-ollama/qwen2.5:1.5b-instruct-q4_K_M}"
+SIDECAR="${AGENT_SIDECAR_URL:-http://127.0.0.1:8100}"
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -67,7 +68,44 @@ echo
 plain=$(probe "plain prompt" "")
 agent=$(probe "agent-shaped prompt" "At each step, explain your reasoning.")
 
+# The two probes above use a one-line trigger, which is a proxy for what the
+# sidecar sends. Entry 20 in docs/king-mistakes.md is about exactly that gap:
+# the destination moves with the prompt, so a number measured with a probe does
+# not describe production. This asks the real path, with the real prompt.
+#
+# Optional: it needs the sidecar up and its token readable. A missing sidecar
+# is not a failure of this check — the two probes above already answered the
+# question it exists to answer.
+sidecar_served=""
+tok=$(sed -n 's/^AGENT_SIDECAR_AUTH_TOKEN=//p' agent-sidecar/.env 2>/dev/null | tail -n 1)
+if [ -n "$tok" ]; then
+    task='{"task":"What is 2 plus 2? Answer with the number only.","model":"'"$MODEL"'"}'
+    body=$(curl -s -m 300 -X POST "$SIDECAR/run" \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $tok" \
+        -d "$task" 2>/dev/null || true)
+    sidecar_served=$(printf '%s' "$body" | sed -n 's/.*"served_by":"\([^"]*\)".*/\1/p')
+    if [ -n "$sidecar_served" ]; then
+        printf '  %-22s served_by=%s\n' "sidecar /run" "$sidecar_served" >&2
+    else
+        printf '  %-22s no served_by (sidecar down, or the run failed)\n' "sidecar /run" >&2
+    fi
+fi
+
 echo
+# Substring test rather than equality: served_by carries the bare model name,
+# and what matters is only whether it is still the local one.
+if [ -n "$sidecar_served" ] && [ "${sidecar_served#*qwen}" = "$sidecar_served" ]; then
+    red "The production path left the host."
+    red "  asked $MODEL, served by $sidecar_served"
+    echo
+    echo "This is the measurement that matters — the prompt the sidecar really"
+    echo "sends, not a probe's approximation of one. The run itself is flagged"
+    echo "degraded with a 'local-only work left the host' step error, which is"
+    echo "all this repo can do; the routing is in the vendored subtree."
+    echo
+fi
+
 if [ "$plain" = "$agent" ]; then
     green "Both prompts were served by '$plain'."
     green "The content-based override is NOT reproducing. Re-read docs/king-system.md 5b"
