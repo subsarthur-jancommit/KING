@@ -1,9 +1,30 @@
 # KING — what is built, what works, and what does not
 
-**Verified 2026-08-30 against the live VPS (`34.101.62.94`).** Every number here
+**Verified against the live VPS (`34.101.62.94`) — most recently 2026-09-05.**
 was measured, not estimated. Where something is unproven, unmeasured, or broken,
 it says so — this document is only useful if it can be trusted when it reports
 bad news.
+
+---
+
+## Contents
+
+- [1. What KING is](#1-what-king-is)
+- [2. What is actually running](#2-what-is-actually-running)
+- [3. Providers available today](#3-providers-available-today)
+- [4. Routing](#4-routing)
+- [5. Workflows and agentic patterns](#5-workflows-and-agentic-patterns)
+- [5a. The bridge — how Claude reaches any of this](#5a-the-bridge-how-claude-reaches-any-of-this)
+- [5b. The agentic layer](#5b-the-agentic-layer)
+- [6. The code graph](#6-the-code-graph)
+- [7. Guards](#7-guards)
+- [8. Access control](#8-access-control)
+- [9. Costs, honestly](#9-costs-honestly)
+- [10. What was tried and abandoned](#10-what-was-tried-and-abandoned)
+- [11. Open, deferred, and risky](#11-open-deferred-and-risky)
+- [12. Use cases this supports today](#12-use-cases-this-supports-today)
+- [13. Scope for what comes next](#13-scope-for-what-comes-next)
+- [Rules that survived contact with production](#rules-that-survived-contact-with-production)
 
 ---
 
@@ -424,7 +445,7 @@ variants show their reasoning in ~108.
 
 ---
 
-## 5. The bridge — how Claude reaches any of this
+## 5a. The bridge — how Claude reaches any of this
 
 Until 2026-09-04 Claude had five tools while this VPS ran 1,019 models, a
 59k-node code graph and an agent runtime. The gap was never capability; nothing
@@ -545,7 +566,7 @@ usable now rather than after a change only the operator can make.
 
 ---
 
-## 5a. The agentic layer
+## 5b. The agentic layer
 
 Live since 2026-09-01 as the `agent-sidecar-http` profile: a smolagents
 `CodeAgent` reachable over HTTP, running on whichever model the caller names.
