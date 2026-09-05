@@ -1189,6 +1189,17 @@ The gateway is on the public internet (`401` without a key, verified from
 outside). Keys are scoped so that what a robot can reach is narrower than what
 the operator can.
 
+> **The model scoping below is not a security boundary.** Measured 2026-09-05:
+> a key allowing only `ollama/qwen2.5:1.5b-instruct-q4_K_M` was served
+> `oc/big-pickle` — a model it is forbidden from using — when the prompt tripped
+> the gateway's content-based reroute. No 403, no warning. The scopes hold for
+> ordinary prompts and are cost control, not access control, against a prompt
+> that trips the switch. Details and the measurement in §5b.
+>
+> The *scope* column (`manage`, `search`, `models,routing,health`) is a
+> different mechanism and was not shown to be bypassable — only the per-key
+> model allow/deny lists were.
+
 | Key | Access | Reason |
 |---|---|---|
 | `claude-code` | all | The operator's own interactive use |
