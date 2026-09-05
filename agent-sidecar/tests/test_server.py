@@ -1061,3 +1061,21 @@ def test_mcp_ask_model_surfaces_a_gateway_failure_instead_of_raising(monkeypatch
 
     assert "ConnectionError" in body["error"]
     assert body["requested_model"] == "paid-first"
+
+
+def test_the_pydantic_runner_returns_the_same_keys_as_the_smolagents_one():
+    """The second runner is advertised by /run and easy to forget.
+
+    Verified working on the deployment — it answers, and reports steps and
+    tokens as null because it is one typed call with no loop to count. Null is
+    the honest answer there; zeroes would read as "ran nothing" and "was free",
+    which are different claims and both wrong. This pins the shape so the two
+    runners cannot drift apart the way the HTTP and MCP responses did.
+    """
+    import inspect
+
+    from agent_sidecar import pydantic_runner
+
+    src = inspect.getsource(pydantic_runner.run_sync)
+    for key in ("result", "steps", "step_errors", "tokens", "served_by"):
+        assert f'"{key}"' in src, f"pydantic_runner stopped returning {key}"
