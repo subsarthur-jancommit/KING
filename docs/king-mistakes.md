@@ -392,6 +392,39 @@ already returns before eliminating anything by hand.
 
 ---
 
+## 18. Assumed a library handled a list item-by-item, and shipped a new SPOF
+
+**What happened.** Adding the code graph as a second MCP server for the agent,
+I passed both servers to `smolagents.MCPClient` as a list — which its signature
+accepts and which reads better than managing two clients. Then I wrote in the
+docs that "a graph outage costs it four tools, not eleven".
+
+Testing that sentence broke it. With the graph pointed at a dead port the
+client raised `TimeoutError` and the agent loaded **zero** tools. The list is
+all-or-nothing.
+
+**What that actually did.** It took an optional capability and made it a single
+point of failure for a required one. Before the change, web search worked
+whenever the gateway was up. After it, web search also required the code graph
+— a service in a different profile that a `docker compose down` on one profile
+would take out.
+
+**Why the shape is worth recording.** Accepting a list looks like a promise
+about independence. It is only a promise about the argument type. The failure
+mode of a collection API — partial success, or none — is a separate question
+from whether it takes a collection, and it is not usually in the signature.
+
+**What caught it.** Writing the resilience claim down, then testing the claim
+rather than the feature. The feature worked perfectly in every test I had run:
+both servers up, eleven tools, correct answers.
+
+**Rule.** When a change adds a dependency, test the new dependency *failing*,
+not just working. And treat "this API accepts a list" as saying nothing about
+what happens when one element is bad — find out, because the tidy version and
+the resilient version look identical until something breaks.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:

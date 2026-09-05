@@ -835,7 +835,15 @@ inverting the point. One client per server, connected independently, and each
 failure reported in `tools.error` rather than swallowed.
 
 The claim in the paragraph above was written before it was tested, and testing
-it is what found the regression.
+it is what found the regression. Re-measured after the fix, with the graph
+pointed at a dead port:
+
+```
+tools loaded  7          (was 0)
+offered       110        OmniRoute only
+missing       get_neighbors, get_node, query_graph, graph_stats
+error         http://codegraph-serve:9999/mcp: TimeoutError: Couldn't connect…
+```
 
 The PR tools (`list_prs`, `get_pr_impact`, `triage_prs`) are deliberately left
 out. An agent that reads web pages should not be reaching into pull requests.
