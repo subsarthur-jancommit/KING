@@ -1258,10 +1258,16 @@ Each of these is running, not planned.
 1. **Code review without spending Claude context.** A ten-file diff goes through
    `review_code` on Opus 4.6; Claude reads only the findings and decides which
    matter. Proven on a real race condition and an `eval()` injection.
+   Re-checked 2026-09-05 against two planted bugs and it caught both in 11.3 s,
+   including the subtle one — `items[len(items) - n:]` wrapping to the end of
+   the list when `n` exceeds the length, explained with a worked example rather
+   than a rule.
 2. **"If I change this, what breaks?"** One `get_neighbors` call against the code
    graph, answered with file and line numbers, instead of reading twenty files
    into context that stays there for the rest of the session.
-3. **Current-facts research with citations.** `web_research` answered "latest
+3. **Current-facts research with citations.** Both retrieval flows re-verified
+   2026-09-05: `search_web` answered in 10.9 s over five sources, `web_research`
+   in 23 s over six, each at $0.008. `web_research` answered "latest
    stable Caddy and its release date" as v2.11.4 / 3 June 2026 across four
    corroborating sources, and flagged a one-day discrepancy on one of them as a
    likely timezone artefact.
