@@ -112,6 +112,12 @@ services:
       # tool returning a large page moves the context a long way in a single
       # step. Generous on purpose — 0 disables it.
       - AGENT_SIDECAR_MAX_TOKENS=${AGENT_SIDECAR_MAX_TOKENS:-}
+      # The iteration ceiling, alongside the token one rather than reachable
+      # only through agent-sidecar/.env. Two bounds on the same runaway
+      # configured in two different files is how a guard ends up reading the
+      # wrong one — see king-mistakes.md entry 16. Empty keeps the code
+      # default of 8; a caller may lower it per request, never raise it.
+      - AGENT_SIDECAR_MAX_STEPS=${AGENT_SIDECAR_MAX_STEPS:-}
       # How many agent runs this container will do at once. The cgroup caps
       # it at 1 GB / 1 CPU so it cannot reach the host, but an OOM inside that
       # cgroup kills the runs already in flight along with the surplus that
@@ -285,6 +291,12 @@ services:
       # tool returning a large page moves the context a long way in a single
       # step. Generous on purpose — 0 disables it.
       - AGENT_SIDECAR_MAX_TOKENS=${AGENT_SIDECAR_MAX_TOKENS:-}
+      # The iteration ceiling, alongside the token one rather than reachable
+      # only through agent-sidecar/.env. Two bounds on the same runaway
+      # configured in two different files is how a guard ends up reading the
+      # wrong one — see king-mistakes.md entry 16. Empty keeps the code
+      # default of 8; a caller may lower it per request, never raise it.
+      - AGENT_SIDECAR_MAX_STEPS=${AGENT_SIDECAR_MAX_STEPS:-}
       # How many agent runs this container will do at once. The cgroup caps
       # it at 1 GB / 1 CPU so it cannot reach the host, but an OOM inside that
       # cgroup kills the runs already in flight along with the surplus that

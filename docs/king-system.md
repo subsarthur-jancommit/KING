@@ -505,6 +505,34 @@ established plus a step error, which makes `degraded` true without them needing
 to know the feature exists. Any other agent error still propagates as a 500 —
 the guard checks that the interrupt was its own before swallowing anything.
 
+### Every knob, and which file sets it
+
+Compose's `environment:` **overrides** `env_file:`, so an interpolated variable
+is decided by the root `.env` and a value in `agent-sidecar/.env` cannot take
+effect at all. Getting that backwards made preflight report the wrong executor
+for weeks — `king-mistakes.md` entry 16 — so the split is written down rather
+than inferred.
+
+| Variable | Default | Set in | What it does |
+|---|---|---|---|
+| `AGENT_SIDECAR_EXECUTOR` | `local` | root `.env` | Where a `CodeAgent` runs its Python. `local` is in-process; `e2b`/`modal` are off-host |
+| `AGENT_SIDECAR_AUTHORIZED_IMPORTS` | empty | root `.env` | **Means two opposite things.** Under `local` it restricts imports and is the whole boundary; under `e2b`/`modal` smolagents pip-installs it and restricts nothing |
+| `AGENT_SIDECAR_AGENT_TOOLS` | the seven | root `.env` | Tool allowlist by exact name. `none` for no tools |
+| `AGENT_SIDECAR_MAX_STEPS` | `8` | root `.env` | Iteration ceiling. A caller may lower it per request, never raise it |
+| `AGENT_SIDECAR_MAX_TOKENS` | `250000` | root `.env` | Cost backstop. `0` disables |
+| `AGENT_SIDECAR_MAX_CONCURRENT` | `2` | root `.env` | Runs at once before `429`. `0` disables |
+| `AGENT_SIDECAR_EXEC_ENABLED` | off | root `.env` | The `vps_exec` shell. Read what it grants first |
+| `AGENT_SIDECAR_MCP_ALLOWED_HOSTS` | loopback | root `.env` | Extra `Host` values the MCP endpoint accepts behind a proxy |
+| `AGENT_SIDECAR_RUN_JOURNAL` | `/audit/runs.jsonl` | compose literal | Where runs are recorded |
+| `OMNIROUTE_API_KEY` | — | `agent-sidecar/.env` | Scoped `models,routing,health`. Never `manage` |
+| `OMNIROUTE_MCP_API_KEY` | — | `agent-sidecar/.env` | `manage` scope. Without it the allowlist loads nothing |
+| `AGENT_SIDECAR_AUTH_TOKEN` | — | `agent-sidecar/.env` | Bearer for `/run`. Unset means **503 on everything**, not open |
+
+The three ceilings — steps, tokens, concurrency — are configured the same way
+on purpose. `MAX_STEPS` used to be reachable only through `agent-sidecar/.env`
+while the other two came from the root, which is the arrangement that produces
+a guard reading the wrong file.
+
 ### Read `degraded` before you read `result`
 
 The agent fabricates when the sandbox stops it. Blocked from fetching a URL, it
