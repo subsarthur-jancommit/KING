@@ -772,6 +772,15 @@ the surplus that caused it. `AGENT_SIDECAR_MAX_CONCURRENT` (default 2, matching
 the one CPU) now refuses the surplus with `429` and `degraded: true`, which
 loses one caller instead of all of them.
 
+Verified against the running service rather than only in tests — three
+simultaneous requests against a limit of two:
+
+```
+permintaan 1 -> HTTP 200
+permintaan 2 -> HTTP 429   busy: 2 agent run(s) already in flight
+permintaan 3 -> HTTP 200
+```
+
 Still open, and deliberately: there is **no rate limiting**. The bearer token is
 the control, and the concurrency bound caps what a leaked one could consume at
 any instant — but not over time. Worth revisiting if that token is ever shared
