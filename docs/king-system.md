@@ -447,6 +447,24 @@ field required and smolagents validates arguments client-side before the
 request is sent. (A direct MCP call omitting it succeeds; the server is lenient,
 the client is not.) So the instruction names `tavily-search` explicitly.
 
+### The default model was left alone, and that was measured
+
+`AGENT_SIDECAR_MODEL_ID` defaults to `opencode/big-pickle`, the free tier. The
+obvious move after retiring `auto/*` was to change it on the same argument —
+`agy` is subscription quota, so the strongest models cost nothing extra.
+
+Tested instead of assumed, and the argument did not survive. Given the same
+task with tools, the default answered correctly in **2 steps, no step errors,
+`degraded: false`** — identical to `agy/claude-sonnet-4-6` on the same task.
+The free model drives a `ToolCallingAgent` perfectly well.
+
+So the default stays. The `auto/*` case was different in kind: there the free
+tier was chosen *instead of* better models on work where better mattered, and
+the router could never be talked out of it. Here the free model produces the
+same answer in the same number of steps, and a caller who wants a stronger one
+passes `model` per request — which the acceptance run did, and which is the
+right place for that decision.
+
 ### The tools it holds, and the one it never will
 
 Until 2026-09-04 the agent ran with `tools=[]`. It could execute Python in a

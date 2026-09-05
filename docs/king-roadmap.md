@@ -206,16 +206,35 @@ terminal can reach this service:
 
 This phase is not optional and not a footnote. Phase 3 must not ship without it.
 
-### Phase 3 — Give the agent tools
+### Phase 3 — Give the agent tools — **done 2026-09-04**
 
-`mcp_tools.py` exists (48 lines) and can load OmniRoute's MCP tools, gated
-behind a separate, more-privileged key. Turning it on is what makes the agent
-worth having: it gains web research, the code graph, and whatever else the
-gateway exposes.
+Live. The gateway offers 110 tools; the agent holds seven, by allowlist, and
+`vps_exec` can never be among them whatever the configuration says.
 
-Note the existing design constraint, already documented in `config.py`: the
-MCP key needs `manage`/`admin` scope, and the sidecar's ordinary key
-deliberately does not carry it.
+Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and
+answered in 2 steps, no step errors, `degraded: false`.
+
+Three things had to be true that were not obvious going in:
+
+1. **A `manage`-scoped key was needed and the admin password was lost.** Both
+   the `INITIAL_PASSWORD` on disk and the operator's recollection were rejected.
+   Recovered through OmniRoute's own mechanism — a non-bcrypt value in
+   `key_value`/`settings`/`password` is re-hashed on next login — after backing
+   up the database. See §11 of `king-system.md`.
+2. **MCP tools and a sandboxed `CodeAgent` cannot coexist.** A remote executor
+   serializes each tool's source into the sandbox and `MCPAdaptTool` fails that
+   validation. The fix is also the right architecture: tools now mean a
+   `ToolCallingAgent`, which executes no Python at all, so an agent that reads
+   web pages can never turn a page into code on this host.
+3. **The model must name a search provider, and only one is configured.** Left
+   alone it chose `duckduckgo-free`, which the gateway lists and has no
+   credential for; told to omit the field it hit `Argument provider is
+   required`, because the MCP schema marks it required and smolagents validates
+   client-side. It is pinned to `tavily-search`.
+
+Preflight now fails to be quiet about the half-configured case: an allowlist
+without a key produces an agent that answers from training data and sounds
+exactly like one that searched.
 
 ### Phase 4 — Per-task economics
 
@@ -230,6 +249,12 @@ agy unavailable    ->  paid-first    the existing fallback
 
 This is what finally makes bought keys get used. Today they sit unused because
 `paid-first` always stops at tier 1.
+
+**Partly done 2026-09-04.** `auto/*` is retired — re-measured at three
+big-pickle hits out of three before the switch, and no flow calls it any more.
+`web_research` moved to `websearch-tiers`, and an audit of all six flows found
+no other caller. What remains of this phase is the per-task argument itself:
+choice is still per-flow and per-call, not derived from the task.
 
 ---
 
