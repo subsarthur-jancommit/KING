@@ -425,6 +425,38 @@ the resilient version look identical until something breaks.
 
 ---
 
+## 19. A control that passed its test by coincidence
+
+**What happened.** Testing whether the gateway's content-based reroute respects
+per-key model restrictions, I created a key allowing only
+`opencode/big-pickle` and sent both a plain and an agent-shaped prompt. Both
+came back served by `big-pickle`. That reads as enforcement, and I was one
+sentence from writing "restrictions are respected".
+
+**Why it was meaningless.** `big-pickle` is where the reroute lands. The key
+permitted exactly the model the bypass would have chosen anyway, so a passing
+result and a failing one were indistinguishable — the test could not have
+detected the thing it was for.
+
+**The test that worked.** A key allowing only
+`ollama/qwen2.5:1.5b-instruct-q4_K_M` — a model the reroute never lands on.
+Plain prompt: served by ollama. Agent-shaped prompt: served by `oc/big-pickle`,
+a model that key is explicitly forbidden from using, with no 403.
+
+**And the same day, again.** Having written that scopes were "not shown to be
+bypassable", I tested that too. A key with `scopes: ["search"]` and no model
+list completed a `/v1/chat/completions` call. Scopes gate the management API,
+not inference — so a documented claim that a search-scoped key gets "403 on
+every real model" cannot be true for the stated reason.
+
+**Rule.** When testing whether a control holds, choose a case where the control
+and the bypass predict *different* outcomes. If the allowed value is also the
+value the bypass produces, a pass proves nothing. And "not shown to be
+bypassable" is a statement about what you tested, not about the system — say so
+in those words, or go and test it.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:
