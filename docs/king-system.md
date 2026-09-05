@@ -940,6 +940,14 @@ must not silently look like it logged either, so the failure goes to stderr and
 into the container log. That path has a test, because "best-effort" is the kind
 of promise that quietly stops being true.
 
+**It is bounded.** An append-only file that nothing rotates is a slow leak, and
+a full disk takes down every container on this host rather than only the one
+that filled it. Capped at 5 MB; measured at 496 bytes an entry, that holds
+about 10,500 runs. Past the cap the newest half is kept rather than the file
+emptied — history that vanishes periodically and without warning is worse than
+a bounded window — and a line is written into the journal saying a trim
+happened, so a reader never mistakes what survived for the whole story.
+
 Read it with `./scripts/agent-report.sh [days]`, which is the half that stops
 the journal being data nobody looks at:
 
