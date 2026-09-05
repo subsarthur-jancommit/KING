@@ -110,8 +110,12 @@ and they are not refusing tool calls — probed directly with a tool definition,
 What is not yet established is why the agent's request differs enough to fall
 through. It sends seven MCP tool schemas and a longer system prompt than the
 probe did, which is the obvious suspect and is not yet evidence.
-`omniroute_explain_route` answers this but needs the `requestId` of a real
-call, which the sidecar does not currently capture.
+`omniroute_explain_route` looked like the way to settle it and is **not** —
+tried both id forms the gateway exposes for a real call, the body's
+`chatcmpl-…` and the `x-request-id` header UUID, and both come back
+`comboUsed: unknown, providerSelected: unknown, modelUsed: unknown`. It has no
+record of these requests, so capturing a request id in the sidecar would buy
+nothing. Recorded so the next person does not spend the same hour.
 
 **Why it matters more than it looks.** `paid-first` exists so that work worth
 doing well is done well. An agent that silently receives the free tier defeats
