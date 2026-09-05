@@ -47,7 +47,7 @@ routine work should be spent on instead.
 
 ## 2. What is actually running
 
-Eight containers, all healthy at time of writing.
+Nine containers, all healthy at time of writing.
 
 | Container | Role | Profile |
 |---|---|---|
@@ -56,12 +56,16 @@ Eight containers, all healthy at time of writing.
 | `ap-redis` | Activepieces queue | `workflow` |
 | `ollama` | Local model | `localmodel` |
 | `codegraph-serve` | Code graph over MCP | `codegraph` |
+| `agent-sidecar-http` | The agent, over HTTP and MCP | `agent-sidecar-http` |
 | `caddy` | TLS and reverse proxy | `proxy` |
 | `otel-collector` | Traces to Langfuse | `tracing` |
 | `redis` | Gateway cache | `base` |
 
-**Host budget:** 4,415 MB of 7,936 MB used, 3,520 MB free. Disk 30 GB of 48 GB
-(62%).
+**Host budget (2026-09-05):** 3,496 MB of 7,936 MB used, 4,439 MB available.
+Disk 35 GB of 48 GB (73%) — that climbed to 77% during a day of repeated
+image builds, and `docker builder prune -f --filter until=24h` gave 3.3 GB
+back. Preflight now names reclaimable build cache on a pass, not only when
+the disk check fails.
 
 Every added service is opt-in via `profiles:` and default-off, carries equal
 `mem_limit`/`memswap_limit` so it OOMs inside its own cgroup rather than
