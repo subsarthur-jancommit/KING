@@ -349,6 +349,20 @@ seeds a fresh named volume's ownership from the image path. The audit helper
 writes its own failures to stderr rather than swallowing them, which is the
 only reason the second was a five-minute fix.
 
+**Verified through the public bridge on 2026-09-05**, not just locally. All
+four tools are offered — `run_agent`, `ask_model`, `vps_status`, `vps_exec` —
+and a real command ran and was audited:
+
+```
+vps_status  ->  7936 MB total, 4418 MB available | 37G of 48G | load 0.42
+vps_exec    ->  exit_code 0, stdout carried the repo's HEAD and df output
+audit       ->  2026-09-05T05:33:22+00:00  timeout=60  git -C /workspace log …
+```
+
+The response fields are `exit_code`, `stdout`, `stderr`, `truncated`, `cwd` —
+worth naming, because a caller reaching for `returncode` gets `None` and would
+read a successful command as an unknown one.
+
 ### Memory persists without extra infrastructure
 
 OmniRoute's memory runs on SQLite + sqlite-vec + FTS5. Verified end to end:
