@@ -41,7 +41,15 @@ jobs:
           sed -i "s|^# OMNIROUTE_DISABLE_BACKGROUND_SERVICES=false|OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true|" omniroute/.env
           echo "INITIAL_PASSWORD=${INITIAL_PASSWORD}" >> "$GITHUB_ENV"
 
-      - name: Pre-build omniroute:base
+      # This workflow's job IS the build. `stax-smoke` pulls a published image
+      # instead, because its jobs test our wiring against a running gateway and
+      # were failing on a build none of them depend on. That split only works
+      # while this side keeps building from source: if both pulled, nothing
+      # would ever exercise omniroute/Dockerfile and this workflow would go
+      # green while the build stayed broken.
+      - name: Build omniroute:base from source
+        env:
+          CI_OMNIROUTE_BUILD: "1"
         run: ./scripts/ci-build-omniroute-base.sh
 
       - name: Build and start (root compose wrapper, base profile)

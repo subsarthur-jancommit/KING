@@ -175,7 +175,7 @@ jobs:
           sed -i "s|^# OMNIROUTE_DISABLE_BACKGROUND_SERVICES=false|OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true|" omniroute/.env
           echo "INITIAL_PASSWORD=${INITIAL_PASSWORD}" >> "$GITHUB_ENV"
 
-      - name: Pre-build omniroute:base
+      - name: Provide omniroute:base (pull the pinned published image)
         run: ./scripts/ci-build-omniroute-base.sh
 
       - name: Start OmniRoute (base profile, reuses the pre-built image)
@@ -516,7 +516,7 @@ jobs:
           sed -i "s|^# OMNIROUTE_DISABLE_BACKGROUND_SERVICES=false|OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true|" omniroute/.env
           echo "OH_AGENT_CANVAS_SECRET_KEY=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
 
-      - name: Pre-build omniroute:base
+      - name: Provide omniroute:base (pull the pinned published image)
         run: ./scripts/ci-build-omniroute-base.sh
 
       - name: Start OmniRoute + OpenHands Agent Canvas (reuses the pre-built image)
@@ -625,7 +625,7 @@ jobs:
       - name: Preflight must pass for base + workflow
         run: ./scripts/stax-preflight.sh base workflow
 
-      - name: Pre-build omniroute:base
+      - name: Provide omniroute:base (pull the pinned published image)
         run: ./scripts/ci-build-omniroute-base.sh
 
       - name: Start OmniRoute + Activepieces
