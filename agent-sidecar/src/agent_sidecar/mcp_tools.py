@@ -10,6 +10,14 @@ check. That is a materially more privileged key than the sidecar's default
 OMNIROUTE_MCP_API_KEY env var it reads — is opt-in and separate on purpose.
 Provision that key yourself, understanding the elevated trust, only if you
 actually want the sidecar to call OmniRoute's MCP tools.
+
+Only the smolagents runner loads tools. `pydantic_runner` is one typed call
+with no loop, so there is no step at which it could act on a tool result —
+a toolset there would be a tool the model can see and never use. A
+`pydantic_ai_mcp_toolset()` helper lived here unused for exactly that reason
+and was removed once the multi-server design made it wrong as well as dead:
+it connected a single server, which is the all-or-nothing shape that made one
+dead service cost the agent all of its tools.
 """
 
 from __future__ import annotations
@@ -56,19 +64,6 @@ def smolagents_mcp_server_parameters(settings: Settings) -> list[dict]:
         )
     return servers
 
-
-def pydantic_ai_mcp_toolset(settings: Settings):
-    if not settings.omniroute_mcp_api_key:
-        raise RuntimeError(
-            "OMNIROUTE_MCP_API_KEY is not set — MCP tool loading is opt-in, "
-            "see agent_sidecar.mcp_tools module docstring."
-        )
-    from pydantic_ai.mcp import MCPToolset
-
-    return MCPToolset(
-        settings.omniroute_mcp_url,
-        headers={"Authorization": f"Bearer {settings.omniroute_mcp_api_key}"},
-    )
 
 # Never handed to an agent. Not a policy default — an invariant.
 #
