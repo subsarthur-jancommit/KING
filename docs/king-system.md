@@ -126,10 +126,33 @@ runs. That explains the measurement that looked so tidy earlier: the free-tier
 default answered exactly as well as `agy/claude-sonnet-4-6`, because both were
 `big-pickle`.
 
-**Not yet fixed.** `omniroute/open-sse/services/combo/autoStrategy.ts` runs an
-intent classifier that is active by default, while `taskAwareRouter` and
-`complexityRouter` ship disabled. `omniroute/` is a vendored subtree that must
-not be edited, so any fix is a setting or nothing.
+**The mechanism, from the gateway's own header.** `x-omniroute-decision` names
+the strategy it chose, and that is what changes:
+
+```
+no system prompt      decision=strategy=single; provider=antigravity  -> claude-sonnet-4-6
+smolagents system     decision=strategy=auto;   provider=oc           -> big-pickle
+```
+
+So it is not that a different model was picked within one strategy. The gateway
+**switches strategy** on the content, from `single` — honour what was asked for
+— to `auto`, and `auto` is the router already measured landing on `big-pickle`
+three times out of three. Retiring `auto/*` from the flows removed callers who
+*asked* for it; it did not stop the gateway choosing it.
+
+**What triggers the switch is not yet identified.** A shortened version of the
+same prompt does *not* trigger it — that request came back `strategy=single` —
+so it is not simply "mentions tools" or "has a system message". The `api_keys`
+table carries an `auto_resolve` column that is the obvious next thing to check.
+
+`omniroute/open-sse/services/combo/autoStrategy.ts` runs an intent classifier
+active by default, while `taskAwareRouter` and `complexityRouter` ship
+disabled. `omniroute/` is a vendored subtree that must not be edited, so any
+fix is a setting or nothing.
+
+**Diagnostic worth keeping:** `x-omniroute-decision`, `-provider`, `-model` and
+`-request-id` are on every response. Reading them first would have skipped most
+of the eight eliminations above.
 
 ### The ladder was probed, not assumed — 2026-09-05
 
