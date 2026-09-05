@@ -87,6 +87,32 @@ Two things to know about it:
 
 ## 4. Routing
 
+### The ladder was probed, not assumed — 2026-09-05
+
+An alert fired at 04:41 (`monitor.error_rate`, 38% over 15 minutes, WARNING)
+naming three failures: `openrouter/openai/gpt-5.6-luna` 402,
+`antigravity/gemini-3.7-flash-high` 502 "Provider returned empty content", and
+`opencode/nemotron-3-ultra-free` 502.
+
+Two of those are tiers of `paid-first` and `websearch-tiers`, so the ladder was
+probed rather than reasoned about. **All five tiers answered correctly**:
+
+```
+agy/claude-opus-4-6-thinking-high         ok
+agy/claude-sonnet-4-6                     ok
+agy/gemini-3.7-flash-high                 ok
+openrouter/deepseek/deepseek-v4-pro-0813  ok
+opencode/big-pickle                       ok
+```
+
+So the failures were transient, and the obvious inference from the alert —
+"OpenRouter is out of credit, tier 3 is dead" — would have been wrong twice
+over. The 402 was for a *different, expensive* model requesting 65,536 tokens,
+and the agy 502 cleared on its own.
+
+Which is the argument for the monitor and against acting on it directly: a
+15-minute error ratio is a signal to go and measure, not a conclusion.
+
 ### `auto/*` is retired, and why
 
 `auto` ranks by **speed**, and the fastest provider is always the free one.
@@ -875,7 +901,7 @@ is worse than one that stops.
 | **OmniRoute admin password was reset** | Done 2026-09-04 | The old one was lost — `POST /api/auth/login` rejected both the 24-character `INITIAL_PASSWORD` in `omniroute/.env` and a value the operator supplied, and no OIDC is configured. Recovered through OmniRoute's own mechanism: the hash lives in `key_value`/`settings`/`password`, and `ensurePersistentManagementPasswordHash` re-hashes a non-bcrypt value there on next login, so writing a plaintext password into that row restores access with no restart. Database backed up first to `db_backups/manual_20260904T153154Z_*`. The new password is with the operator and is first on the rotation list |
 | Agent tools | **Live 2026-09-04** | `agent_tools_active: true`. Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and answered in 2 steps with no step errors and `degraded: false` |
 | `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |
-| OpenRouter balance | Low | Web flows no longer depend on it, but `paid-first` tier 3 does |
+| OpenRouter balance | Low, and the failure is shaped by `max_tokens` | A 402 is not a flat "out of credits": it reads *"You requested up to 65536 tokens, but can only afford 7040"*. The cost of the **reservation** is what fails, so the same balance serves a 400-token request and refuses a 65k one. `paid-first` tier 3 answered normally when probed — keep `max_tokens` modest on OpenRouter tiers and it keeps working |
 | Tavily credit | Finite | No fallback by design — it will fail loudly |
 | `agy` subscription risk | Accepted knowingly | Flagged `subscriptionRisk: true` in OmniRoute's own catalog |
 | `agy` agentic loops | **Broken** | Round-two 502 also triggers a cooldown affecting other traffic |
