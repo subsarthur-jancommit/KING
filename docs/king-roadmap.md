@@ -334,6 +334,19 @@ per run"*, and that figure is written into `docs/king-system.md`.
 An agent that loops is the one thing here that can spend without bound. A run
 must have a measured cost and `maxSteps` must be finite.
 
+**Done 2026-09-05.** Both halves.
+
+*Known*: `tokens` travels in every `/run` response, and `/audit/runs.jsonl`
+keeps it, readable with `./scripts/agent-report.sh`. The figure, from the
+search gateway's own `search_cost_usd` rather than an estimate: **1 Tavily
+search ($0.008) + N model calls at no marginal cost = $0.008 per run** — true
+for the free-tier default and for `agy` alike, so the entire cost is retrieval
+and the model choice moves it by nothing.
+
+*Bounded*: `max_steps` was already finite; `AGENT_SIDECAR_MAX_TOKENS` now
+bounds what those steps may cost, since steps limit how often the loop turns
+and not what one turn spends.
+
 ### 4.7 The documentation states what is true
 
 `docs/king-system.md` gains an "Agentic layer" section carrying the same

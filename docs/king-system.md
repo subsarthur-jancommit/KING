@@ -409,6 +409,25 @@ disconnected at 300 s. It is a single-call worker, not an agent. That is also
 why `max_steps` exists: a caller giving up does not stop an agent, so the
 ceiling lives in the service (default 8, a caller may lower it, never raise).
 
+### What a run actually costs
+
+Measured on the deployment, same task both times — "search the web for the
+release date of Caddy 2.11.4":
+
+| | Model | Tokens in / out | Retrieval | Marginal cost |
+|---|---|---|---|---|
+| default | `opencode/big-pickle` | 3,884 / 143 | 1 Tavily search | **$0.008** |
+| named | `agy/claude-sonnet-4-6` | 23,105 / 986 | 1 Tavily search | **$0.008** |
+
+`search_cost_usd: 0.008` comes from the search gateway's own response, not an
+estimate. Both models are free at the margin — `big-pickle` is keyless and
+free-tier, `agy` is subscription quota — so **the entire cost of an agent run
+here is retrieval**, and the model choice moves it by nothing.
+
+That is worth knowing before optimising the wrong half. Six times more tokens
+bought the same answer for the same price; what would actually change the bill
+is searching twice.
+
 ### Two ceilings, because steps do not bound cost
 
 `max_steps` (default 8) bounds how many times the loop turns. It does not bound
