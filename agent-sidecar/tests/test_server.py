@@ -837,3 +837,70 @@ def test_an_undeterminable_served_model_is_null_not_the_request():
     summary = summarise({"result": "ok"}, runner="smolagents", model="paid-first")
 
     assert summary["served_by"] is None
+
+
+def test_a_model_override_counts_as_degraded():
+    """The failure this was written for, and it is not hypothetical.
+
+    The gateway switches routing strategy on prompt content, so a request
+    naming agy/claude-sonnet-4-6 comes back from big-pickle whenever the prompt
+    looks like an agent's — which is every run this service makes. It happens
+    inside a vendored subtree that must not be edited, so it cannot be fixed
+    here. It can stop being invisible.
+    """
+    from agent_sidecar.outcome import summarise
+
+    summary = summarise(
+        {"result": "ok", "steps": 1, "step_errors": [], "served_by": "big-pickle"},
+        runner="smolagents",
+        model="agy/claude-sonnet-4-6",
+    )
+
+    assert summary["degraded"] is True
+    assert "model override" in summary["step_errors"][0]
+    assert "big-pickle" in summary["step_errors"][0]
+
+
+def test_the_provider_prefix_is_not_treated_as_a_mismatch():
+    """The gateway replies without the provider prefix, so a naive comparison
+    would call every single correct run degraded."""
+    from agent_sidecar.outcome import summarise
+
+    for asked, served in (
+        ("agy/claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("opencode/big-pickle", "big-pickle"),
+        ("openrouter/deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4-pro-0813"),
+    ):
+        summary = summarise(
+            {"result": "ok", "steps": 1, "step_errors": [], "served_by": served},
+            runner="smolagents",
+            model=asked,
+        )
+        assert summary["degraded"] is False, f"{asked} -> {served} misread as override"
+
+
+def test_a_combo_being_answered_by_a_tier_is_not_an_override():
+    """A combo name asks for a ladder, not for one model. paid-first answered
+    by Opus is the ladder working exactly as designed."""
+    from agent_sidecar.outcome import summarise
+
+    summary = summarise(
+        {"result": "ok", "steps": 1, "step_errors": [],
+         "served_by": "claude-opus-4-6-thinking-high"},
+        runner="smolagents",
+        model="paid-first",
+    )
+
+    assert summary["degraded"] is False
+
+
+def test_an_unknown_served_model_does_not_invent_an_override():
+    from agent_sidecar.outcome import summarise
+
+    summary = summarise(
+        {"result": "ok", "steps": 1, "step_errors": [], "served_by": None},
+        runner="smolagents",
+        model="agy/claude-sonnet-4-6",
+    )
+
+    assert summary["degraded"] is False

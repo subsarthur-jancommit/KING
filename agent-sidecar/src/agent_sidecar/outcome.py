@@ -23,6 +23,28 @@ import sys
 from datetime import datetime, timezone
 
 
+def _is_direct_model(model: str) -> bool:
+    """A combo name is a request for a ladder, not for one model.
+
+    `paid-first` being answered by Opus is the ladder working, so a mismatch
+    there means nothing. `agy/claude-sonnet-4-6` being answered by anything
+    else means the request was overridden. The `provider/model` shape is what
+    separates them.
+    """
+    return isinstance(model, str) and "/" in model
+
+
+def _served_matches(model: str, served: str) -> bool:
+    """The gateway drops the provider prefix in its reply.
+
+    `agy/claude-sonnet-4-6` comes back as `claude-sonnet-4-6`, and
+    `openrouter/deepseek/deepseek-v4-pro-0813` as `deepseek/deepseek-v4-pro-0813`,
+    so the comparison is against everything after the first slash.
+    """
+    tail = model.split("/", 1)[1]
+    return served == tail or served == model
+
+
 def summarise(outcome: dict, *, runner: str, model: str) -> dict:
     """The canonical shape a caller gets back from an agent run.
 
@@ -31,8 +53,21 @@ def summarise(outcome: dict, *, runner: str, model: str) -> dict:
     sounding exactly like one that searched — invisible in `result`, and the
     reason this is not simply `bool(step_errors)`.
     """
-    step_errors = outcome.get("step_errors") or []
+    step_errors = list(outcome.get("step_errors") or [])
     tool_report = outcome.get("tools") or {}
+
+    # Asking for one model and being served another is degradation, and until
+    # this it was completely silent. The gateway switches routing strategy on
+    # prompt content: a request naming `agy/claude-sonnet-4-6` comes back from
+    # `big-pickle` whenever the prompt looks like an agent's, which is every
+    # single run this service makes. That happens inside a vendored subtree
+    # this repo must not edit, so it cannot be fixed here — but it can stop
+    # being invisible.
+    served = outcome.get("served_by")
+    if served and _is_direct_model(model) and not _served_matches(model, served):
+        step_errors.append(
+            f"model override: asked for {model}, served by {served}"
+        )
     tools_wanting = bool(
         tool_report.get("error")
         or tool_report.get("missing")
