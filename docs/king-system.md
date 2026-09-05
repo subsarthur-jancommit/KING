@@ -517,6 +517,28 @@ for real, not an outage but confident wrong answers. So `/run` reports
 and the key, because setting one without the other is the obvious way to end up
 with an agent that has no tools and says nothing about it.
 
+### The agent remembers between runs, when asked
+
+`omniroute_memory_add` and `omniroute_memory_search` are in the allowlist, and
+they work across separate HTTP requests. Verified 2026-09-05 with two
+independent `/run` calls:
+
+| | Task | Steps | Result |
+|---|---|---|---|
+| 1 | store where the run journal lives | 3 | stored under `king_agent_run_journal_location` |
+| 2 | search memory for that path | 2 | `/audit/runs.jsonl` |
+
+Both `degraded: false`. The store is OmniRoute's own SQLite + sqlite-vec — no
+Qdrant, which was added for this once and reverted after it turned out to be
+unnecessary.
+
+**It remembers on request, not spontaneously**, and that is deliberate rather
+than an omission. Nothing in the agent's instructions tells it to record what
+it learns, because an agent writing to a shared store on its own judgement
+fills that store with noise, and a retrieval layer full of noise is worse than
+none — the same failure a self-hosted search layer produced here for real. A
+caller who wants something remembered asks for it.
+
 ### Every run leaves a record
 
 Run evidence used to die with the HTTP response. Nothing could answer what the

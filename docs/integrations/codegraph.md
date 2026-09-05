@@ -165,6 +165,17 @@ menghasilkan lebih dari 40.000 node, `BUILD_INFO` memuat SHA commit yang benar,
 canary di path gitignored tidak bocor ke grafik, serve menolak start tanpa
 grafik, dan permintaan MCP tanpa kunci ditolak.
 
-**Belum terbukti**: wiring MCP dari Claude Code di laptop lewat SSH tunnel belum
-pernah dijalankan ujung ke ujung — itu langkah Anda, dan perintahnya ada di
-bagian "Memakainya dari Claude Code di laptop" di atas.
+**Terbukti sejak 2026-09-04, dan tanpa tunnel.** codegraph disajikan lewat
+Caddy di `https://gateway.arject.co/king-codegraph/mcp`:
+
+```bash
+claude mcp add --transport http codegraph   https://gateway.arject.co/king-codegraph/mcp   --header "Authorization: Bearer ${GRAPHIFY_API_KEY}"
+```
+
+Diuji ujung ke ujung lewat internet publik: tanpa token → 401, token salah →
+401, token benar → `initialize` menjawab `{"name":"graphify","version":"0.9.51"}`.
+
+Autentikasinya diperiksa **sebelum** rute ditambahkan, bukan sesudah: default
+`GRAPHIFY_API_KEY` di compose adalah string kosong, jadi kunci yang tidak
+terisi akan menerbitkan seluruh peta repo ini ke internet terbuka. Konsekuensinya
+dicatat di `king-system.md` §11 — kunci itu kini satu-satunya batas yang tersisa.
