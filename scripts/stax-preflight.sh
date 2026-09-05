@@ -531,6 +531,31 @@ check_disk_gb() {
     echo "         'docker builder prune -f' is usually the cheapest win — it freed 9.4G here."
   else
     pass "${free_gb}G free on this filesystem (${needed}G wanted)."
+    report_reclaimable_cache
+  fi
+}
+
+# Mentioned on a PASS, not only on a failure.
+#
+# The failure path already suggests `docker builder prune`, which is the right
+# advice at the wrong time: by then the deploy is blocked. Repeated image
+# builds put 14.1G of build cache on this host in a single day — 3.3G of it
+# older than 24 hours — while the disk check kept passing and saying nothing.
+# Naming it while there is still room is what turns a number into an action.
+#
+# Best-effort throughout: no docker, a docker that errors, or output this
+# cannot parse must all leave the disk check exactly as it was.
+report_reclaimable_cache() {
+  local raw gb
+  command -v "${DOCKER_CMD:-docker}" >/dev/null 2>&1 || return 0
+  raw=$("${DOCKER_CMD:-docker}" system df --format '{{.Type}} {{.Reclaimable}}' 2>/dev/null         | awk '/Build Cache/ {print $3}') || return 0
+  case "$raw" in
+    *GB) gb=$(printf '%s' "$raw" | tr -dc '0-9.' | cut -d. -f1) ;;
+    *)   return 0 ;;   # bytes, kB or MB — not worth a line
+  esac
+  [ -n "$gb" ] || return 0
+  if [ "$gb" -ge 5 ]; then
+    warn "${gb}G of Docker build cache is reclaimable. 'docker builder prune -f --filter until=24h' keeps today's layers and frees the rest."
   fi
 }
 
@@ -637,6 +662,33 @@ self_test() {
   errors=0; DF_CMD="$stub/df-garbage" check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "unparseable df output fails" "$errors" 1
   errors=0; DF_CMD="$stub/df-tight"   check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "too little disk fails" "$errors" 1
   errors=0; DF_CMD="$stub/df-roomy"   check_disk_gb 8 "t" >/dev/null 2>&1; assert_eq "enough disk passes" "$errors" 0
+  rm -rf "$stub"
+
+  echo "self-test: report_reclaimable_cache"
+  local stub; stub=$(mktemp -d)
+  # Shaped exactly like the real `docker system df --format` output, which was
+  # checked rather than assumed: "Build Cache 10.14GB", no count column and no
+  # percentage suffix on that row. A stub that guesses the format tests the
+  # stub.
+  printf '#!/bin/sh
+echo "Images 496.1MB (3%%)"
+echo "Build Cache 10.14GB"
+' > "$stub/docker-big"
+  printf '#!/bin/sh
+echo "Build Cache 900MB"
+'                                 > "$stub/docker-small"
+  printf '#!/bin/sh
+exit 1
+'                          > "$stub/docker-broken"
+  chmod +x "$stub"/docker-*
+  warnings=0; DOCKER_CMD="$stub/docker-big"    report_reclaimable_cache >/dev/null
+  assert_eq "10G reclaimable warns" "$warnings" 1
+  warnings=0; DOCKER_CMD="$stub/docker-small"  report_reclaimable_cache >/dev/null
+  assert_eq "900MB is not worth a line" "$warnings" 0
+  warnings=0; DOCKER_CMD="$stub/docker-broken" report_reclaimable_cache >/dev/null 2>&1
+  assert_eq "a broken docker stays silent" "$warnings" 0
+  warnings=0; DOCKER_CMD="$stub/nope"          report_reclaimable_cache >/dev/null 2>&1
+  assert_eq "no docker at all stays silent" "$warnings" 0
   rm -rf "$stub"
 
   echo "self-test: check_agent_tools_wiring"
