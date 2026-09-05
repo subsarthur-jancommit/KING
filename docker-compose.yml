@@ -112,6 +112,11 @@ services:
       # tool returning a large page moves the context a long way in a single
       # step. Generous on purpose — 0 disables it.
       - AGENT_SIDECAR_MAX_TOKENS=${AGENT_SIDECAR_MAX_TOKENS:-}
+      # How many agent runs this container will do at once. The cgroup caps
+      # it at 1 GB / 1 CPU so it cannot reach the host, but an OOM inside that
+      # cgroup kills the runs already in flight along with the surplus that
+      # caused it — rejecting with 429 loses one caller instead of all of them.
+      - AGENT_SIDECAR_MAX_CONCURRENT=${AGENT_SIDECAR_MAX_CONCURRENT:-}
       # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
       # proxy this must include the public name, or every request comes back
       # "Invalid Host header". Empty leaves loopback-only, which is correct
@@ -280,6 +285,11 @@ services:
       # tool returning a large page moves the context a long way in a single
       # step. Generous on purpose — 0 disables it.
       - AGENT_SIDECAR_MAX_TOKENS=${AGENT_SIDECAR_MAX_TOKENS:-}
+      # How many agent runs this container will do at once. The cgroup caps
+      # it at 1 GB / 1 CPU so it cannot reach the host, but an OOM inside that
+      # cgroup kills the runs already in flight along with the surplus that
+      # caused it — rejecting with 429 loses one caller instead of all of them.
+      - AGENT_SIDECAR_MAX_CONCURRENT=${AGENT_SIDECAR_MAX_CONCURRENT:-}
       # Hosts the MCP endpoint accepts in the Host header. Behind a reverse
       # proxy this must include the public name, or every request comes back
       # "Invalid Host header". Empty leaves loopback-only, which is correct

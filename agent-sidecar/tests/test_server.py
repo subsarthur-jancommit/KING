@@ -670,3 +670,68 @@ def test_an_unwritable_journal_does_not_fail_the_run(client, monkeypatch, tmp_pa
 
     assert resp.status_code == 200
     assert resp.json()["result"] == "ok"
+
+
+def test_a_run_takes_and_returns_a_slot(client, monkeypatch):
+    def _runner(task, settings=None):
+        return {"result": "ok", "steps": 1, "step_errors": [], "tokens": None}
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _runner, raising=True)
+    before = server.RUN_SLOTS.active
+
+    client.post("/run", json={"task": "t"})
+
+    assert server.RUN_SLOTS.active == before, "the slot was not released"
+
+
+def test_a_crashed_run_still_returns_its_slot(client, monkeypatch):
+    """The leak that would be invisible until the service stopped answering."""
+
+    def _explodes(task, settings=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(server, "_resolve", lambda runner: _explodes, raising=True)
+    before = server.RUN_SLOTS.active
+
+    client.post("/run", json={"task": "t"})
+
+    assert server.RUN_SLOTS.active == before
+
+
+def test_surplus_runs_are_rejected_rather_than_piled_on(client, monkeypatch):
+    """The container is capped at 1 GB and 1 CPU, so it cannot take the host
+    down. What it CAN do is OOM inside its own cgroup and take the runs already
+    in flight with it. Refusing the surplus loses one caller instead of all."""
+    monkeypatch.setattr(server, "RUN_SLOTS", server._RunSlots(1), raising=True)
+    server.RUN_SLOTS.try_acquire()  # occupy the only slot
+
+    resp = client.post("/run", json={"task": "t"})
+    body = resp.json()
+
+    assert resp.status_code == 429
+    assert resp.headers["Retry-After"] == "30"
+    assert body["degraded"] is True
+    assert "concurrency limit" in body["step_errors"][0]
+
+
+def test_a_rejected_request_does_not_consume_a_slot(client, monkeypatch):
+    monkeypatch.setattr(server, "RUN_SLOTS", server._RunSlots(1), raising=True)
+    server.RUN_SLOTS.try_acquire()
+
+    client.post("/run", json={"task": "t"})
+
+    assert server.RUN_SLOTS.active == 1, "a rejected run must not take a slot"
+
+
+def test_a_malformed_request_never_occupies_a_slot(client, monkeypatch):
+    monkeypatch.setattr(server, "RUN_SLOTS", server._RunSlots(2), raising=True)
+
+    client.post("/run", json={"task": ""})
+
+    assert server.RUN_SLOTS.active == 0
+
+
+def test_zero_disables_the_concurrency_bound(monkeypatch):
+    slots = server._RunSlots(0)
+    for _ in range(50):
+        assert slots.try_acquire() is True

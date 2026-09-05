@@ -74,6 +74,11 @@ async def health(_request: Request) -> JSONResponse:
             # The second ceiling. Steps bound how many times the loop turns;
             # this bounds what the turns cost. 0 means disabled.
             "max_tokens": settings.max_tokens,
+            # How many runs this container will do at once, and how many are
+            # in flight right now. Rejecting the surplus beats an OOM inside
+            # the cgroup that kills the runs already working.
+            "max_concurrent": RUN_SLOTS.limit,
+            "runs_in_flight": RUN_SLOTS.active,
             "authorized_imports": list(settings.authorized_imports),
             # The list above means opposite things per executor, so say which.
             # Under `local` it restricts and is the entire boundary; under a
@@ -197,6 +202,25 @@ async def run(request: Request) -> JSONResponse:
             )
         settings = replace(settings, max_steps=min(max_steps, settings.max_steps))
 
+    # Taken here, after validation, so a malformed request never occupies a
+    # slot — and released in `finally` so a crashing run does not leak one.
+    if not RUN_SLOTS.try_acquire():
+        return JSONResponse(
+            {
+                "error": (
+                    f"busy: {RUN_SLOTS.limit} agent run(s) already in flight on "
+                    f"this container. Retry shortly."
+                ),
+                "runner": runner,
+                "model": settings.model_id,
+                "steps": None,
+                "step_errors": ["rejected: concurrency limit reached"],
+                "degraded": True,
+            },
+            status_code=429,
+            headers={"Retry-After": "30"},
+        )
+
     func = _resolve(runner)
     started = time.monotonic()
     try:
@@ -239,6 +263,8 @@ async def run(request: Request) -> JSONResponse:
             },
             status_code=500,
         )
+    finally:
+        RUN_SLOTS.release()
 
     # smolagents returns whatever the agent produced, which is not always a
     # string (a CodeAgent can return a number or a list). Coerce so the
@@ -306,6 +332,57 @@ async def run(request: Request) -> JSONResponse:
             "degraded": bool(step_errors) or tools_wanting,
         }
     )
+
+
+class _RunSlots:
+    """Bounded concurrency for agent runs.
+
+    The container is capped at 1 GB and 1 CPU, so it cannot take the host down
+    — that lesson is already paid for. But anyio will happily run dozens of
+    agent loops in threads, and the failure that produces is an OOM inside the
+    cgroup, which kills the runs already in flight along with the ones that
+    caused it. Rejecting the surplus is strictly better than losing everybody.
+
+    A plain counter rather than a lock: check and increment happen with no
+    `await` between them, and the event loop is single-threaded, so no other
+    request can interleave. `limit <= 0` disables the bound.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.active = 0
+
+    def try_acquire(self) -> bool:
+        if self.limit <= 0:
+            return True
+        if self.active >= self.limit:
+            return False
+        self.active += 1
+        return True
+
+    def release(self) -> None:
+        if self.limit > 0 and self.active > 0:
+            self.active -= 1
+
+
+def _slot_limit() -> int:
+    raw = os.environ.get("AGENT_SIDECAR_MAX_CONCURRENT", "2").strip() or "2"
+    try:
+        return int(raw)
+    except ValueError:
+        # A typo here must not disable the bound silently, and must not stop
+        # the service either. Fall back to the default and say so.
+        print(
+            f"[run] AGENT_SIDECAR_MAX_CONCURRENT={raw!r} is not an integer; using 2",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
+
+
+# Process-wide on purpose: the point is to bound what this container runs at
+# once, so it cannot be per-request.
+RUN_SLOTS = _RunSlots(_slot_limit())
 
 
 def _journal(entry: dict) -> None:
