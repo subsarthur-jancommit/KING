@@ -1165,3 +1165,54 @@ def test_both_append_only_files_share_one_trimmer():
 
     assert callable(outcome.trim_if_oversized)
     assert "trim_if_oversized" in inspect.getsource(mcp_server._audit)
+
+
+def test_a_local_model_override_is_treated_as_an_egress_event():
+    """Naming ollama/... is how a caller says this must not leave the host.
+
+    The gateway forwards it to a third-party provider when the prompt trips its
+    content switch — measured, with no error and a normal-looking answer. That
+    is a confidentiality event, not the cost-and-quality question the other
+    overrides are, so it sets `degraded` rather than only the flag someone may
+    learn to ignore.
+    """
+    from agent_sidecar.outcome import summarise
+
+    summary = summarise(
+        {"result": "ok", "steps": 1, "step_errors": [], "served_by": "big-pickle"},
+        runner="smolagents",
+        model="ollama/qwen2.5:1.5b-instruct-q4_K_M",
+    )
+
+    assert summary["model_overridden"] is True
+    assert summary["degraded"] is True
+    assert "left the host" in summary["step_errors"][0]
+
+
+def test_a_local_model_served_locally_is_not_flagged():
+    from agent_sidecar.outcome import summarise
+
+    summary = summarise(
+        {"result": "ok", "steps": 1, "step_errors": [],
+         "served_by": "qwen2.5:1.5b-instruct-q4_K_M"},
+        runner="smolagents",
+        model="ollama/qwen2.5:1.5b-instruct-q4_K_M",
+    )
+
+    assert summary["model_overridden"] is False
+    assert summary["degraded"] is False
+
+
+def test_a_cloud_override_stays_out_of_degraded():
+    """Only the local case is loud. Everything else would make degraded
+    always-true again, which is the failure this split exists to avoid."""
+    from agent_sidecar.outcome import summarise
+
+    summary = summarise(
+        {"result": "ok", "steps": 1, "step_errors": [], "served_by": "big-pickle"},
+        runner="smolagents",
+        model="agy/claude-sonnet-4-6",
+    )
+
+    assert summary["model_overridden"] is True
+    assert summary["degraded"] is False

@@ -67,6 +67,23 @@ def summarise(outcome: dict, *, runner: str, model: str) -> dict:
     overridden = bool(
         served and _is_direct_model(model) and not _served_matches(model, served)
     )
+
+    # An override off the local model is not the same kind of event as the
+    # others. Naming `ollama/...` is how a caller says the work must not leave
+    # this host, and the gateway will forward it to a third-party provider when
+    # the prompt trips its content switch — measured, with no error and a
+    # perfectly normal-looking answer.
+    #
+    # This one goes in step_errors, so `degraded` is true. The rest of the
+    # overrides are a cost and quality question; this is a confidentiality one,
+    # and it should not be filed under the flag someone might learn to ignore.
+    #
+    # It cannot prevent the egress — by the time a response exists the request
+    # has already been served elsewhere. It can refuse to be quiet about it.
+    if overridden and model.startswith("ollama/"):
+        step_errors.append(
+            f"local-only work left the host: asked for {model}, served by {served}"
+        )
     tools_wanting = bool(
         tool_report.get("error")
         or tool_report.get("missing")
