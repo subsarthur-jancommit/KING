@@ -322,6 +322,40 @@ one.
 
 ---
 
+## 16. A guard that read the wrong file, and agreed by luck
+
+**What happened.** `stax-preflight.sh` reported
+`AGENT_SIDECAR_EXECUTOR=local` and warned that model-generated Python was
+running inside the sidecar container. The container was running `e2b`.
+Confirmed both ways: `docker exec printenv` says `e2b`, and the value is in the
+root `.env`.
+
+**Why.** Compose delivers that variable through `environment:` as
+`${AGENT_SIDECAR_EXECUTOR:-local}`, interpolated from the host environment or
+the root `.env`. **`environment:` overrides `env_file:`**, so a value written in
+`agent-sidecar/.env` — the file preflight was reading — can never take effect at
+all. The lookup returned empty every time, and empty falls through to `local`.
+
+**The part that makes it worth an entry.** It warned, and the warning looked
+right. On a host genuinely set to `local` it would also have said `local`, for
+the same wrong reason. The check could not distinguish the two states it
+existed to distinguish, so every correct reading it had ever given was luck.
+
+I then repeated it the same day, in a new check, for two more variables.
+
+**What it hid alongside.** Chasing why a new build-cache warning never fired
+turned up that `check_disk_gb` is only called by the `codegraph` and
+`localmodel` profiles. `base` — which builds a 3.15 GB image over nine minutes,
+the largest build here — checked disk not at all.
+
+**Rule.** Read a setting from wherever the runtime actually takes it, and say
+which file that is in a comment. For Compose specifically: `environment:` beats
+`env_file:`, so an interpolated variable is decided by the root `.env` and a
+service `.env` cannot influence it. And when a guard agrees with reality, that
+is not evidence it is measuring reality.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:
