@@ -222,13 +222,21 @@ def _token_usage(agent) -> dict | None:
 
 
 def _load_tools(settings: Settings):
-    """(tools, client, report) — never raises.
+    """(tools, clients, report) — never raises.
 
-    A gateway that is briefly unreachable must not turn every agent run into a
-    500; the agent without tools is exactly the agent this service shipped with
-    for weeks. But it must not degrade *quietly* either. Self-hosting a search
-    layer that silently returned junk once cost two hours and produced
-    confident, sourced, wrong answers, so the reason travels back with the run.
+    One client per server, connected independently. smolagents' MCPClient
+    accepts a list, and handing it one looks tidier — but it is all-or-nothing:
+    measured, with the code graph pointed at a dead port the whole client threw
+    `TimeoutError` and the agent loaded **zero** tools, not seven. Adding a
+    second server that way makes web search depend on the code graph being up,
+    which is the opposite of what a second server is for.
+
+    Connecting them separately means a dead graph costs its four tools and
+    nothing else. Each failure is reported rather than swallowed: a gateway
+    that is briefly unreachable must not turn every agent run into a 500, but
+    it must not degrade quietly either — self-hosting a search layer that
+    silently returned junk once cost two hours and produced confident, sourced,
+    wrong answers.
     """
     blank = {
         "enabled": False,
@@ -238,26 +246,34 @@ def _load_tools(settings: Settings):
         "misdirected": [],
     }
     if not mcp_tools_enabled(settings) or not settings.agent_tools:
-        return [], None, blank
+        return [], [], blank
 
     from smolagents import MCPClient
 
-    # MCPClient connects inside __init__, so a failure here leaves no client to
-    # close and `client` correctly stays None.
-    try:
-        client = MCPClient(
-            smolagents_mcp_server_parameters(settings), structured_output=True
-        )
-    except Exception as exc:  # noqa: BLE001 - reported, not swallowed
-        return [], None, {**blank, "enabled": True, "error": f"{type(exc).__name__}: {exc}"}
+    clients, offered, errors = [], [], []
+    for spec in smolagents_mcp_server_parameters(settings):
+        url = spec.get("url", "?")
+        # MCPClient connects inside __init__, so a failure here leaves nothing
+        # to close.
+        try:
+            client = MCPClient(spec, structured_output=True)
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            errors.append(f"{url}: {type(exc).__name__}: {exc}")
+            continue
+        try:
+            offered.extend(client.get_tools())
+            clients.append(client)
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            errors.append(f"{url}: {type(exc).__name__}: {exc}")
+            # The transport is live after a failed listing; leaving it open
+            # would accumulate a session against that server per failed run.
+            client.disconnect()
 
-    try:
-        tools, report = select_agent_tools(client.get_tools(), settings)
-    except Exception as exc:  # noqa: BLE001 - reported, not swallowed
-        client.disconnect()
-        return [], None, {**blank, "enabled": True, "error": f"{type(exc).__name__}: {exc}"}
-
-    return tools, client, {**report, "enabled": True}
+    tools, report = select_agent_tools(offered, settings)
+    report["enabled"] = True
+    if errors:
+        report["error"] = "; ".join(errors)
+    return tools, clients, report
 
 
 def run(task: str, settings: Settings | None = None) -> dict:
@@ -268,7 +284,7 @@ def run(task: str, settings: Settings | None = None) -> dict:
     fails, and this is the only signal that distinguishes them.
     """
     settings = settings or load_settings()
-    tools, client, tool_report = _load_tools(settings)
+    tools, clients, tool_report = _load_tools(settings)
     ceiling = _TokenCeiling(settings.max_tokens) if settings.max_tokens > 0 else None
     try:
         agent = build_agent(settings, tools=tools, ceiling=ceiling)
@@ -298,8 +314,12 @@ def run(task: str, settings: Settings | None = None) -> dict:
     finally:
         # The tool list stays usable outside a `with` block, but the transport
         # does not close itself — smolagents documents the try/finally pairing.
-        if client is not None:
-            client.disconnect()
+        # One per server, and one failing to close must not skip the others.
+        for client in clients:
+            try:
+                client.disconnect()
+            except Exception:  # noqa: BLE001 - closing must not fail a run
+                pass
 
 
 if __name__ == "__main__":

@@ -827,6 +827,16 @@ The two servers stay independent — separate service, separate key, separate
 failure. Without `GRAPHIFY_API_KEY` the second one is simply absent and the
 agent keeps its web search; a graph outage costs it four tools, not eleven.
 
+**That took a second attempt.** smolagents' `MCPClient` accepts a *list* of
+servers, and passing one reads better. It is all-or-nothing: pointed at a dead
+port, the client raised `TimeoutError` and the agent loaded **zero** tools —
+so the first version made web search depend on the code graph being up, exactly
+inverting the point. One client per server, connected independently, and each
+failure reported in `tools.error` rather than swallowed.
+
+The claim in the paragraph above was written before it was tested, and testing
+it is what found the regression.
+
 The PR tools (`list_prs`, `get_pr_impact`, `triage_prs`) are deliberately left
 out. An agent that reads web pages should not be reaching into pull requests.
 

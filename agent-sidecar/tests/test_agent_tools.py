@@ -144,10 +144,10 @@ def test_tool_runs_use_tool_calling_not_code_execution():
 
 def test_no_mcp_key_means_no_tools_and_says_so(monkeypatch):
     monkeypatch.delenv("OMNIROUTE_MCP_API_KEY", raising=False)
-    tools, client, report = smol_runner._load_tools(_settings(monkeypatch))
+    tools, clients, report = smol_runner._load_tools(_settings(monkeypatch))
 
     assert tools == []
-    assert client is None
+    assert clients == []
     # enabled=False is the honest signal: not "the gateway had no tools", but
     # "tool loading was never attempted".
     assert report["enabled"] is False
@@ -155,9 +155,9 @@ def test_no_mcp_key_means_no_tools_and_says_so(monkeypatch):
 
 def test_allowlist_of_none_skips_loading_even_with_a_key(monkeypatch):
     monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
-    tools, client, report = smol_runner._load_tools(_settings(monkeypatch, "none"))
+    tools, clients, report = smol_runner._load_tools(_settings(monkeypatch, "none"))
 
-    assert (tools, client) == ([], None)
+    assert (tools, clients) == ([], [])
     assert report["enabled"] is False
 
 
@@ -176,9 +176,9 @@ def test_an_unreachable_gateway_is_reported_not_raised(monkeypatch):
 
     monkeypatch.setattr("smolagents.MCPClient", _Boom, raising=True)
 
-    tools, client, report = smol_runner._load_tools(_settings(monkeypatch, "omniroute_web_search"))
+    tools, clients, report = smol_runner._load_tools(_settings(monkeypatch, "omniroute_web_search"))
 
-    assert (tools, client) == ([], None)
+    assert (tools, clients) == ([], [])
     assert report["enabled"] is True
     assert "ConnectionError" in report["error"]
     assert "gateway refused" in report["error"]
@@ -206,9 +206,9 @@ def test_a_failure_after_connecting_still_closes_the_connection(monkeypatch):
 
     monkeypatch.setattr("smolagents.MCPClient", _HalfBroken, raising=True)
 
-    tools, client, report = smol_runner._load_tools(_settings(monkeypatch, "omniroute_web_search"))
+    tools, clients, report = smol_runner._load_tools(_settings(monkeypatch, "omniroute_web_search"))
 
-    assert (tools, client) == ([], None)
+    assert (tools, clients) == ([], [])
     assert closed == [True], "the transport was left open after a failed get_tools()"
     assert "RuntimeError" in report["error"]
 
@@ -228,13 +228,13 @@ def test_a_working_gateway_returns_tools_and_the_client_to_close(monkeypatch):
 
     monkeypatch.setattr("smolagents.MCPClient", _Working, raising=True)
 
-    tools, client, report = smol_runner._load_tools(_settings(monkeypatch, "omniroute_web_search"))
+    tools, clients, report = smol_runner._load_tools(_settings(monkeypatch, "omniroute_web_search"))
 
     assert [t.name for t in tools] == ["omniroute_web_search"]
-    # The caller gets the client back precisely so run() can close it in a
+    # The caller gets the clients back precisely so run() can close them in a
     # finally block — the tool list stays usable outside a `with`, the
     # transport does not close itself.
-    assert client is not None
+    assert len(clients) == 1
     assert report["enabled"] is True
     assert report["offered"] == 2
 
@@ -331,3 +331,42 @@ def test_an_agent_without_a_monitor_is_ignored():
     ceiling(object(), agent=_Bare())
 
     assert ceiling.tripped is False
+
+
+def test_one_dead_server_does_not_cost_the_agent_the_other_ones_tools(monkeypatch):
+    """The regression this design exists to prevent, and it shipped once.
+
+    smolagents' MCPClient takes a list of servers and handing it one reads
+    tidier — but it is all-or-nothing. Measured with the code graph pointed at
+    a dead port: the client raised TimeoutError and the agent loaded ZERO
+    tools, not seven. Adding a second server that way makes web search depend
+    on the code graph being up, which is the opposite of the point.
+    """
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+    monkeypatch.setenv("GRAPHIFY_API_KEY", "a-graph-key")
+
+    class _PerServer:
+        def __init__(self, spec, **kwargs):
+            self.url = spec["url"]
+            if "8130" in self.url:
+                raise TimeoutError("could not connect to the code graph")
+
+        def get_tools(self):
+            return [_Tool("omniroute_web_search")]
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr("smolagents.MCPClient", _PerServer, raising=True)
+
+    tools, clients, report = smol_runner._load_tools(
+        _settings(monkeypatch, "omniroute_web_search,get_neighbors")
+    )
+
+    # The gateway's tool survived the graph being down.
+    assert [t.name for t in tools] == ["omniroute_web_search"]
+    assert len(clients) == 1
+    # And the loss is reported, not silent — an agent quietly missing tools
+    # answers from training data and sounds exactly like one that used them.
+    assert "TimeoutError" in report["error"]
+    assert report["missing"] == ["get_neighbors"]
