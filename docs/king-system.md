@@ -377,8 +377,17 @@ curl -s -X POST http://127.0.0.1:8100/run \
 
 ```json
 {"result": "…", "runner": "smolagents", "model": "agy/claude-sonnet-4-6",
- "steps": 2, "step_errors": [], "degraded": false}
+ "steps": 2, "step_errors": [],
+ "tokens": {"input": 13993, "output": 603, "total": 14596},
+ "tools": {"enabled": true, "offered": 110,
+           "selected": ["omniroute_web_search", "…"],
+           "missing": [], "misdirected": []},
+ "degraded": false}
 ```
+
+`tokens` is what the run cost. smolagents computes it and prints it to the
+container log, where it is unparseable and scrolls away; it now travels with
+the answer instead. `null` there means not measured — never "free".
 
 **Why it works where two other routes did not.** smolagents drives the loop
 itself and issues plain completion calls, so the provider never carries
