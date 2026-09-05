@@ -583,6 +583,22 @@ reporting healthy. Each guard below exists because of a specific one.
 | `gateway_monitor` | 15 min | Real failure ratios from `call_logs`, with severity computed from shape |
 | `monitor-deadman.timer` | 15 min | That the monitor **itself** is still running |
 | `codegraph-refresh.timer` | Daily | The graph ageing silently |
+
+**They are `--user` units, and checking them the obvious way says they are
+dead.** `systemctl list-timers` and `systemctl is-active monitor-deadman.timer`
+both report nothing, because these run under the `subsa` user manager rather
+than the system one. Verified 2026-09-05 — the correct commands, and what they
+actually returned:
+
+```bash
+systemctl --user list-timers            # deadman ran 18s ago, codegraph 21h ago
+systemctl --user --failed               # empty
+```
+
+That distinction is worth a line here because getting it wrong produces the
+most expensive possible wrong answer: an operator concluding that every guard
+on this deployment is dead, and either re-installing them on top of working
+ones or starting to distrust the readings they do give.
 | Healthchecks that assert *content* | Continuous | Ollama healthy with zero models; a JSON API returning 403 while HTML works |
 
 The recurring design rule, learned the hard way: **anything that cannot be
