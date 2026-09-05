@@ -325,6 +325,19 @@ than from memory. That exact question is the established benchmark: it defeated
 the local model, defeated `agy` unaided, defeated SearXNG, and was answered
 correctly through Tavily.
 
+**Done 2026-09-04, and the benchmark still discriminates.** `/healthz` reports
+`mcp_tools_enabled: true` and `agent_tools_active: true`; the agent answers
+**3 June 2026** in 2–3 steps with `degraded: false`, having called
+`omniroute_web_search`.
+
+Two things the run surfaced that a pass/fail would have hidden. The sources
+disagree — endoflife.date says 2 June, while the GitHub release assets,
+Chocolatey and mise all say 3 June — and the `web_research` flow reports that
+disagreement rather than choosing, which is what its prompt asks of it. And the
+free-tier default model answers it as well as `agy/claude-sonnet-4-6` does, so
+the benchmark separates *having tools* from *not having them*, not strong
+models from weak ones.
+
 ### 4.6 Cost per agent run is known and bounded
 
 **Acceptance:** running the §4.5 benchmark produces a figure of the shape
