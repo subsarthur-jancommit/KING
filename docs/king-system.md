@@ -114,6 +114,22 @@ already on `websearch-tiers`, `review_code` on `paid-first`, `ask_free_model`
 stays on `free-then-local` deliberately, and both gateway flows are pure code
 steps that call no model at all.
 
+### Why the flows do not call the agent bridge
+
+It was planned, on the reasoning that one path is cheaper to maintain than two.
+Checked against what the flows actually do, it was the wrong call and is not
+being done.
+
+Every model-calling flow here does its own retrieval first (an HTTP step
+against the search gateway) and then needs exactly one completion over the
+results. The bridge runs an agent loop: several model round-trips, a tool
+negotiation, and a step budget, to produce the single completion the flow
+already had. That is added latency and tokens bought with nothing.
+
+The bridge earns its keep when a caller does **not** know in advance which
+tools it needs, which is Claude's situation and not a fixed flow's. If a flow
+ever needs multi-step tool use, it should move; none of the six does today.
+
 ### Three explicit combos
 
 All use `priority`: the list is walked in order and only moves on when a step
