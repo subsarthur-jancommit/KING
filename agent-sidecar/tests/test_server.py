@@ -784,7 +784,8 @@ def test_http_and_mcp_return_the_same_shape(monkeypatch, tmp_path):
     summary = summarise(raw, runner="smolagents", model="opencode/big-pickle")
 
     assert set(summary) == {
-        "result", "runner", "model", "steps", "step_errors", "tokens", "tools", "degraded",
+        "result", "runner", "model", "served_by", "steps", "step_errors",
+        "tokens", "tools", "degraded",
     }
     # Coerced: a CodeAgent can return a number.
     assert summary["result"] == "144"
@@ -805,3 +806,34 @@ def test_summarise_counts_tool_trouble_as_degraded():
     # to hold — which is invisible in `result` and is the whole reason
     # `degraded` is not simply bool(step_errors).
     assert summary["degraded"] is True
+
+
+def test_served_by_is_reported_separately_from_the_model_asked_for():
+    """A combo name is a request, not an answer.
+
+    Ask for `paid-first` and the reply may come from Opus or, if the ladder
+    fell all the way through, from the free tier — and reporting only the
+    request makes those two look identical. `ask_model` has always distinguished
+    them; run_agent reported the request and labelled it `model`.
+    """
+    from agent_sidecar.outcome import summarise
+
+    summary = summarise(
+        {"result": "ok", "steps": 1, "step_errors": [],
+         "served_by": "claude-opus-4-6-thinking-high"},
+        runner="smolagents",
+        model="paid-first",
+    )
+
+    assert summary["model"] == "paid-first"
+    assert summary["served_by"] == "claude-opus-4-6-thinking-high"
+
+
+def test_an_undeterminable_served_model_is_null_not_the_request():
+    """Falling back to the requested name would be worse than saying nothing:
+    it would assert a fact the runner does not have."""
+    from agent_sidecar.outcome import summarise
+
+    summary = summarise({"result": "ok"}, runner="smolagents", model="paid-first")
+
+    assert summary["served_by"] is None

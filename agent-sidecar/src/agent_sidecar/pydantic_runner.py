@@ -28,7 +28,13 @@ def run_sync(task: str, settings: Settings | None = None) -> dict:
     # `tokens` is None rather than zeroes, for the same reason `steps` is: this
     # runner does not expose a usage monitor, and reporting 0/0 would read as
     # "the call was free" instead of "not measured here".
-    return {"result": result.output, "steps": None, "step_errors": [], "tokens": None}
+    return {
+        "result": result.output,
+        "steps": None,
+        "step_errors": [],
+        "tokens": None,
+        "served_by": None,
+    }
 
 
 if __name__ == "__main__":

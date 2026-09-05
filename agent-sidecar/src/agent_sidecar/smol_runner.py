@@ -158,7 +158,40 @@ def _diagnostics(agent) -> dict:
         err = step.error
         if err:
             errors.append(f"step {getattr(step, 'step_number', counted)}: {err}")
-    return {"steps": counted, "step_errors": errors, "tokens": _token_usage(agent)}
+    return {
+        "steps": counted,
+        "step_errors": errors,
+        "tokens": _token_usage(agent),
+        "served_by": _served_by(agent),
+    }
+
+
+def _served_by(agent) -> str | None:
+    """Which model actually answered, as distinct from which one was asked for.
+
+    They are the same thing only when the caller names a model directly. Ask
+    for a combo — `paid-first`, `websearch-tiers` — and the request is a ladder
+    name while the answer comes from whichever tier was reachable. Reporting
+    only the request is how a run served by the free tier looks identical to
+    one served by Opus, which is the exact silent degradation this service
+    reports everywhere else.
+
+    Taken from the last model response's raw payload, walking backwards because
+    a run can end on a step that produced no message. Every access is
+    defensive: this is a label, and a label must never fail a run.
+    """
+    steps = list(getattr(getattr(agent, "memory", None), "steps", []) or [])
+    for step in reversed(steps):
+        raw = getattr(getattr(step, "model_output_message", None), "raw", None)
+        if raw is None:
+            continue
+        try:
+            name = raw.get("model") if isinstance(raw, dict) else getattr(raw, "model", None)
+        except Exception:  # noqa: BLE001 - a label must not break a run
+            continue
+        if name:
+            return str(name)
+    return None
 
 
 def _token_usage(agent) -> dict | None:

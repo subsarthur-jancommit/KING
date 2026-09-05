@@ -42,6 +42,11 @@ def summarise(outcome: dict, *, runner: str, model: str) -> dict:
         "result": str(outcome.get("result")),
         "runner": runner,
         "model": model,
+        # Which model was ASKED for, above; which one ANSWERED, here. They
+        # differ whenever the request names a combo, and only the second says
+        # whether the ladder fell through to the free tier. `null` when the
+        # runner could not determine it.
+        "served_by": outcome.get("served_by"),
         "steps": outcome.get("steps"),
         "step_errors": step_errors,
         # What the run cost. `null` means not measured, never "free".
@@ -86,6 +91,7 @@ def journal_run(summary: dict, *, task: str, seconds: float, caller: str) -> Non
             # enough to recognise a run, not a transcript.
             "task": task[:200],
             "seconds": round(seconds, 2),
+            "served_by": summary.get("served_by"),
             "steps": summary.get("steps"),
             "tokens": summary.get("tokens"),
             "tools": (summary.get("tools") or {}).get("selected"),
