@@ -226,7 +226,8 @@ uv run python -m agent_sidecar.smol_runner "Say exactly: SMOLAGENTS-STAX-OK"
 #    returned exactly that string.
 uv run python -m agent_sidecar.pydantic_runner "Say exactly: PYDANTIC-AI-STAX-OK"
 # -> PYDANTIC-AI-STAX-OK
-uv run pytest tests/ -v   # 2 passed, 1 skipped (MCP — opt-in, see below)
+uv run pytest tests/ -v   # 149 passed, 3 skipped as of 2026-09-05
+                          # (the 3 need a live OmniRoute and skip without one)
 ```
 
 **Important finding, changes the plan's original assumption**: MCP tool
@@ -253,8 +254,21 @@ used once, deleted immediately after):
 ```bash
 export OMNIROUTE_MCP_API_KEY=sk-...        # manage scope — elevated, opt-in only
 # smolagents: MCPClient(...) -> 110 tools (gamification_*, local_corpus_*, ...)
-# pydantic-ai: Agent(model, toolsets=[MCPToolset(...)]).run_sync(...) -> works
 ```
+
+**Since 2026-09-05 this is live rather than validated-once.** The agent loads
+from **two** MCP servers — OmniRoute's 110 and the code graph's ten, 120
+offered — and holds eleven by allowlist. `vps_exec` can never be among them
+whatever the configuration says. See `docs/king-system.md` §5b.
+
+Two corrections to what this section originally recorded:
+
+- **One client per server, not a list.** `MCPClient` accepts a list and it is
+  all-or-nothing — measured, with the graph on a dead port the agent loaded
+  zero tools rather than seven. Each server is connected separately now.
+- **The pydantic-ai toolset was removed.** It was validated here once and never
+  shipped: `pydantic_runner` is a single typed call with no loop, so there is
+  no step at which it could act on a tool result.
 
 Packaged with `agent-sidecar/Dockerfile` (no default CMD — invoked
 explicitly per-runner or via `pytest`) and wired into the root
