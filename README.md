@@ -289,6 +289,32 @@ keys**:
    asserts a genuine response comes back.
 
 This runs on every push/PR touching `omniroute/**` or the compose files, and
-via manual `workflow_dispatch`. It is the authoritative proof that the
-vendored app actually runs; the static `docker compose config` checks done
-during initial vendoring only validated the wiring, not a live boot.
+via manual `workflow_dispatch`.
+
+**It is currently red, for a reason outside this repository.** `tls-client-node`
+looks for a release asset named
+`tls-client-linux-ubuntu-amd64-1.16.0.so`; upstream renamed its assets to
+`tls-client-xgo-1.16.0-linux-amd64.so`, so the download is skipped and a
+deliberate guard in `omniroute/Dockerfile` fails the build rather than shipping
+an image with no TLS client. It is not rate limiting, `0.2.0` is already the
+newest release on npm, and `omniroute/` is a vendored subtree that must not be
+edited — the three escapes are documented in `docs/king-mistakes.md` so nobody
+re-diagnoses it. Three jobs that build `omniroute:base` are blocked behind it.
+
+### STAX smoke test
+
+[`.github/workflows/stax-smoke.yml`](.github/workflows/stax-smoke.yml) is the
+one that covers the code in this repository rather than the vendored app:
+preflight self-tests and shellcheck, the agent sidecar, codegraph,
+observability, OpenHands, and the workflow profile.
+
+Two things about it are worth knowing:
+
+- It runs on **push to `main`** as well as on pull requests. For months it did
+  not, and roughly fifteen commits of agent-sidecar work merged with no CI
+  evidence at all. See entry 14 in `docs/king-mistakes.md`.
+- The `agent-sidecar-unit` job deliberately has **no dependency on
+  `omniroute:base`**. It builds only `./agent-sidecar` and runs the full suite —
+  100+ tests in about 30 seconds — so a broken vendored build cannot take our
+  own tests down with it, which is how a real regression once survived for
+  three days.
