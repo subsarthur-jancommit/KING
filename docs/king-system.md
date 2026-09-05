@@ -140,15 +140,37 @@ So it is not that a different model was picked within one strategy. The gateway
 three times out of three. Retiring `auto/*` from the flows removed callers who
 *asked* for it; it did not stop the gateway choosing it.
 
-**What triggers the switch is not yet identified.** A shortened version of the
-same prompt does *not* trigger it — that request came back `strategy=single` —
-so it is not simply "mentions tools" or "has a system message". The `api_keys`
-table carries an `auto_resolve` column that is the obvious next thing to check.
+**What triggers it, narrowed by bisection.** Splitting the prompt line by line,
+two lines flip the strategy on their own and five do not:
 
-`omniroute/open-sse/services/combo/autoStrategy.ts` runs an intent classifier
-active by default, while `taskAwareRouter` and `complexityRouter` ship
-disabled. `omniroute/` is a vendored subtree that must not be edited, so any
-fix is a setting or nothing.
+```
+single   You are an expert assistant who can solve any task using code blobs.
+single   To do so, you have been given access to a list of tools.
+AUTO     At each step, explain your reasoning.
+AUTO     Then write the code in simple Python.
+single   You can use print() to save information.
+single   Return a final answer using the final_answer tool.
+```
+
+It is not length — the two triggers are among the shortest lines, and 37,000
+tokens of filler never triggered it. The two that fire are the two that state
+an *intent*: reasoning, and writing code. "code blobs" and "final_answer tool"
+do not.
+
+**The obvious lever does not work.** That pattern matches
+`intentClassifier.ts` (`DEFAULT_INTENT_CONFIG = {enabled: true,
+simpleMaxWords: 60}`), which `autoStrategy.ts` gates on a settings flag. Tested
+directly rather than assumed: `intentDetectionEnabled: false` was set on the
+live gateway, the probe re-run, and the result was unchanged —
+`strategy=auto; provider=oc` before, during and after. **The setting was
+restored to `true` immediately; nothing persists.**
+
+So the classifier is not the switch, or not the only one. What remains
+unchecked is the `auto_resolve` column on `api_keys`, which the API's key
+listing does not expose.
+
+`omniroute/` is a vendored subtree that must not be edited, so any fix is a
+setting or nothing — and the first setting that looked right is now ruled out.
 
 **Diagnostic worth keeping:** `x-omniroute-decision`, `-provider`, `-model` and
 `-request-id` are on every response. Reading them first would have skipped most
