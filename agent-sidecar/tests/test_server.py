@@ -1023,7 +1023,7 @@ def test_mcp_run_agent_returns_the_same_shape_as_the_http_path(monkeypatch, tmp_
 
     assert set(body) == {
         "result", "runner", "model", "served_by", "steps", "step_errors",
-        "tokens", "tools", "degraded",
+        "tokens", "tools", "model_overridden", "degraded",
     }
     assert body["model"] == "opencode/big-pickle"
 
