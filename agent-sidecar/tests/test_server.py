@@ -950,3 +950,114 @@ def test_vps_status_says_its_view_is_the_container_not_the_gateway():
     body = mcp_server.vps_status.fn() if hasattr(mcp_server.vps_status, "fn") else mcp_server.vps_status()
 
     assert "omniroute_get_health" in body["note"]
+
+
+# --------------------------------------------------------------------------
+# run_agent and ask_model, the two MCP tools with no tests at all — the only
+# mentions of them in this suite were inside comments. run_agent is the tool
+# Claude reaches for most, and it re-implements the max_steps invariant in code
+# separate from the HTTP path that already has tests for it.
+# --------------------------------------------------------------------------
+
+
+def _tool(fn):
+    """FastMCP wraps a tool; the plain function hangs off .fn."""
+    return getattr(fn, "fn", fn)
+
+
+def test_mcp_run_agent_lets_a_caller_lower_max_steps(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(tmp_path / "runs.jsonl"))
+    from agent_sidecar import mcp_server, smol_runner
+
+    seen = {}
+
+    def _fake(task, settings=None):
+        seen["max_steps"] = settings.max_steps
+        return {"result": "ok", "steps": 1, "step_errors": [], "tokens": None}
+
+    monkeypatch.setattr(smol_runner, "run", _fake, raising=True)
+    _tool(mcp_server.run_agent)("t", max_steps=2)
+
+    assert seen["max_steps"] == 2
+
+
+def test_mcp_run_agent_refuses_to_let_a_caller_raise_max_steps(monkeypatch, tmp_path):
+    """The invariant that exists because a caller timing out does not stop an
+    agent: curl gave up at 300s while the loop was still on step 5. The HTTP
+    path enforces it and has a test; this path enforces it separately and did
+    not."""
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(tmp_path / "runs.jsonl"))
+    monkeypatch.setenv("AGENT_SIDECAR_MAX_STEPS", "8")
+    from agent_sidecar import mcp_server, smol_runner
+
+    seen = {}
+
+    def _fake(task, settings=None):
+        seen["max_steps"] = settings.max_steps
+        return {"result": "ok", "steps": 1, "step_errors": [], "tokens": None}
+
+    monkeypatch.setattr(smol_runner, "run", _fake, raising=True)
+    _tool(mcp_server.run_agent)("t", max_steps=9999)
+
+    assert seen["max_steps"] == 8, "a caller raised the ceiling"
+
+
+def test_mcp_run_agent_returns_the_same_shape_as_the_http_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(tmp_path / "runs.jsonl"))
+    from agent_sidecar import mcp_server, smol_runner
+
+    monkeypatch.setattr(
+        smol_runner,
+        "run",
+        lambda task, settings=None: {
+            "result": "ok", "steps": 1, "step_errors": [],
+            "tokens": {"input": 1, "output": 2, "total": 3}, "served_by": "big-pickle",
+        },
+        raising=True,
+    )
+    body = _tool(mcp_server.run_agent)("t", model="opencode/big-pickle")
+
+    assert set(body) == {
+        "result", "runner", "model", "served_by", "steps", "step_errors",
+        "tokens", "tools", "degraded",
+    }
+    assert body["model"] == "opencode/big-pickle"
+
+
+def test_mcp_run_agent_journals_its_runs(monkeypatch, tmp_path):
+    """This path wrote nothing to the journal until the two were unified, which
+    made the journal biased rather than merely incomplete: the busiest caller
+    left no trace."""
+    journal = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(journal))
+    from agent_sidecar import mcp_server, smol_runner
+
+    monkeypatch.setattr(
+        smol_runner,
+        "run",
+        lambda task, settings=None: {"result": "ok", "steps": 1, "step_errors": [], "tokens": None},
+        raising=True,
+    )
+    _tool(mcp_server.run_agent)("find the thing")
+
+    import json as _json
+
+    entry = _json.loads(journal.read_text(encoding="utf-8").strip())
+    assert entry["caller"] == "mcp"
+    assert entry["task"] == "find the thing"
+
+
+def test_mcp_ask_model_surfaces_a_gateway_failure_instead_of_raising(monkeypatch):
+    """An MCP tool that raises gives the caller a protocol error with no
+    context. The gateway being unreachable is information, and it belongs in
+    the result."""
+    from agent_sidecar import mcp_server
+
+    def _boom(*a, **k):
+        raise ConnectionError("gateway refused")
+
+    monkeypatch.setattr(mcp_server.urllib.request, "urlopen", _boom, raising=True)
+    body = _tool(mcp_server.ask_model)("hello", model="paid-first")
+
+    assert "ConnectionError" in body["error"]
+    assert body["requested_model"] == "paid-first"
