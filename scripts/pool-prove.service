@@ -32,12 +32,19 @@ Type=oneshot
 WorkingDirectory=%h/KING
 ExecStart=%h/KING/scripts/pool-prove.sh
 
-# Set both to also post to gateway_alerts, so a silent provider lands in the
-# same table as every other alert instead of only in journalctl. Without them
-# the failing unit above is the only signal, which is a signal nobody sees
-# until they think to look.
-#   Environment=POOL_ALERT_URL=https://flows.arject.co/api/v1/webhooks/...
-#   Environment=POOL_ALERT_SECRET=...
+# POOL_ALERT_URL and POOL_ALERT_SECRET, so a silent provider lands in the same
+# table as every other alert instead of only in journalctl. Without them the
+# failing unit above is the only signal, and that is a signal nobody sees until
+# they think to look.
+#
+# Through an EnvironmentFile rather than Environment= lines, so the HMAC secret
+# stays in a gitignored 0600 file next to every other secret here instead of
+# being copied into ~/.config/systemd/user/. The leading `-` makes it optional:
+# a host without the file still runs the proof, it just cannot post.
+#
+#   Write it with two plain lines, POOL_ALERT_URL= and POOL_ALERT_SECRET=,
+#   then: chmod 600 ~/KING/.pool-prove.env
+EnvironmentFile=-%h/KING/.pool-prove.env
 
 # Generous: the script sends a real completion to every provider in the pool,
 # each with its own 120s curl timeout, and a pool that has grown is exactly

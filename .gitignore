@@ -49,3 +49,7 @@ omniroute/plugins/*
 # tracked via the negation below.
 **/.env.*
 !**/.env.example
+
+# Alert webhook URL + HMAC secret for the pool-prove timer, read via
+# EnvironmentFile so the secret never lands in a systemd unit.
+/.pool-prove.env
