@@ -219,6 +219,49 @@ than by assumption.
 of the eight eliminations above.
 
 
+### There is one mitigation, and it is a trade
+
+Every *setting* is ruled out above. The prompt is not a setting, and the sidecar
+owns its own.
+
+Bisecting the real 135-line ToolCallingAgent prompt against
+`x-omniroute-decision`, one block at a time, exactly two regions flip the
+strategy on their own:
+
+```
+lines   1-33   single      lines  59-67   single
+lines  34-50   single      lines  68-90   single
+lines  51-58   AUTO   <--  lines 111-135  AUTO   <--
+```
+
+`51-58` is smolagents' worked example, a call to `python_interpreter` — a tool
+this agent does not have. `111-135` is the **code-graph tool descriptions**:
+`graphify-out/graph.json`, nodes, edges, BFS/DFS.
+
+Removing either alone still routes `auto`. Removing both returns `single`,
+3 of 3. So the capability and the trigger are partly the same text, and the fix
+is a trade rather than a repair.
+
+**Measured end to end**, with the example retargeted in `smol_runner.py` and the
+four graph tools left out of `AGENT_SIDECAR_AGENT_TOOLS`:
+
+```
+asked for   ollama/qwen2.5:1.5b-instruct-q4_K_M
+served_by   qwen2.5:1.5b-instruct-q4_K_M
+step_errors []            <- no "local-only work left the host"
+tools       7 selected
+```
+
+That is the first tool-bearing agent run on this deployment to be served the
+model it asked for. **The local-only guarantee can be made real** — it costs the
+code graph, and, on this host, 241 s against ~10 s, because the answer is
+genuinely coming from a 1.5B model on two vCPUs instead of Gemini.
+
+Not applied by default. Dropping four tools and multiplying latency by twenty is
+the operator's call, not a default, and the honest position is that both
+configurations are defensible: keep the graph and accept the reroute, or hold
+the guarantee and lose the graph. What changed is that it is now a choice.
+
 ### What the reroute lands on is less reliable than what it leaves
 
 Measured 2026-09-05 from `/api/usage/call-logs`, 500 completed calls spanning
@@ -1598,7 +1641,7 @@ is worse than one that stops.
 | **OmniRoute admin password was reset** | Done 2026-09-04 | The old one was lost — `POST /api/auth/login` rejected both the 24-character `INITIAL_PASSWORD` in `omniroute/.env` and a value the operator supplied, and no OIDC is configured. Recovered through OmniRoute's own mechanism: the hash lives in `key_value`/`settings`/`password`, and `ensurePersistentManagementPasswordHash` re-hashes a non-bcrypt value there on next login, so writing a plaintext password into that row restores access with no restart. Database backed up first to `db_backups/manual_20260904T153154Z_*`. The new password is with the operator and is first on the rotation list |
 | Agent tools | **Live 2026-09-04** | `agent_tools_active: true`. Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and answered in 2 steps with no step errors and `degraded: false` |
 | **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here — the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` on the VPS says whether it still reproduces, and exits non-zero while it does; run it after any `git subtree pull` |
-| **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served elsewhere when the prompt trips the gateway's content-based reroute — for the sidecar's own prompt that destination is `gemini-3.7-flash-high`, i.e. Google, measured 3 of 3 on 2026-09-05. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
+| **Local-only work can leave the host — now avoidable** | Found 2026-09-05, mitigated 2026-09-06 | A request naming `ollama/...` is served elsewhere when the prompt trips the gateway's content-based reroute — for the sidecar's own prompt that destination is `gemini-3.7-flash-high`, i.e. Google, measured 3 of 3 on 2026-09-05. **A configuration exists that holds the guarantee**: retarget the prompt's `python_interpreter` example (done in `smol_runner.py`) and drop the four code-graph tools from `AGENT_SIDECAR_AGENT_TOOLS`. Measured: asked `ollama/…`, served `qwen2.5:1.5b-instruct-q4_K_M`, no egress step error. It costs the graph tools and 241 s against ~10 s. Not the default — see §4. Without it the confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
 | **`agy` needs its fallbacks most often** | Measured 2026-09-05, qualified 2026-09-06 | Over 500 calls since 2026-08-30 every 502 belongs to antigravity — `claude-opus-4-6-thinking-high` 20% of *attempts*, `gemini-3.7-flash-high` 21%, against `opencode/big-pickle` at 0 of 102. These are attempts, not outcomes: the gateway falls back within the model family on empty content, and the OpenAI SDK retries any 5xx twice on top, which is why eight consecutive sidecar runs succeeded against the 21% model. The cost is quality and latency, not visible failure. §4 has the table and all three caveats |
 | **`blockedProviders` cannot shape the reroute** | Checked 2026-09-06 | Worth writing down because it looks like it should. The reroute lands wherever `auto/*` chooses, and `blockedProviders` filters that candidate pool — so blocking `antigravity` looks like a way to stop rerouted work reaching Google. It is not: the list is consumed only by `getNoAuthCandidates`, which iterates `NOAUTH_PROVIDERS`, and `antigravity` is OAuth-registered rather than no-auth. There is no equivalent filter for authenticated providers. The reroute remains unfixable from here, and this is the third plausible mitigation to fail on inspection |
 | **The local router is not local** | Found 2026-09-06 | `local-router.sh` asks for `ollama/qwen2.5:1.5b-instruct-q4_K_M` and is served by `antigravity/gemini-pro-agent` — four runs, four matching call-log rows. Both premises of the design are gone: it is not free at the margin, and the task description leaves the machine. Latency went from ~0.95 s to 7.3–10.2 s. It still labels correctly, which is why it went unnoticed. Retired from the live path already, so nothing depends on it — but the same fault reaches anything that assumes naming a local model keeps work local |
