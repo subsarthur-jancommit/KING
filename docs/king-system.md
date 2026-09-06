@@ -1738,10 +1738,26 @@ actually showed.
 
    Note the eval prints the model it *asks* for, which is not the one answering.
    Read `gateway-report.sh` alongside it.
-6. **Web fetch, not just search — available to the agent, unused by the flows.**
-   `omniroute_web_fetch` is in the agent's allowlist and reaches Tavily, the one
-   provider configured for both. The flows still work from snippets only, which
-   answered the Caddy question but would not answer one needing a page body.
+6. **Web fetch for the flows — tested, and not justified yet.**
+   `omniroute_web_fetch` is in the agent's allowlist and reaches Tavily. The
+   flows work from snippets only, and the claim here was that this would fail on
+   anything needing a page body. Probed twice on 2026-09-06 before building it:
+
+   - *"list the exact bug-fix entries in the Caddy v2.11.4 release notes"* — the
+     flow declined and gave the reason with a source: those notes are not
+     published, "Life got in the way of us publishing the release notes." A
+     fetch would not have helped, because there is no body to fetch. It also
+     shows the honesty guard in the synthesis prompt doing its job rather than
+     inventing entries.
+   - *"what line-length limit does PEP 8 set for docstrings and comments, as
+     distinct from code"* — answered correctly, 72 against 79, with four cited
+     sources, from snippets alone.
+
+   So the limitation is real in principle and not binding in practice, and
+   adding a fetch step costs latency and Tavily credit on every research call.
+   Left undone deliberately. What would justify it is a question whose answer
+   sits in a page body that snippets truncate — when one turns up, the step is
+   small and the flow already has the provider configured.
 7. **Alerting that reaches a human.** Half done. As of 2026-09-06 alerts are
    recorded in the `gateway_alerts` table instead of being dropped — see §7 for
    what changed and how it was verified. That makes them findable, not
