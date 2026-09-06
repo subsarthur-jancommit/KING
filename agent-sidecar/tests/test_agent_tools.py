@@ -31,7 +31,8 @@ def _clean_env(monkeypatch):
     monkeypatch.delenv("AGENT_SIDECAR_AGENT_TOOLS", raising=False)
 
 
-def _settings(monkeypatch, allowlist: str | None = None, graphify: str | None = None):
+def _settings(monkeypatch, allowlist: str | None = None, graphify: str | None = None,
+              model: str = "opencode/big-pickle"):
     """Settings built from a known environment, not from whatever is ambient.
 
     `load_settings()` reads the real environment, and `GRAPHIFY_API_KEY` decides
@@ -50,6 +51,12 @@ def _settings(monkeypatch, allowlist: str | None = None, graphify: str | None = 
         monkeypatch.delenv("GRAPHIFY_API_KEY", raising=False)
     else:
         monkeypatch.setenv("GRAPHIFY_API_KEY", graphify)
+    # Pinned for the same reason GRAPHIFY_API_KEY is. Since 2026-09-06 the model
+    # also decides the server list — a local one drops the code graph — so a
+    # deployment whose agent-sidecar/.env names an ollama model would silently
+    # change what these tests are asserting. It did: two tests went red the hour
+    # local became this deployment's default.
+    monkeypatch.setenv("AGENT_SIDECAR_MODEL_ID", model)
     return load_settings()
 
 
