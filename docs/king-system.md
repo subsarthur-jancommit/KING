@@ -236,18 +236,50 @@ still got an answer. And `ollama`'s 33% is the documented
 `RATE_LIMIT_MAX_WAIT_MS` 504 against a cold local model, which is why the
 monitor excludes it from the breach ratio.
 
-**What survives both caveats is the sidecar's case.** It names a model directly,
-so there is no ladder underneath it to absorb a failure — and the content
-reroute moves its traffic from `big-pickle`, which has not failed here, onto
-`gemini-3.7-flash-high`, which fails about a fifth of the time. So the override
-is not only a cost and confidentiality problem, as recorded above. It is a
-reliability downgrade, in the one place with nothing to catch it.
+**A third caveat, and it retires the alarming reading of this table.** I first
+wrote that the sidecar's case survives both caveats, because it names a model
+directly and so "has no ladder underneath it to absorb a failure". That was an
+assertion about the absence of a mechanism, made without looking for one. There
+are two.
 
-Not proven, and worth measuring before acting on: whether `auto` retries after
-a 502. This session made roughly eight sidecar runs and all of them succeeded,
-which is unremarkable at a 21% per-attempt rate but is also consistent with a
-retry absorbing failures invisibly. `served_by` in the run journal is where that
-answer will come from once there are enough runs.
+The gateway falls back inside the model family. On an empty-content response
+`chatCore.ts` logs `FAILED 502` to the call log **and then calls
+`getNextFamilyFallback`**, retrying the next member of the same family before
+answering the client. That is visible in the 07:56 alert itself, whose three
+samples are `gemini-3.7-flash-high`, `-medium` and `-low` in sequence — not
+three independent failures, one request walking down a family.
+
+Underneath that, the OpenAI SDK retries. `client.max_retries` is 2 on the live
+container (the SDK default, never overridden), and its `_should_retry` returns
+true for any status `>= 500`, so a 502 that survives the family fallback is
+still attempted twice more.
+
+The call-log clustering fits: 502s arrive as `{1: 10, 2: 2, 3: 1, 5: 4}`. A
+lone 502 is what a *recovered* request looks like — one attempt logged, then a
+success. The 5-clusters are all from 2026-08-30 and are combo tiers, a
+different mechanism again.
+
+**So these are attempt rates, and the layers below them are why eight sidecar
+runs in a row succeeded against a "21% failure" model.** The number is real; it
+is not the number a caller experiences.
+
+**Which matters most for the alert wired in §7.** `gateway_monitor` computes its
+ratio from `call_logs`, and those rows are *attempts* — including every one the
+gateway itself recovered from a moment later. A 44% error ratio can therefore
+describe a window in which no caller saw a single failure. Read a WARNING as
+"the providers are working harder than usual", not as "requests are failing",
+and confirm user-visible impact from `served_by` and `degraded` in the run
+journal before treating it as an outage.
+
+Still true, and unchanged by any of this: the reroute moves agent traffic from
+`big-pickle`, which has not failed once in 102 calls, onto a family that needs
+its fallback regularly. That is a real quality and latency cost even when every
+request eventually succeeds.
+
+That question — "does anything retry after a 502" — was left open here for
+about an hour, with the note that eight successful runs were "equally consistent
+with an invisible retry absorbing failures". They were. Reading the gateway's
+own source answered it in two greps, which is where that should have started.
 
 **It does not touch the flows, which was checked rather than hoped.** The real
 `web_research` synthesis prompt — instructions, rules, search results — was
@@ -1289,6 +1321,15 @@ this document is emphatic elsewhere about not treating that as a fact about the
 whole. The next genuine breach is the proof, and the table is where to look for
 it.
 
+**Read the ratio as attempts, not outcomes.** `gateway_monitor` computes its
+breach from `call_logs` rows, and those are individual provider *attempts* —
+including every one the gateway recovered from a moment later via its
+family fallback, and every one the OpenAI SDK retried successfully. A 44% error
+ratio can describe a window in which no caller saw a single failure. §4 has the
+mechanism. Treat a WARNING as "the providers are working harder than usual" and
+confirm user-visible impact from `served_by` and `degraded` in the run journal
+before calling it an outage.
+
 **A push destination — Discord, email — is still not wired**, and needs a URL
 only the operator has. The table turns "alerts vanish" into "alerts accumulate
 somewhere you can look", which is the part that did not need anyone's
@@ -1457,7 +1498,7 @@ is worse than one that stops.
 | Agent tools | **Live 2026-09-04** | `agent_tools_active: true`. Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and answered in 2 steps with no step errors and `degraded: false` |
 | **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here — the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` on the VPS says whether it still reproduces, and exits non-zero while it does; run it after any `git subtree pull` |
 | **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served elsewhere when the prompt trips the gateway's content-based reroute — for the sidecar's own prompt that destination is `gemini-3.7-flash-high`, i.e. Google, measured 3 of 3 on 2026-09-05. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
-| **`agy` is the least reliable tier, not the most** | Measured 2026-09-05 | Over 500 calls since 2026-08-30, every 502 belongs to antigravity — `claude-opus-4-6-thinking-high` 20% of attempts, `gemini-3.7-flash-high` 21%, against `opencode/big-pickle` at 0 of 102. Combo fallthrough absorbs some of that for flows; the sidecar names a model directly and has nothing underneath it, and the content reroute moves it from the 0% model to the 21% one. §4 has the table and the caveats |
+| **`agy` needs its fallbacks most often** | Measured 2026-09-05, qualified 2026-09-06 | Over 500 calls since 2026-08-30 every 502 belongs to antigravity — `claude-opus-4-6-thinking-high` 20% of *attempts*, `gemini-3.7-flash-high` 21%, against `opencode/big-pickle` at 0 of 102. These are attempts, not outcomes: the gateway falls back within the model family on empty content, and the OpenAI SDK retries any 5xx twice on top, which is why eight consecutive sidecar runs succeeded against the 21% model. The cost is quality and latency, not visible failure. §4 has the table and all three caveats |
 | **Alerts now land in a table** | Wired 2026-09-06 | `gateway_monitor` had been delivering breaches to `gateway_alerts` since 2026-08-29 — fourteen of them, all `SUCCEEDED` — and the flow shaped each one and returned it into nothing, leaving the destination table at 0 rows. Two steps now close it: the shaping handles the `monitor.error_rate` payload shape (whose provider lives in `byProvider`, not `data.provider`, so the one-step version would have written a null provider for every alert), and a Tables step records five columns. Verified end to end on the real 07:56 payload; §7 has the row it produced. **Still unobserved: a real breach writing a real row** — that is the proof, and the table is where to look |
 | **The gateway runs a TLS binary with a known CVE** | Found 2026-09-05 | `omniroute:base` was built 2026-08-27 and carries `tls-client-linux-ubuntu-amd64-1.15.1.so`, the binary OmniRoute PR #12612 pinned *away from* over CVE-2025-68121. Verified against the advisory rather than that PR: GHSA-h355-32pf-p2xm is **medium, CVSS 4.8** — a `crypto/tls` session-resumption flaw where a mutated `ClientCAs`/`RootCAs` pool may resume a session it should reject — not the "CVSS 9.8 out-of-bounds read" the PR claims. Rebuilding is what would replace it, and rebuilding is exactly what the upstream break prevents, so the two open items are one problem: the image is frozen at 2026-08-27 until `tls-client-node` is fixed |
 | `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |

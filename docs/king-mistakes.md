@@ -587,6 +587,47 @@ about to publish.
 
 ---
 
+## 23. Asserting that a mechanism does not exist, without looking for it
+
+**What happened.** Having measured that `gemini-3.7-flash-high` fails 21% of
+attempts, I wrote that the sidecar's exposure is the worst case because it
+"names a model directly, so there is no ladder underneath it to absorb a
+failure". I committed that, and built an open-items row on top of it.
+
+There are two ladders.
+
+The gateway falls back inside the model family: on an empty-content response
+`chatCore.ts` logs `FAILED 502` and immediately calls `getNextFamilyFallback`,
+trying the next family member before answering. And the OpenAI SDK retries —
+`client.max_retries` is 2 on the live container and `_should_retry` returns true
+for every status `>= 500`.
+
+The evidence was already in front of me. The alert I had just read lists its
+three samples as `gemini-3.7-flash-high`, `-medium`, `-low` — I described that
+as three failures when it is one request walking down a family. And I had
+written, in the same commit, that eight sidecar runs succeeding against a 21%
+model was "equally consistent with an invisible retry". It was. I logged the
+alternative and then wrote the conclusion as though I had not.
+
+**The shape of the error.** "There is no X" is a claim about everything, and it
+cannot be reached by not having seen X. Two greps of a source tree I already had
+checked out settled it. The measurement was fine; the sentence I hung off it was
+a guess wearing a measurement's clothes.
+
+**What it would have cost.** The next step from that conclusion is to add a
+retry layer to the sidecar — real work, shipping a third redundant mechanism on
+top of two that already work, and a plausible way to turn one 502 into nine
+upstream calls.
+
+**Rule.** An absence claim needs a search, and the search is usually cheap —
+read the dependency, grep the vendored source, inspect the live object. Say
+"I did not find a fallback in X" rather than "there is no fallback", unless you
+went and looked. And when you have already written down a competing explanation
+for your own evidence, resolve it before publishing the conclusion; a hypothesis
+you have named and then ignored is worse than one you never thought of.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:
@@ -604,6 +645,10 @@ Three shapes account for nearly every entry:
    "at a commit" when it broke at an upstream release. Both times the real
    variable was one nobody was holding still, and both times the story that fit
    the two observations was available before the cheap control that killed it.
+5. **A conclusion that outruns its evidence by one sentence** — the measurement
+   is sound, and then a claim about mechanism, absence, or cause is appended to
+   it that no measurement was made for. Entries 20, 21 and 23 are all this, and
+   in each the check that would have caught it cost one command.
 
 The standing rule that comes out of all three, and the one most worth keeping:
 **anything that cannot be measured is treated as a failure, not a pass.**
