@@ -1596,7 +1596,7 @@ is worse than one that stops.
 | `agy` agentic loops | **Broken** | Round-two 502 also triggers a cooldown affecting other traffic |
 | Router accuracy | 86% | Good enough to save money, not good enough to be unsupervised on important work |
 | Code graph freshness | Up to a day | Weeks behind would be dangerous |
-| `no-think` in `blockedProviders` | Inert, and now proven so | Checked against the vendored registry 2026-09-06: 15 of the 16 entries are real provider ids or aliases and `no-think` is not one — it is a model-id prefix (`NO_THINKING_PREFIX = "no-think/"`). The list is read in exactly one place, `getNoAuthCandidates` in `virtualFactory.ts`, and compared against `providerDef.id` and `.alias`, so the entry can never match. Harmless to remove, and it changes nothing |
+| ~~`no-think` in `blockedProviders`~~ | **Removed 2026-09-06** | Checked against the vendored registry 2026-09-06: 15 of the 16 entries are real provider ids or aliases and `no-think` is not one — it is a model-id prefix (`NO_THINKING_PREFIX = "no-think/"`). The list is read in exactly one place, `getNoAuthCandidates` in `virtualFactory.ts`, and compared against `providerDef.id` and `.alias`, so the entry can never match. Harmless to remove, and it changes nothing |
 
 ---
 
@@ -1700,8 +1700,14 @@ actually showed.
    and `providers.env` contained a search-provider env-var name, which scores
    "tak ada model" forever, so the timer would have failed every week for a
    structural reason on the day it was installed.
-4. **Remove `no-think` from `blockedProviders`.** Cosmetic, but wrong entries in
-   a security-adjacent list age badly.
+4. ~~**Remove `no-think` from `blockedProviders`.**~~ **Done 2026-09-06.**
+   Removed via `PATCH /api/settings` after proving it inert rather than assuming
+   it: 15 of the 16 entries are real provider ids or aliases and `no-think` is a
+   model-id prefix, and the list is read in exactly one place, compared against
+   `providerDef.id` and `.alias`. The write was diffed against a captured
+   before-state — only `blockedProviders` and `settingsRevision` changed, all 84
+   keys intact — and the gateway answered `/healthz` and a real completion
+   afterwards.
 
 **Medium term**
 
