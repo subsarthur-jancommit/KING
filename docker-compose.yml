@@ -815,7 +815,18 @@ services:
     image: binwiederhier/ntfy:v2.11.0
     command: ["serve"]
     environment:
-      - NTFY_BASE_URL=${NTFY_BASE_URL:-https://gateway.arject.co/king-ntfy}
+      # NTFY_BASE_URL is deliberately NOT set, and this is not an omission.
+      # ntfy refuses to start with a base URL that has a path — verified, it
+      # crash-looped on "base-url must not have a path (/king-ntfy), as hosting
+      # ntfy on a sub-path is not supported". This domain has no wildcard DNS
+      # record, which is why everything here lives on a path, so a subdomain is
+      # not available either.
+      #
+      # It works anyway because Caddy's `handle_path` strips the prefix before
+      # proxying: a publish to /king-ntfy/<topic> reaches ntfy as /<topic>.
+      # What base-url actually feeds is generated attachment and click URLs,
+      # and attachments are disabled below. Set it only if a subdomain ever
+      # exists.
       - NTFY_LISTEN_HTTP=:80
       - NTFY_BEHIND_PROXY=true
       - NTFY_AUTH_FILE=/var/lib/ntfy/user.db
