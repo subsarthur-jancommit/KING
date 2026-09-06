@@ -468,3 +468,44 @@ falling back to `INITIAL_PASSWORD`. That distinction is not cosmetic:
 boot, and four of these scripts were silently unable to log in for two days
 after the admin password was changed. See entry 24 in
 [`docs/king-mistakes.md`](docs/king-mistakes.md).
+
+## Two agent configurations, and how to choose
+
+The gateway reroutes requests whose prompt looks like an agent's, so the sidecar
+normally does not get the model it asks for. Measured on 2026-09-06, that is
+avoidable — at a price. Both of these are defensible; the default is the first.
+
+**Default: keep the code graph, accept the reroute.**
+
+```
+AGENT_SIDECAR_AGENT_TOOLS   unset, or the full eleven
+```
+
+Eleven tools including `get_neighbors`, `get_node`, `query_graph` and
+`graph_stats`. Every run is served by whatever `auto/*` picks — measured 141 of
+204 calls over 24 hours. Answers arrive in ~10 s. `model_overridden` is true on
+essentially every run, and `served_by` tells you what actually answered.
+
+**Alternative: hold the model you asked for, lose the graph.**
+
+```
+AGENT_SIDECAR_AGENT_TOOLS=omniroute_web_search,omniroute_web_fetch,omniroute_x_search,omniroute_list_models_catalog,omniroute_get_health,omniroute_memory_search,omniroute_memory_add
+```
+
+Seven tools. The code-graph descriptions are what trip the router — along with
+smolagents' `python_interpreter` example, which the sidecar already retargets —
+so without them the request is honoured:
+
+```
+asked for   ollama/qwen2.5:1.5b-instruct-q4_K_M
+served_by   qwen2.5:1.5b-instruct-q4_K_M
+step_errors []
+```
+
+This is the configuration to use when work genuinely must not leave the host,
+and it is the only one where that is a guarantee rather than a hope. It costs
+the code graph, and on this hardware ~241 s against ~10 s, because a 1.5B model
+on two vCPUs is doing the work instead of Gemini.
+
+Neither is set-and-forget: `./scripts/gateway-report.sh` shows which one you are
+actually getting, and `served_by` on any single run shows it per call.
