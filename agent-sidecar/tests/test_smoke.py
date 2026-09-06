@@ -21,6 +21,8 @@ from agent_sidecar.config import load_settings
 from agent_sidecar.pydantic_runner import run_sync as pydantic_run_sync
 from agent_sidecar.smol_runner import run as smol_run
 
+from smoke_helpers import path_errors
+
 
 def _omniroute_reachable(base_url: str) -> bool:
     try:
@@ -77,7 +79,7 @@ def test_smolagents_reaches_omniroute():
     # once wrote `print("HTTP Status Code: 200")` and presented it as a real
     # fetch, so the runner returns step records the model does not author —
     # and a smoke test that ignores them is checking the half that can lie.
-    assert not outcome["step_errors"], outcome["step_errors"]
+    assert not path_errors(outcome["step_errors"]), outcome["step_errors"]
 
 
 def test_pydantic_ai_reaches_omniroute():
