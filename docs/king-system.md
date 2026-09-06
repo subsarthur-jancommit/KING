@@ -1711,10 +1711,27 @@ actually showed.
 
 **Medium term**
 
-5. **A larger decision model for routing.** Prompt design is exhausted at 1.5B —
-   measured across four versions. A 3B–7B model, or grammar-constrained decoding
-   forcing one of four labels, is the next real gain. `--eval` already exists to
-   judge whether it worked.
+5. ~~**A larger decision model for routing.**~~ **Already happening, and it
+   works — measured 2026-09-06.** The premise here was that prompt design is
+   exhausted at 1.5B and a bigger model is the next real gain. Both halves have
+   been overtaken: the router has not been reaching the 1.5B model at all. The
+   content reroute serves it from `antigravity/gemini-pro-agent`, 4 of 4 calls
+   in `gateway-report.sh`.
+
+   So the experiment ran itself. `--eval` now scores **15/15 = 100%**, against
+   86% when it was last measured on the local model — including
+   `"write a bash script to rotate nginx logs weekly"`, recorded as a known
+   failure that answered LOCAL and now answers PAID.
+
+   That is a decision to make rather than a win to bank. The bigger model costs
+   what the reroute costs everywhere else: **8.04 s mean against ~0.95 s**, `agy`
+   subscription quota instead of free local compute, and the task description
+   leaving the machine. If the routing layer is wanted back on-host, the
+   accuracy question is settled and the remaining work is prompt-shaping the
+   classifier so it stops tripping the reroute — not finding a larger model.
+
+   Note the eval prints the model it *asks* for, which is not the one answering.
+   Read `gateway-report.sh` alongside it.
 6. **Web fetch, not just search — available to the agent, unused by the flows.**
    `omniroute_web_fetch` is in the agent's allowlist and reaches Tavily, the one
    provider configured for both. The flows still work from snippets only, which
