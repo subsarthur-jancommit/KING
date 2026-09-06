@@ -628,6 +628,45 @@ you have named and then ignored is worse than one you never thought of.
 
 ---
 
+## 24. Changing a credential without asking what reads it
+
+**What happened.** On 2026-09-04 I reset the OmniRoute admin password, verified
+I could log in, and moved on. On 2026-09-06, installing an unrelated timer, the
+first thing it ran printed `Login ke http://localhost:20128 gagal`.
+
+Four scripts authenticate to the gateway — `pool-register.sh`,
+`combo-paid-first.sh`, `local-router.sh`, `localmodel-register.sh` — and all
+four read `INITIAL_PASSWORD` from `omniroute/.env`. That is a bootstrap value:
+OmniRoute seeds the stored hash from it on first boot and never consults it
+again. Every one of them had been broken for two days.
+
+```
+login with the 2026-09-04 password         -> HTTP 200
+login with omniroute/.env INITIAL_PASSWORD -> HTTP 401
+```
+
+**Why nothing caught it.** The variable was still present and still non-empty,
+so every check that looked at it passed. Only its *truth* had expired, and
+nothing here made a real login. `verify-credentials.sh` — a script written
+specifically because "a revoked key does not announce itself" — checked five
+credentials and not this one, the only one that had actually changed.
+
+**Two separate faults, and the second is the interesting one.** The first is
+that scripts read a bootstrap variable as a live credential; that is fixed with
+`OMNIROUTE_ADMIN_PASSWORD`, with `INITIAL_PASSWORD` kept as the fallback because
+it is correct wherever the password has never been changed, which is CI. The
+second is that I performed the rotation and verified only the thing I had just
+touched. "I can log in" was true and told me nothing about the four consumers.
+
+**Rule.** Changing a credential is a change to every consumer of it, and the
+consumers are findable — one grep for the variable name. Verify from the far
+side: not "the new value works" but "everything that used the old value still
+works". A rotation is not done when the new credential is accepted; it is done
+when nothing is still holding the old one. This is on the list for the real
+rotation ahead, which touches a dozen more keys than this did.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:

@@ -1251,6 +1251,7 @@ reporting healthy. Each guard below exists because of a specific one.
 | `monitor-deadman.timer` | 15 min | That the monitor **itself** is still running |
 | `codegraph-refresh.timer` | Daily | The graph ageing silently |
 | `/audit/runs.jsonl` | Every agent run | Cost, tool use, and degradation trends that were previously unrecoverable |
+| `pool-prove.timer` | Weekly, Sun 04:17 | A registered provider that has gone silent. OmniRoute's own autopilot reported every provider "healthy, 0 issues" while three failed 100% of real requests; this sends a real completion to each and counts only answers |
 | `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Six real calls, not presence tests; two of them assert that a *wrong* token is rejected |
 | `check-model-routing.sh` | After any `git subtree pull` | Whether the gateway still overrides the model you asked for. Exits non-zero while it does |
 
@@ -1570,9 +1571,18 @@ actually showed.
    `/v1/chat/completions` would expose the `model` field, and the
    `x-omniroute-decision` header would expose the *strategy* — which is the
    thing that actually changes.
-3. **A weekly `pool-register.sh --prove` timer.** The built-in health autopilot
-   reported all providers "healthy, 0 issues" while three of them failed 100% of
-   real requests.
+3. ~~**A weekly `pool-register.sh --prove` timer.**~~ **Done 2026-09-06.**
+   `pool-prove.timer` runs it Sunday 04:17 with a randomized delay, off the
+   quarter-hour the other timers use so a burst of probe traffic never lands
+   inside `gateway_monitor`'s window and moves the ratio it is judging. A silent
+   provider fails the unit and posts to `gateway_alerts`, so it lands in the
+   table rather than only in `journalctl`.
+
+   Installing it found two things worth more than the timer. Four operator
+   scripts had been unable to log in since 2026-09-04 — see the note below —
+   and `providers.env` contained a search-provider env-var name, which scores
+   "tak ada model" forever, so the timer would have failed every week for a
+   structural reason on the day it was installed.
 4. **Remove `no-think` from `blockedProviders`.** Cosmetic, but wrong entries in
    a security-adjacent list age badly.
 
