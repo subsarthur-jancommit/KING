@@ -22,7 +22,7 @@ dead service cost the agent all of its tools.
 
 from __future__ import annotations
 
-from .config import Settings
+from .config import Settings, runs_on_this_host
 
 
 def mcp_tools_enabled(settings: Settings) -> bool:
@@ -52,7 +52,21 @@ def smolagents_mcp_server_parameters(settings: Settings) -> list[dict]:
             "headers": {"Authorization": f"Bearer {settings.omniroute_mcp_api_key}"},
         }
     ]
-    if settings.codegraph_mcp_api_key:
+    # The code graph is dropped when the caller asked for a local model, and
+    # this is the one place the whole local path hangs on.
+    #
+    # Measured 2026-09-06 by bisecting the real 135-line ToolCallingAgent prompt
+    # against `x-omniroute-decision`: exactly two regions flip the gateway from
+    # `strategy=single` to `strategy=auto`, and one of them is these tools' own
+    # descriptions — graphify-out/graph.json, nodes, edges, BFS/DFS. With them
+    # present a request for `ollama/…` is served by Gemini; without them it is
+    # served by qwen2.5 on this host, 3 of 3, with no egress step error.
+    #
+    # So the trade is not optional and not subtle: on the local path these tools
+    # ARE the reason the model choice is ignored. Skipping the whole server
+    # rather than filtering tool names, because the trigger is the server's
+    # descriptions and a name list would go stale the moment it adds a tool.
+    if settings.codegraph_mcp_api_key and not runs_on_this_host(settings.model_id):
         servers.append(
             {
                 "url": settings.codegraph_mcp_url,

@@ -630,3 +630,94 @@ def test_retargeting_never_raises_on_a_strange_agent():
 
     assert smol_runner._retarget_example(_NoTemplates()) is False
     assert smol_runner._retarget_example(_WeirdTemplates()) is False
+
+
+# --------------------------------------------------------------------------
+# The local path. Asking for an `ollama/` model is how a caller says the work
+# must not leave this machine, and until 2026-09-06 it did anyway.
+# --------------------------------------------------------------------------
+
+
+def test_runs_on_this_host_reads_only_the_prefix():
+    from agent_sidecar.config import runs_on_this_host
+
+    assert runs_on_this_host("ollama/qwen2.5:1.5b-instruct-q4_K_M") is True
+    assert runs_on_this_host("ollama/qwen3:4b") is True
+    assert runs_on_this_host("opencode/big-pickle") is False
+    assert runs_on_this_host("agy/claude-sonnet-4-6") is False
+    # A combo is a ladder, not a promise about where the work runs.
+    assert runs_on_this_host("paid-first") is False
+    # Never raises on the shapes a caller can actually send.
+    assert runs_on_this_host(None) is False
+    assert runs_on_this_host("") is False
+
+
+def test_a_local_model_drops_the_code_graph_server(monkeypatch):
+    """The measurement this exists for.
+
+    The code-graph tool descriptions are one of exactly two regions in the
+    agent's system prompt that flip the gateway to strategy=auto. With them
+    present a request for ollama/… is served by Gemini; without them it is
+    served on this host. So on the local path the graph server is not a
+    trade-off to weigh per run — it is the reason the model choice is ignored.
+    """
+    from agent_sidecar.config import load_settings
+    from agent_sidecar.mcp_tools import smolagents_mcp_server_parameters
+
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+    monkeypatch.setenv("GRAPHIFY_API_KEY", "a-graph-key")
+    monkeypatch.setenv("AGENT_SIDECAR_MODEL_ID", "ollama/qwen2.5:1.5b-instruct-q4_K_M")
+
+    servers = smolagents_mcp_server_parameters(load_settings())
+
+    assert len(servers) == 1
+    assert "8130" not in servers[0]["url"]
+
+
+def test_a_remote_model_keeps_the_code_graph_server(monkeypatch):
+    """The default path is unchanged; this is a trade, not a removal."""
+    from agent_sidecar.config import load_settings
+    from agent_sidecar.mcp_tools import smolagents_mcp_server_parameters
+
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+    monkeypatch.setenv("GRAPHIFY_API_KEY", "a-graph-key")
+    monkeypatch.setenv("AGENT_SIDECAR_MODEL_ID", "opencode/big-pickle")
+
+    servers = smolagents_mcp_server_parameters(load_settings())
+
+    assert len(servers) == 2
+    assert any("8130" in s["url"] for s in servers)
+
+
+def test_the_graph_key_being_unset_still_drops_it_for_a_remote_model(monkeypatch):
+    """The older reason to skip it, which must keep working independently."""
+    from agent_sidecar.config import load_settings
+    from agent_sidecar.mcp_tools import smolagents_mcp_server_parameters
+
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+    monkeypatch.delenv("GRAPHIFY_API_KEY", raising=False)
+    monkeypatch.setenv("AGENT_SIDECAR_MODEL_ID", "opencode/big-pickle")
+
+    assert len(smolagents_mcp_server_parameters(load_settings())) == 1
+
+
+def test_the_egress_error_uses_the_same_predicate():
+    """outcome.py used to spell `startswith("ollama/")` a second time.
+
+    Two spellings of one predicate drift, and this one decides whether an
+    override is reported as a confidentiality event or a cost one.
+    """
+    from agent_sidecar.outcome import summarise
+
+    local = summarise(
+        {"result": "x", "served_by": "gemini-3.7-flash-high"},
+        runner="smolagents", model="ollama/qwen2.5:1.5b-instruct-q4_K_M")
+    assert local["degraded"] is True
+    assert any("left the host" in e for e in local["step_errors"])
+
+    remote = summarise(
+        {"result": "x", "served_by": "big-pickle"},
+        runner="smolagents", model="agy/claude-sonnet-4-6")
+    assert remote["model_overridden"] is True
+    assert remote["degraded"] is False
+    assert remote["step_errors"] == []

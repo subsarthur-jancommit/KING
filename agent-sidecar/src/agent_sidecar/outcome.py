@@ -22,6 +22,8 @@ import os
 import sys
 from datetime import datetime, timezone
 
+from .config import runs_on_this_host
+
 
 def _is_direct_model(model: str) -> bool:
     """A combo name is a request for a ladder, not for one model.
@@ -80,7 +82,7 @@ def summarise(outcome: dict, *, runner: str, model: str) -> dict:
     #
     # It cannot prevent the egress — by the time a response exists the request
     # has already been served elsewhere. It can refuse to be quiet about it.
-    if overridden and model.startswith("ollama/"):
+    if overridden and runs_on_this_host(model):
         step_errors.append(
             f"local-only work left the host: asked for {model}, served by {served}"
         )

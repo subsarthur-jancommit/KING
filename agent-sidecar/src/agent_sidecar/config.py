@@ -92,6 +92,21 @@ class Settings:
 
 
 # Read-mostly by construction. Search and fetch are what the agent could not
+def runs_on_this_host(model_id: str | None) -> bool:
+    """True when the caller named a model served by the local Ollama.
+
+    One definition, because two spellings of the same predicate drift. It is
+    read by `mcp_tools.smolagents_mcp_server_parameters` to decide which MCP
+    servers to load, and by `outcome.summarise` to decide whether an override
+    is an egress event rather than a cost one.
+
+    The prefix is the whole test on purpose. `ollama/` is how a caller says
+    "this must not leave the machine", and the gateway resolves that prefix to
+    the local connection; anything else is somebody else's hardware.
+    """
+    return isinstance(model_id, str) and model_id.startswith("ollama/")
+
+
 # do at all before; memory is what lets one run leave something for the next.
 # Nothing here reconfigures the gateway.
 #
