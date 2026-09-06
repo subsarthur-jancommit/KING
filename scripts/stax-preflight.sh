@@ -301,6 +301,41 @@ check_agent_sidecar_http() {
     "This endpoint runs model-generated code. Keep it on loopback and reach it through Caddy, which requires the bearer above."
 }
 
+# Split out so the self-test can drive it without standing up the profile,
+# the same way check_agent_tools_wiring and check_sidecar_bearer are.
+check_ntfy_token() {
+  local token="$1"
+  if [ -z "$token" ]; then
+    # A failure, not a warning. ntfy ships allowing anyone to publish and
+    # subscribe to any topic, and this deployment puts it behind a public
+    # domain. With NTFY_AUTH_DEFAULT_ACCESS=deny-all and no token nothing can
+    # publish, so alerts silently stop reaching anyone — which is the exact
+    # state this profile exists to end.
+    fail "NTFY_TOKEN is unset. With deny-all and no token, nothing can publish and no alert reaches you."
+    return
+  fi
+  check_secret "NTFY_TOKEN" "$token" 'changeme' 24
+}
+
+check_alerting() {
+  echo "profile: alerting (ntfy)"
+  check_ntfy_token "$(lookup NTFY_TOKEN)"
+  check_bind_host "NTFY_BIND_HOST" "$(lookup NTFY_BIND_HOST)" \
+    "Reach it through Caddy at /king-ntfy/, which is the only path that should be public."
+
+  # The topic is not a password, and saying so here is the point: it travels in
+  # the URL of every publish. The token above is the boundary.
+  local topic
+  topic=$(lookup NTFY_ALERT_TOPIC)
+  if [ -z "$topic" ]; then
+    fail "NTFY_ALERT_TOPIC is unset; gateway_alerts has nowhere to publish."
+  elif [ "${#topic}" -lt 12 ]; then
+    warn "NTFY_ALERT_TOPIC is short (${#topic} chars). It rides in the URL of every publish; a guessable one invites noise even with deny-all."
+  else
+    pass "NTFY_ALERT_TOPIC is set."
+  fi
+}
+
 check_workflow() {
   echo "profile: workflow (Activepieces)"
   if [ ! -f activepieces/.env ]; then
@@ -767,6 +802,16 @@ exit 1
   errors=0; check_sidecar_bearer "0123456789abcdef0123456789abcdef" >/dev/null
   assert_eq "a real 32-char token passes" "$errors" 0
 
+  echo "self-test: check_ntfy_token"
+  errors=0; check_ntfy_token "" >/dev/null
+  assert_eq "no token fails (deny-all means nothing publishes)" "$errors" 1
+  errors=0; check_ntfy_token "changeme" >/dev/null
+  assert_eq "the placeholder fails" "$errors" 1
+  errors=0; check_ntfy_token "short" >/dev/null
+  assert_eq "a short token fails" "$errors" 1
+  errors=0; check_ntfy_token "tk_0123456789abcdef0123456789" >/dev/null
+  assert_eq "a real token passes" "$errors" 0
+
   echo "self-test: lookup"
   local tmp; tmp=$(mktemp)
   printf 'FOO=first\nFOO=second\nBAR=value # trailing\n' > "$tmp"
@@ -790,7 +835,7 @@ main() {
   fi
 
   if [ "$#" -eq 0 ]; then
-    echo "usage: $0 <profile> [profile...]   (base | agent-sidecar | agent-sidecar-http | openhands |
+    echo "usage: $0 <profile> [profile...]   (base | agent-sidecar | agent-sidecar-http | alerting | openhands |
                                             observability | proxy | workflow |
                                             tracing)" >&2
     echo "       $0 --self-test" >&2
@@ -815,6 +860,7 @@ main() {
       workflow)      check_workflow ;;
       codegraph)     check_codegraph ;;
       localmodel)    check_localmodel ;;
+      alerting)      check_alerting ;;
       *) fail "unknown profile '$profile'" ;;
     esac
     echo

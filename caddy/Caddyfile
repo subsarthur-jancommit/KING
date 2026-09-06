@@ -55,6 +55,28 @@
 		}
 	}
 
+	# ntfy, so an alert reaches a person instead of stopping in a table.
+	#
+	# Same reasoning as the two blocks above: a path on a name that already
+	# resolves, because this domain has no wildcard record.
+	#
+	# No auth layer is added here, and unlike the code graph that is NOT because
+	# the upstream is safe by default — it is the opposite. ntfy ships allowing
+	# anyone to publish and subscribe to any topic, so the service is configured
+	# with NTFY_AUTH_DEFAULT_ACCESS=deny-all and a token; see the comment on the
+	# service in docker-compose.yml. Adding a second bearer here would break the
+	# phone app, which carries its own.
+	#
+	# flush_interval -1 is required, not cosmetic: ntfy holds a long-lived SSE
+	# stream for subscribers, and buffering it would delay every notification
+	# until the buffer filled — which for a low-traffic alert topic is close to
+	# never.
+	handle_path /king-ntfy/* {
+		reverse_proxy ntfy:80 {
+			flush_interval -1
+		}
+	}
+
 	handle {
 		reverse_proxy omniroute-base:{$DASHBOARD_PORT:20128} {
 		# OmniRoute streams SSE for /v1/chat/completions and /v1/messages.

@@ -794,6 +794,56 @@ services:
     profiles:
       - localmodel
 
+  # ── ntfy — supaya alarm sampai ke orang, bukan berhenti di tabel ────────────
+  #
+  # gateway_monitor mendeteksi breach, gateway_alerts mencatatnya sejak
+  # 2026-09-06, dan sampai sekarang tidak ada yang MEMBERI TAHU siapa pun.
+  # `ap_list_connections` kosong — tidak ada Slack, Discord, atau email di
+  # proyek ini — jadi tujuan push-nya di-host sendiri.
+  #
+  # Soal keamanan, dinyatakan terus terang karena mudah salah. Bawaan ntfy
+  # membuat SIAPA PUN boleh menerbitkan dan berlangganan topik apa pun. Di
+  # belakang domain publik itu berarti alert — nama provider, rasio kegagalan,
+  # model yang gagal — bisa dibaca siapa saja yang menebak nama topik, dan
+  # siapa saja bisa mengirim alert palsu. Nama topik acak hanyalah rahasia di
+  # dalam URL, bukan autentikasi.
+  #
+  # Jadi `deny-all` plus satu token. Konsekuensinya jujur: daftar rotasi
+  # bertambah satu entri, NTFY_TOKEN. Itu harga alarm yang tidak bisa dibaca
+  # orang lewat.
+  ntfy:
+    image: binwiederhier/ntfy:v2.11.0
+    command: ["serve"]
+    environment:
+      - NTFY_BASE_URL=${NTFY_BASE_URL:-https://gateway.arject.co/king-ntfy}
+      - NTFY_LISTEN_HTTP=:80
+      - NTFY_BEHIND_PROXY=true
+      - NTFY_AUTH_FILE=/var/lib/ntfy/user.db
+      # Tanpa baris ini instalasi ini terbuka untuk publik.
+      - NTFY_AUTH_DEFAULT_ACCESS=deny-all
+      - NTFY_CACHE_FILE=/var/lib/ntfy/cache.db
+      # Alert lama tidak berguna dan hanya menumpuk di disk yang sudah 64%.
+      - NTFY_CACHE_DURATION=${NTFY_CACHE_DURATION:-72h}
+      - NTFY_ATTACHMENT_CACHE_DIR=
+    volumes:
+      - ntfy-data:/var/lib/ntfy
+    ports:
+      - "${NTFY_BIND_HOST:-127.0.0.1}:${NTFY_PORT:-8140}:80"
+    healthcheck:
+      # /v1/health menjawab tanpa autentikasi, jadi ini menguji prosesnya dan
+      # bukan kredensialnya — sesuai maksud healthcheck.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: ${NTFY_MEM_LIMIT:-128m}
+    memswap_limit: ${NTFY_MEM_LIMIT:-128m}
+    cpus: ${NTFY_CPUS:-0.25}
+    profiles:
+      - alerting
+
 volumes:
   openhands-canvas-settings:
   caddy-data:
@@ -802,3 +852,4 @@ volumes:
   codegraph-out:
   ollama-models:
   agent-audit:
+  ntfy-data:
