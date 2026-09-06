@@ -1529,6 +1529,7 @@ is worse than one that stops.
 | **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here — the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` on the VPS says whether it still reproduces, and exits non-zero while it does; run it after any `git subtree pull` |
 | **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served elsewhere when the prompt trips the gateway's content-based reroute — for the sidecar's own prompt that destination is `gemini-3.7-flash-high`, i.e. Google, measured 3 of 3 on 2026-09-05. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
 | **`agy` needs its fallbacks most often** | Measured 2026-09-05, qualified 2026-09-06 | Over 500 calls since 2026-08-30 every 502 belongs to antigravity — `claude-opus-4-6-thinking-high` 20% of *attempts*, `gemini-3.7-flash-high` 21%, against `opencode/big-pickle` at 0 of 102. These are attempts, not outcomes: the gateway falls back within the model family on empty content, and the OpenAI SDK retries any 5xx twice on top, which is why eight consecutive sidecar runs succeeded against the 21% model. The cost is quality and latency, not visible failure. §4 has the table and all three caveats |
+| **The local router is not local** | Found 2026-09-06 | `local-router.sh` asks for `ollama/qwen2.5:1.5b-instruct-q4_K_M` and is served by `antigravity/gemini-pro-agent` — four runs, four matching call-log rows. Both premises of the design are gone: it is not free at the margin, and the task description leaves the machine. Latency went from ~0.95 s to 7.3–10.2 s. It still labels correctly, which is why it went unnoticed. Retired from the live path already, so nothing depends on it — but the same fault reaches anything that assumes naming a local model keeps work local |
 | **Alerts now land in a table** | Wired 2026-09-06 | `gateway_monitor` had been delivering breaches to `gateway_alerts` since 2026-08-29 — fourteen of them, all `SUCCEEDED` — and the flow shaped each one and returned it into nothing, leaving the destination table at 0 rows. Two steps now close it: the shaping handles the `monitor.error_rate` payload shape (whose provider lives in `byProvider`, not `data.provider`, so the one-step version would have written a null provider for every alert), and a Tables step records five columns. Verified end to end on the real 07:56 payload; §7 has the row it produced. **Still unobserved: a real breach writing a real row** — that is the proof, and the table is where to look |
 | **The gateway runs a TLS binary with a known CVE** | Found 2026-09-05 | `omniroute:base` was built 2026-08-27 and carries `tls-client-linux-ubuntu-amd64-1.15.1.so`, the binary OmniRoute PR #12612 pinned *away from* over CVE-2025-68121. Verified against the advisory rather than that PR: GHSA-h355-32pf-p2xm is **medium, CVSS 4.8** — a `crypto/tls` session-resumption flaw where a mutated `ClientCAs`/`RootCAs` pool may resume a session it should reject — not the "CVSS 9.8 out-of-bounds read" the PR claims. Rebuilding is what would replace it, and rebuilding is exactly what the upstream break prevents, so the two open items are one problem: the image is frozen at 2026-08-27 until `tls-client-node` is fixed |
 | `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |
@@ -1568,14 +1569,35 @@ Each of these is running, not planned.
    `ollama/qwen2.5:1.5b-instruct-q4_K_M` answers in 9.8 s and nothing egresses
    **for a plain prompt**. It is not an unconditional guarantee: see the
    confidentiality note in §5b. Check `served_by` before trusting it.
-6. **Unattended monitoring — that currently fails *quietly*.** The gateway is
-   checked every 15 minutes and a dead-man switch watches the monitor; both were
-   verified running on 2026-09-05. But the alert flow normalises what it
-   receives and stops there. Three alerts fired that day and none reached a
-   person. The destination table exists and is empty; §7 carries the one step
-   that closes it.
-7. **Spend triage.** `local-router.sh` labels a task and picks the ladder in
-   ~0.95 s for nothing.
+6. **Unattended monitoring, and the alerts now land somewhere.** The gateway is
+   checked every 15 minutes, a dead-man switch watches the monitor, and a weekly
+   `pool-prove` timer proves every provider still answers. All three verified
+   running. Since 2026-09-06 a breach is recorded in the `gateway_alerts` table
+   instead of being shaped and dropped — read it with
+   `./scripts/alerts-report.sh`. Nobody is *told*, which is the remaining half:
+   a push destination needs a URL only the operator has, and this project has no
+   Slack, Discord or email connection configured.
+7. **Spend triage — but not the way it was designed, and not for free.**
+   `local-router.sh` still labels correctly: PAID for a refactor, FREE for a
+   translation, measured again 2026-09-06. Two things underneath it are no
+   longer true.
+
+   It asks for `ollama/qwen2.5:1.5b-instruct-q4_K_M` and is **served by
+   `antigravity/gemini-pro-agent`** — four consecutive runs, four matching
+   call-log rows. The content reroute in §4 catches the classification prompt
+   like everything else agent-shaped. So the two premises the design rested on
+   are both gone: it is not free at the margin, it spends `agy` subscription
+   quota; and **the task description leaves this machine**, which is precisely
+   what putting the decision layer on a local model was for.
+
+   Latency moved with it: ~0.95 s when measured on 2026-08-30, 7.3–10.2 s over
+   four runs now. Nothing about the script changed. It kept returning correct
+   labels the whole time, which is why nobody looked — a component can be
+   *right* and still not be doing what you think it is doing.
+
+   The script is already retired from the live decision path, so nothing depends
+   on this today. It matters because the same fault reaches the same way into
+   anything that assumes naming a local model keeps work local.
 8. **Hand a task to an agent instead of doing it yourself.** `POST /run`, or
    `run_agent` over the bridge: it searches the live web, fetches pages, and
    remembers what you tell it to across separate calls. Every reply carries what
