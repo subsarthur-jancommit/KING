@@ -392,7 +392,6 @@ def test_one_dead_server_does_not_cost_the_agent_the_other_ones_tools(monkeypatc
     on the code graph being up, which is the opposite of the point.
     """
     monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
-    monkeypatch.setenv("GRAPHIFY_API_KEY", "a-graph-key")
 
     class _PerServer:
         def __init__(self, spec, **kwargs):
@@ -408,8 +407,12 @@ def test_one_dead_server_does_not_cost_the_agent_the_other_ones_tools(monkeypatc
 
     monkeypatch.setattr("smolagents.MCPClient", _PerServer, raising=True)
 
+    # The graph key goes through _settings rather than a bare setenv, so the
+    # two-server premise is stated where the settings are built instead of
+    # depending on call order — which is what broke when _settings started
+    # clearing it.
     tools, clients, report = smol_runner._load_tools(
-        _settings(monkeypatch, "omniroute_web_search,get_neighbors")
+        _settings(monkeypatch, "omniroute_web_search,get_neighbors", graphify="a-graph-key")
     )
 
     # The gateway's tool survived the graph being down.
