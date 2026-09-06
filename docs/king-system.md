@@ -1005,6 +1005,39 @@ The answer improved as well as the step count — it came back with file paths a
 line numbers rather than a bare list of names. A test asserts both pins are
 present, because the instructions read like prose and prose invites tidying.
 
+**How far that generalises, audited rather than guessed.** Asking smolagents
+itself which inputs it will demand, for all eleven tools it holds:
+
+```
+omniroute_web_search    query, max_results, search_type, provider
+omniroute_web_fetch     url, provider, format, include_metadata, depth, wait_for_selector
+omniroute_memory_search apiKeyId, query, type, maxTokens, limit
+omniroute_memory_add    apiKeyId, sessionId, type, key, content, metadata
+get_neighbors           label, relation_filter, token_budget, project_path
+graph_stats             project_path
+omniroute_get_health    (none)
+```
+
+Nearly every declared input, including plainly optional ones like `depth` and
+`format`. The natural conclusion — that the memory tools are unusable, since an
+agent cannot know its own `apiKeyId` — is wrong, and was checked before being
+written down. Measured 2026-09-06, two separate runs:
+
+```
+run 1   "store: the disk was at 74 percent"   tools_used=[omniroute_memory_add]     2 steps, degraded=false
+run 2   "search memory for that percentage"   tools_used=[omniroute_memory_search]  2 steps, degraded=false
+        answer: 74 percent
+```
+
+So the agent supplies something acceptable for those fields and the server takes
+it. The tools work, and the round trip across separate runs — the claim in §12
+that it remembers what you tell it — is re-verified rather than inherited.
+
+What actually needs pinning is narrower than "everything required": it is
+arguments whose **value cannot be guessed from the task**. There are two on this
+deployment, `provider` and `project_path`, and both are now in the instructions.
+The rest the model fills in sensibly on its first attempt.
+
 ### The default model was left alone, and that was measured
 
 `AGENT_SIDECAR_MODEL_ID` defaults to `opencode/big-pickle`, the free tier. The
