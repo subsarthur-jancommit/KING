@@ -58,6 +58,21 @@ def _skip_if_upstream_is_down(exc: Exception) -> None:
 
     Anything else — a connection error, a 4xx, a malformed reply — still
     fails, because those do indicate something here is wrong.
+
+    **A candidate pattern, deliberately not added.** `502 Provider returned
+    empty content` is by far the most common provider failure on this
+    deployment — 36 of them in the 2026-08-30..09-05 window, all antigravity.
+    It is not matched here, and that is on purpose rather than an oversight:
+    the gateway retries the whole model family on empty content before
+    answering, and the OpenAI SDK retries any 5xx twice on top, so for that
+    string to reach this function every one of those attempts must have failed.
+    That is a real outage and arguably belongs in the skip list.
+
+    It stays out until it is actually seen here. A skip pattern that never
+    fires costs nothing; one added on a guess can quietly stop the test from
+    covering the case it was written for, which is the first pattern in
+    docs/king-mistakes.md. If a run ever fails with that message, add it — the
+    reasoning is already done.
     """
     message = str(exc)
     if "service_unavailable" in message or "Upstream request failed" in message:
