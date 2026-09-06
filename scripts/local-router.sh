@@ -103,6 +103,9 @@ MODE  = os.environ["MODE"]
 TASK  = os.environ["TASK"]
 MIN_ACC = int(os.environ["MIN_ACCURACY"])
 
+# Which providers actually answered, collected from x-omniroute-provider.
+SERVED = set()
+
 VALID = ("LOCAL", "FREE", "PAID", "WEB")
 
 # Which ladder each label spends on. These are combo names that already exist in
@@ -189,7 +192,14 @@ def classify(task):
                  "Authorization": "Bearer " + KEY})
     t = time.time()
     try:
-        d = json.loads(urllib.request.urlopen(req, timeout=90).read().decode())
+        # The response headers, not just the body. MODEL is what we ASK for and
+        # the gateway is free to serve something else — measured 2026-09-06, it
+        # serves this classifier from antigravity/gemini-pro-agent rather than
+        # the local model named below. An eval that reports the requested model
+        # as though it answered is measuring one thing and labelling it another.
+        resp = urllib.request.urlopen(req, timeout=90)
+        SERVED.add(resp.headers.get("x-omniroute-provider") or "?")
+        d = json.loads(resp.read().decode())
     except Exception:
         return "", time.time() - t
     m = (d.get("choices") or [{}])[0].get("message") or {}
@@ -216,7 +226,7 @@ if MODE == "classify":
 ok = 0
 offlabel = 0
 lat = []
-print(f"Scoring {len(CASES)} cases against {MODEL} …")
+print(f"Scoring {len(CASES)} cases, asking for {MODEL} …")
 for task, want in CASES:
     got, dt = classify(task)
     lat.append(dt)
@@ -232,6 +242,17 @@ print()
 print(f"  accuracy: {ok}/{len(CASES)} = {acc}%   (floor: {MIN_ACC}%)")
 print(f"  unusable replies: {offlabel}")
 print(f"  latency: mean {sum(lat)/len(lat):.2f}s, max {max(lat):.2f}s")
+
+# The number that decides whether this score means what it says. A run served
+# by something other than the model named above is measuring that other model,
+# and every conclusion drawn from the accuracy figure belongs to it.
+served = sorted(p for p in SERVED if p and p != "?")
+if served:
+    want = MODEL.split("/", 1)[0]
+    print(f"  served by: {', '.join(served)}")
+    if [p for p in served if p != want]:
+        print(f"  NOTE: you asked for {MODEL}. This score belongs to the")
+        print(f"        provider(s) above, not to it — see docs/king-system.md 4.")
 print()
 if acc < MIN_ACC:
     print(f"BELOW FLOOR — do not ship this prompt. Routing at {acc}% sends real")
