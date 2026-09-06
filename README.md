@@ -435,6 +435,7 @@ how you will be looking for them.
 |---|---|
 | `agent-report.sh [days]` | Cost, tool use, degradation and `served_by` across agent runs. |
 | `alerts-report.sh [days]` | What `gateway_monitor` has been complaining about. Reads Postgres directly, so it answers even when Activepieces is wedged. |
+| `gateway-report.sh [hours]` | Who called the gateway and how each call was routed — rerouted by the gateway, through a ladder the caller chose, or left alone. This is how a flow finds out which tier it is really getting, since the AI piece returns text and not a model name. |
 
 **Setup, run once and rarely again**
 

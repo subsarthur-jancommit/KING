@@ -1318,6 +1318,7 @@ reporting healthy. Each guard below exists because of a specific one.
 | `monitor-deadman.timer` | 15 min | That the monitor **itself** is still running |
 | `codegraph-refresh.timer` | Daily | The graph ageing silently |
 | `/audit/runs.jsonl` | Every agent run | Cost, tool use, and degradation trends that were previously unrecoverable |
+| `gateway-report.sh` | When you want to know | How each caller's traffic was routed. Measured 2026-09-06: the sidecar had 141 of 204 calls rerouted through `auto/*`, and `local-router-probe` 4 of 4 — the gateway recording its own override |
 | `alerts-report.sh` | When you want to know | What the gateway has been complaining about. Reads Postgres directly, like `monitor-deadman.sh`, so it still answers when the Activepieces engine is wedged — one of the states you would most want to ask about |
 | `pool-prove.timer` | Weekly, Sun 04:17 | A registered provider that has gone silent. OmniRoute's own autopilot reported every provider "healthy, 0 issues" while three failed 100% of real requests; this sends a real completion to each and counts only answers |
 | `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Seven real calls, not presence tests; two of them assert that a *wrong* token is rejected, and one is a real admin login — the check whose absence let four scripts fail silently for two days |
@@ -1669,14 +1670,23 @@ actually showed.
 **Near term**
 
 1. **Rotate credentials.** The one deferred item that grows with every session.
-2. **Make silent degradation visible — done for the agent, still open for the
-   flows.** The agent now reports `served_by` on every run and flags a model
-   override in `model_overridden`, which is how the gateway's content-based
-   rerouting was found at all. The flows still cannot see which tier served them: the AI
-   piece returns text, not a model name. An HTTP step against
-   `/v1/chat/completions` would expose the `model` field, and the
-   `x-omniroute-decision` header would expose the *strategy* — which is the
-   thing that actually changes.
+2. **Make silent degradation visible — done, and without touching the flows.**
+   The agent reports `served_by` and `model_overridden` on every run. The flows
+   still cannot report on themselves — the AI piece returns text, not a model
+   name — and the plan here was to rewrite them onto HTTP steps so they could.
+
+   They did not need rewriting. `./scripts/gateway-report.sh` reads what the
+   gateway already records, grouped by API key, and classifies every call as
+   rerouted through `auto/*`, sent through a ladder the caller chose, or left
+   alone. Rewriting working flows so they could observe themselves would have
+   risked the thing being measured in order to measure it.
+
+   One honest limit, in the script and worth repeating: `requestedModel` in
+   `call_logs` is written *after* routing chooses, so it always equals the
+   served model and cannot recover what the caller originally asked for. The
+   first version of the report compared those two fields and confidently
+   reported zero overrides while the sidecar reported one on nearly every run.
+   `comboName` is the field that survives the substitution.
 3. ~~**A weekly `pool-register.sh --prove` timer.**~~ **Done 2026-09-06.**
    `pool-prove.timer` runs it Sunday 04:17 with a randomized delay, off the
    quarter-hour the other timers use so a burst of probe traffic never lands
