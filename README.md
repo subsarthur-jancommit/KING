@@ -445,6 +445,16 @@ how you will be looking for them.
 | `combo-paid-first.sh` | Build the `paid-first` combo ladder. |
 | `codegraph-refresh.sh` | Rebuild the code graph. A daily timer already does this. |
 
+**The four not listed above, so the list is not quietly short.**
+`monitor-deadman.sh` and `pool-prove.sh` are run by their systemd timers rather
+than by hand — see the guards table in
+[`docs/king-system.md`](docs/king-system.md) §7. `ci-build-omniroute-base.sh`
+runs only in CI, and is described in the workflow section above.
+`local-router.sh` chooses which ladder a task deserves using the local model;
+it is retired from the live decision path, since Claude now picks directly, and
+is kept because its scored eval is the record of what that routing actually
+achieved — 86% over 15 cases, and the four prompt versions that did worse.
+
 Two things they share, and both are deliberate. **No script reports success it
 did not measure** — a saved connection that answers nothing has bitten this
 deployment three times, so registration is never counted as proof. And **none of
