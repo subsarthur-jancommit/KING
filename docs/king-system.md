@@ -983,6 +983,28 @@ field required and smolagents validates arguments client-side before the
 request is sent. (A direct MCP call omitting it succeeds; the server is lenient,
 the client is not.) So the instruction names `tavily-search` explicitly.
 
+**And which project path to name, for the same reason.** Measured 2026-09-06:
+a graph query took five steps and returned `degraded`, failing at
+`step 1: Argument project_path is required`. The MCP schema does **not** list
+that argument as required — smolagents requires every declared input regardless,
+so a tool whose own spec calls an argument optional still rejects a call that
+omits it. That is the same mechanism as `provider`, found a second time because
+the first finding was recorded as being about `provider` rather than about
+smolagents' validation.
+
+The value is `/out`, the directory holding `graphify-out/graph.json` inside the
+graph server, verified with a direct `graph_stats` call returning 59,582 nodes
+and 163,809 edges. Pinning it in the instructions, same run, same task:
+
+```
+before   steps=5   degraded=true    step 1: Argument project_path is required
+after    steps=3   degraded=false   step_errors=[]
+```
+
+The answer improved as well as the step count — it came back with file paths and
+line numbers rather than a bare list of names. A test asserts both pins are
+present, because the instructions read like prose and prose invites tidying.
+
 ### The default model was left alone, and that was measured
 
 `AGENT_SIDECAR_MODEL_ID` defaults to `opencode/big-pickle`, the free tier. The
