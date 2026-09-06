@@ -1096,6 +1096,75 @@ arguments whose **value cannot be guessed from the task**. There are two on this
 deployment, `provider` and `project_path`, and both are now in the instructions.
 The rest the model fills in sensibly on its first attempt.
 
+### The local model: what the hardware actually allows — measured 2026-09-06
+
+Asked to install "the best local model that fits in the remaining space", the
+survey found the premise does not bind. Disk had 12 GB free and now has 18;
+a 7B model fits it easily. **The ceiling is one physical core.**
+
+```
+$ lscpu
+CPU(s):                 2
+Thread(s) per core:     2
+Core(s) per socket:     1     <-- one physical core, SMT gives the second thread
+```
+
+For AVX2 matrix work that already saturates the vector unit, an SMT sibling adds
+almost nothing. Measured rather than assumed: raising `OLLAMA_CPUS` from `1.0`
+to `2.0` moved prefill from **26.3 to 25.9 tok/s** — no gain, because there is
+no second core to allocate. The setting is kept at `2.0` anyway, since it costs
+nothing and becomes real the day the host grows.
+
+**The bake-off.** Every candidate pulled and measured on this host, same
+2,050-token prompt, unique text each run so the KV prefix cache could not answer:
+
+| model | prefill | generate | 15-case eval | verdict |
+|---|---|---|---|---|
+| `qwen2.5:1.5b-instruct-q4_K_M` | 25.9 t/s | 16.1 t/s | **13/15 = 87%**, 1.3 s/case | **kept** |
+| `qwen3:1.7b` | 23.8 t/s | 6.9 t/s | unusable — see below | removed |
+| `qwen3:4b` | 9.2 t/s | 3.0 t/s | not reached | removed |
+
+`qwen3:4b` failed on three counts, not one. It is 2.8× slower on prefill and
+5.4× on generation — 244 s for a prompt the incumbent answers in 87 s. It loads
+at **3.2 GB against a 3.25 GB cap**, leaving nothing for KV growth at longer
+contexts. And it degraded the host while resident: `king-ollama-1` sat at
+**100.38% of its limit** and swap rose from 302 MB to 861 MB, at which point a
+36-token prompt took 258 s. Removing it returned the host to 2.5 GB used.
+
+`qwen3:1.7b` is not slow — it never answers. It enters thinking mode on every
+request and `/no_think` is not honoured by this Ollama build's OpenAI-compatible
+endpoint: 256 completion tokens spent reasoning, `finish_reason: length`,
+`content: ''`. A classification the incumbent returns in 1.3 s costs 28.5 s and
+produces nothing.
+
+So the incumbent stays, which the plan anticipated: *"if nothing beats the 1.5B
+meaningfully, we stop at the 1.5B and that is a legitimate result."* Its two
+misses are the two already on record — an unlabelled sentiment case, and
+`"write a bash script to rotate nginx logs weekly"` classified LOCAL instead of
+PAID.
+
+**What did improve is the ceiling, and it is the larger of the two wins.**
+`RATE_LIMIT_MAX_WAIT_MS` defaults to 15000 and is read from `process.env`
+(`resilience/settings.ts:44`), so it belongs in `omniroute/.env`. That 15-second
+cap is not an upstream timeout — it bounds how long a request may wait for a
+local rate-limit slot, and a local model needs longer than that for any
+realistic prompt. It was rejecting **28 of 66 ollama calls (42%)**, 27 of them
+`504 Request exceeded OmniRoute's local rate-limit`. It is also the real reason
+the 3B model was rejected weeks ago and recorded in `docker-compose.yml` as
+*"returned 504 through the gateway twice"* — read ever since as a fact about the
+model.
+
+Raised to 180000, with `RATE_LIMIT_MAX_QUEUE_DEPTH=8` alongside it because the
+wait is **global** — there is no per-provider override, so lifting it alone
+would let a slow remote provider queue for three minutes instead of failing
+fast. Proven: a 12,088-character local request that takes **80.9 s now returns
+200**, where it previously died at 15.
+
+One measurement trap worth repeating, because it produced a false pass first:
+a repeat of the same filler prompt returned in 1.0 s. That was Ollama's KV
+prefix cache, not the fix. Every number above uses text unique to its run.
+
+
 ### The default model was left alone, and that was measured
 
 `AGENT_SIDECAR_MODEL_ID` defaults to `opencode/big-pickle`, the free tier. The
