@@ -45,9 +45,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-password=$(sed -n 's/^INITIAL_PASSWORD=//p' omniroute/.env 2>/dev/null | tail -1)
+# The admin password, preferring the variable that tracks the CURRENT one.
+#
+# INITIAL_PASSWORD is a bootstrap value: OmniRoute seeds the stored hash from it
+# on first boot and never reads it again. Every script here treated it as the
+# live credential, so when the admin password was reset on 2026-09-04 all four
+# of them started failing with "Login gagal" and nothing said why — the variable
+# they read was still present, still non-empty, and no longer true.
+#
+# OMNIROUTE_ADMIN_PASSWORD is the current one. INITIAL_PASSWORD stays as the
+# fallback because it is correct whenever the password has never been changed,
+# which is the case in CI, where the workflow writes it before first boot.
+password=$(sed -n 's/^OMNIROUTE_ADMIN_PASSWORD=//p' omniroute/.env 2>/dev/null | tail -1)
+[ -n "$password" ] || password=$(sed -n 's/^INITIAL_PASSWORD=//p' omniroute/.env 2>/dev/null | tail -1)
 if [ -z "$password" ]; then
-  red "INITIAL_PASSWORD not found in omniroute/.env — cannot authenticate."
+  red "No admin password in omniroute/.env — set OMNIROUTE_ADMIN_PASSWORD (or"
+  red "INITIAL_PASSWORD if the password has never been changed)."
   exit 1
 fi
 

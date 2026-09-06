@@ -42,6 +42,40 @@ lookup() {
 echo "credential check — every line below is a real call, not a presence test"
 echo
 
+# ------------------------------------------------------------- admin password
+# On the rotation list since the start, and until 2026-09-06 the one credential
+# here that nothing checked. That gap had already cost something: the admin
+# password was reset on 2026-09-04 and four operator scripts — pool-register,
+# combo-paid-first, local-router, localmodel-register — went on reading
+# INITIAL_PASSWORD, a bootstrap value OmniRoute stops consulting after first
+# boot. They failed with "Login gagal" for two days and nothing connected that
+# to the reset, because the variable they read was still there and still
+# non-empty.
+admin=$(lookup OMNIROUTE_ADMIN_PASSWORD omniroute/.env)
+admin_var="OMNIROUTE_ADMIN_PASSWORD"
+if [ -z "$admin" ]; then
+  admin=$(lookup INITIAL_PASSWORD omniroute/.env)
+  admin_var="INITIAL_PASSWORD (fallback)"
+fi
+if [ -z "$admin" ]; then
+  fail "No admin password in omniroute/.env; every script that logs in will fail."
+else
+  # Through a file, so the password never reaches a command line where `ps`
+  # could read it.
+  login_body=$(mktemp)
+  printf '{"password":%s}' \
+    "$(printf '%s' "$admin" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().rstrip(chr(10))))')" \
+    > "$login_body"
+  code=$(curl -s -o /dev/null -m 30 -w '%{http_code}' -X POST "$BASE/api/auth/login" \
+    -H 'Content-Type: application/json' --data-binary "@$login_body" || echo 000)
+  rm -f "$login_body"
+  case "$code" in
+    200) pass "$admin_var logs in to the management API." ;;
+    401) fail "$admin_var is rejected (401). Scripts that log in are broken until it is corrected." ;;
+    *) fail "$admin_var: unexpected $code from $BASE/api/auth/login." ;;
+  esac
+fi
+
 # ---------------------------------------------------------------- inference key
 key=$(lookup OMNIROUTE_API_KEY agent-sidecar/.env)
 if [ -z "$key" ]; then
