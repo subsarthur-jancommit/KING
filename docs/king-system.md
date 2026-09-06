@@ -1723,6 +1723,12 @@ actually showed.
    `"write a bash script to rotate nginx logs weekly"`, recorded as a known
    failure that answered LOCAL and now answers PAID.
 
+   Twice, on two different destinations. The first run was served by
+   `antigravity/gemini-pro-agent` and the second by `oc`, both 100%. That is a
+   stronger result than one run: the gain belongs to *not being a 1.5B model*
+   rather than to any particular provider, so it survives the reroute moving —
+   which it does, per the destination note in §4.
+
    That is a decision to make rather than a win to bank. The bigger model costs
    what the reroute costs everywhere else: **8.04 s mean against ~0.95 s**, `agy`
    subscription quota instead of free local compute, and the task description
