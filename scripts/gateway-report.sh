@@ -13,9 +13,11 @@
 # measured in order to measure it; reading what the gateway already writes does
 # not.
 #
-# Per API key it reports calls, failures, the override rate, and every
-# requested -> served pair, so "which tier is this flow really getting" is one
-# command rather than an inference.
+# Per API key it reports calls, failures, tokens, and how each call was routed:
+# rerouted by the gateway, through a ladder the caller chose, or left alone.
+# So "which tier is this flow really getting" is one command rather than an
+# inference — with one honest limit, documented at `routing_class` below: this
+# log cannot say which model the caller originally named.
 #
 # Usage:
 #   ./scripts/gateway-report.sh          # the last 24 hours
@@ -105,21 +107,35 @@ def served(r):
     return "%s/%s" % (prov or "?", model or "?")
 
 
-def asked(r):
-    # A combo is a request for a ladder, not for one model, so it is reported as
-    # itself rather than compared against whatever tier answered.
-    return r.get("comboName") or r.get("requestedModel") or "(unspecified)"
+# `requestedModel` is NOT what the caller asked for.
+#
+# Measured 2026-09-06: on every row in this log it equals the served model
+# exactly, including the ones the sidecar independently reports as overridden.
+# The gateway writes it after routing has already chosen, so comparing it to
+# `model` can only ever produce "no overrides" — an instrument reading zero
+# because it is wired to the wrong side of the thing it measures. The first
+# version of this script did exactly that and disagreed with the sidecar, which
+# is how it was noticed.
+#
+# What DOES survive is `comboName`, the ladder a call went through:
+#
+#   auto/*        assigned by the gateway's own content router. No caller here
+#                 selects auto/* any more — that was retired — so its presence
+#                 is the reroute in section 4, recorded by the gateway itself.
+#   a named combo the caller asked for a ladder: paid-first, websearch-tiers.
+#                 Whichever tier answered is that ladder working.
+#   none          a direct model request that routing left alone.
+def routing_class(r):
+    combo = r.get("comboName") or ""
+    if combo.startswith("auto/"):
+        return "rerouted"
+    if combo:
+        return "ladder"
+    return "direct"
 
 
-def is_override(r):
-    want = r.get("requestedModel")
-    if not want or r.get("comboName"):
-        return False
-    tail = want.split("/", 1)[1] if "/" in want else want
-    return (r.get("model") or "") != tail
-
-
-by_key = collections.defaultdict(lambda: {"n": 0, "fail": 0, "over": 0, "direct": 0,
+by_key = collections.defaultdict(lambda: {"n": 0, "fail": 0,
+                                          "cls": collections.Counter(),
                                           "pairs": collections.Counter(),
                                           "tin": 0, "tout": 0})
 for r in win:
@@ -128,28 +144,24 @@ for r in win:
     b["n"] += 1
     if failed(r):
         b["fail"] += 1
-    if not r.get("comboName") and r.get("requestedModel"):
-        b["direct"] += 1
-        if is_override(r):
-            b["over"] += 1
-    b["pairs"][(asked(r), served(r))] += 1
+    b["cls"][routing_class(r)] += 1
+    b["pairs"][(r.get("comboName") or "(direct)", served(r))] += 1
     tok = r.get("tokens") or {}
     b["tin"] += tok.get("in") or 0
     b["tout"] += tok.get("out") or 0
 
 for name, b in sorted(by_key.items(), key=lambda kv: -kv[1]["n"]):
+    c = b["cls"]
     print("  %s" % name)
     print("    %d call(s), %d failed, tokens in/out %s / %s"
           % (b["n"], b["fail"], format(b["tin"], ","), format(b["tout"], ",")))
-    if b["direct"]:
-        print("    named a model directly on %d call(s); %d served by something else"
-              % (b["direct"], b["over"]))
-    else:
-        print("    every call named a combo, so there is no override to report")
-    for (want, got), n in b["pairs"].most_common(6):
-        mark = "  <-- overridden" if (want != got and "/" in want and not want.startswith("auto/")
-                                      and want.split("/", 1)[1] != got.split("/", 1)[1]) else ""
-        print("      %4d  %-42s -> %s%s" % (n, want[:42], got, mark))
+    print("    routing: %d rerouted by the gateway, %d through a ladder the caller "
+          "chose, %d direct" % (c["rerouted"], c["ladder"], c["direct"]))
+    if c["rerouted"]:
+        print("             the rerouted ones did not get the model they asked for;")
+        print("             this log cannot say which model that was (see above).")
+    for (combo, got), n in b["pairs"].most_common(6):
+        print("      %4d  %-30s -> %s" % (n, combo[:30], got))
     print()
 
 errs = collections.Counter()
@@ -162,9 +174,12 @@ if errs:
         print("    %4s x%-4d %s" % (st, n, msg or "(no message)"))
     print()
 
-print("  A requested model and a served one that differ is the content reroute")
-print("  in docs/king-system.md 4. It is not fixable from this repo; what this")
-print("  report is for is knowing which callers it is happening to.")
+print("  A call routed through auto/* is the content reroute in")
+print("  docs/king-system.md 4 — the caller named a model and the gateway chose")
+print("  otherwise. It is not fixable from this repo; this report is for knowing")
+print("  which callers it happens to. For what a specific run asked for versus")
+print("  what answered it, read served_by in ./scripts/agent-report.sh, which")
+print("  records the caller's side.")
 PY
 
 printf '%s' "$body" | python3 "$script" "$HOURS" "$LIMIT"
