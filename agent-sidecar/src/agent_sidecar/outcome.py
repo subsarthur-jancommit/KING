@@ -103,6 +103,13 @@ def summarise(outcome: dict, *, runner: str, model: str) -> dict:
         # What the run cost. `null` means not measured, never "free".
         "tokens": outcome.get("tokens"),
         "tools": tool_report,
+        # Which tools were OFFERED lives in `tools` above; this is which were
+        # actually reached for. Eleven descriptions ride in the system prompt of
+        # every run, and only this field says whether they earn it. `[]` is a
+        # real answer — the agent answered without touching a tool — and is not
+        # the same as the runner being unable to report, which cannot happen
+        # here because an empty list is always constructed.
+        "tools_used": list(outcome.get("tools_used") or []),
         # Its own field, deliberately NOT folded into `degraded`.
         #
         # It was folded in at first, which is defensible — being served a model
@@ -217,6 +224,7 @@ def journal_run(summary: dict, *, task: str, seconds: float, caller: str) -> Non
             "steps": summary.get("steps"),
             "tokens": summary.get("tokens"),
             "tools": (summary.get("tools") or {}).get("selected"),
+            "tools_used": summary.get("tools_used") or [],
             "step_errors": summary.get("step_errors") or [],
             "model_overridden": summary.get("model_overridden"),
             "degraded": summary.get("degraded"),

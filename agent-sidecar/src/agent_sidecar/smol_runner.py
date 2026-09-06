@@ -148,6 +148,24 @@ def _diagnostics(agent) -> dict:
     """
     steps = list(getattr(getattr(agent, "memory", None), "steps", []) or [])
     errors: list[str] = []
+    # Which tools the agent actually reached for, in first-use order.
+    #
+    # The journal has always recorded which tools were *offered* — eleven of
+    # them, every run — and never which were used. Those are different
+    # questions, and only the second one answers whether eleven tool
+    # descriptions are earning the context they cost on every single call,
+    # which is the trade CLAUDE.md asks to be made deliberately.
+    #
+    # Order is kept and duplicates dropped: "it searched, then read the graph"
+    # says more than a bag of names, and a tool called nine times in a loop
+    # should not outweigh one called once.
+    #
+    # A CodeAgent run reports `python_interpreter` rather than the tools called
+    # inside the code it executed, because that is genuinely all smolagents
+    # records there. Production uses ToolCallingAgent whenever tools are loaded
+    # — see `uses_tool_calling` — so the names are real for every run that has
+    # any tools to use.
+    tools_used: list[str] = []
     counted = 0
     for step in steps:
         # TaskStep and PlanningStep carry no `error` attribute; only action
@@ -158,9 +176,14 @@ def _diagnostics(agent) -> dict:
         err = step.error
         if err:
             errors.append(f"step {getattr(step, 'step_number', counted)}: {err}")
+        for call in getattr(step, "tool_calls", None) or []:
+            name = getattr(call, "name", None)
+            if name and name not in tools_used:
+                tools_used.append(name)
     return {
         "steps": counted,
         "step_errors": errors,
+        "tools_used": tools_used,
         "tokens": _token_usage(agent),
         "served_by": _served_by(agent),
     }

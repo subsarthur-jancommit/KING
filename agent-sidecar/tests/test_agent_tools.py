@@ -370,3 +370,97 @@ def test_one_dead_server_does_not_cost_the_agent_the_other_ones_tools(monkeypatc
     # answers from training data and sounds exactly like one that used them.
     assert "TimeoutError" in report["error"]
     assert report["missing"] == ["get_neighbors"]
+
+
+class _FakeToolCall:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeActionStep:
+    """Only the attributes `_diagnostics` actually reads."""
+
+    def __init__(self, step_number, tool_calls=(), error=None):
+        self.step_number = step_number
+        self.tool_calls = list(tool_calls)
+        self.error = error
+
+
+class _FakeTaskStep:
+    """No `error` attribute, which is how `_diagnostics` filters non-action steps."""
+
+
+class _FakeAgent:
+    def __init__(self, steps):
+        self.memory = type("M", (), {"steps": steps})()
+        self.monitor = None
+
+
+def test_diagnostics_records_the_tools_actually_called():
+    steps = [
+        _FakeTaskStep(),
+        _FakeActionStep(1, [_FakeToolCall("omniroute_web_search")]),
+        _FakeActionStep(2, [_FakeToolCall("get_neighbors")]),
+    ]
+
+    d = smol_runner._diagnostics(_FakeAgent(steps))
+
+    assert d["tools_used"] == ["omniroute_web_search", "get_neighbors"]
+    # The TaskStep must not be counted as an action step.
+    assert d["steps"] == 2
+
+
+def test_diagnostics_keeps_first_use_order_and_drops_repeats():
+    """A tool called nine times in a loop should not outweigh one called once."""
+    steps = [
+        _FakeActionStep(1, [_FakeToolCall("get_neighbors")]),
+        _FakeActionStep(2, [_FakeToolCall("omniroute_web_search")]),
+        _FakeActionStep(3, [_FakeToolCall("get_neighbors")]),
+        _FakeActionStep(4, [_FakeToolCall("get_neighbors")]),
+    ]
+
+    d = smol_runner._diagnostics(_FakeAgent(steps))
+
+    assert d["tools_used"] == ["get_neighbors", "omniroute_web_search"]
+
+
+def test_diagnostics_reports_no_tools_used_as_an_empty_list():
+    """Distinct from "could not tell" — which this function never returns.
+
+    A run that answered without reaching for anything is a real and interesting
+    answer, and the field that carries it must not be null, or every reader has
+    to handle two spellings of the same thing.
+    """
+    d = smol_runner._diagnostics(_FakeAgent([_FakeActionStep(1)]))
+
+    assert d["tools_used"] == []
+
+
+def test_diagnostics_survives_a_step_whose_tool_calls_are_none():
+    """smolagents leaves `tool_calls` unset on steps that made none."""
+    step = _FakeActionStep(1)
+    step.tool_calls = None
+
+    d = smol_runner._diagnostics(_FakeAgent([step]))
+
+    assert d["tools_used"] == []
+
+
+def test_a_tool_call_with_no_name_is_skipped_not_recorded_as_none():
+    step = _FakeActionStep(1, [_FakeToolCall(None), _FakeToolCall("graph_stats")])
+
+    d = smol_runner._diagnostics(_FakeAgent([step]))
+
+    assert d["tools_used"] == ["graph_stats"]
+
+
+def test_tools_used_is_collected_alongside_errors_not_instead_of_them():
+    """Both come from the same pass; a step can fail and still have called something."""
+    steps = [
+        _FakeActionStep(1, [_FakeToolCall("omniroute_web_search")], error="boom"),
+    ]
+
+    d = smol_runner._diagnostics(_FakeAgent(steps))
+
+    assert d["tools_used"] == ["omniroute_web_search"]
+    assert d["step_errors"] == ["step 1: boom"]

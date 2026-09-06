@@ -785,8 +785,11 @@ def test_http_and_mcp_return_the_same_shape(monkeypatch, tmp_path):
 
     assert set(summary) == {
         "result", "runner", "model", "served_by", "steps", "step_errors",
-        "tokens", "tools", "model_overridden", "degraded",
+        "tokens", "tools", "tools_used", "model_overridden", "degraded",
     }
+    # Absent from the raw outcome means the agent used nothing, not that the
+    # field is missing — callers should never have to distinguish those.
+    assert summary["tools_used"] == []
     # Coerced: a CodeAgent can return a number.
     assert summary["result"] == "144"
     assert summary["degraded"] is False
@@ -1216,3 +1219,77 @@ def test_a_cloud_override_stays_out_of_degraded():
 
     assert summary["model_overridden"] is True
     assert summary["degraded"] is False
+
+
+def test_summarise_carries_which_tools_were_actually_used():
+    """Offered and used are different questions, and only one was recorded.
+
+    The journal has always listed the eleven tools handed to the agent on every
+    run. That says nothing about whether any of them were reached for, which is
+    the only figure that says whether eleven tool descriptions earn the context
+    they cost on every call.
+    """
+    from agent_sidecar.outcome import summarise
+
+    raw = {
+        "result": "done",
+        "steps": 2,
+        "step_errors": [],
+        "tools_used": ["omniroute_web_search", "get_neighbors"],
+        "tools": {"enabled": True, "offered": 120,
+                  "selected": ["omniroute_web_search", "get_neighbors", "graph_stats"],
+                  "missing": [], "misdirected": []},
+    }
+    summary = summarise(raw, runner="smolagents", model="opencode/big-pickle")
+
+    assert summary["tools_used"] == ["omniroute_web_search", "get_neighbors"]
+    # Offered is unchanged and still larger — the whole point of the pairing.
+    assert len(summary["tools"]["selected"]) == 3
+
+
+def test_tools_used_is_copied_not_aliased():
+    """The summary must not hand back a list the runner still holds.
+
+    `summarise` is called once per run and its result is both returned to the
+    caller and written to the journal. Sharing the underlying list would let a
+    later mutation anywhere reach both.
+    """
+    from agent_sidecar.outcome import summarise
+
+    used = ["omniroute_web_search"]
+    summary = summarise(
+        {"result": "x", "tools_used": used},
+        runner="smolagents",
+        model="opencode/big-pickle",
+    )
+    used.append("vps_exec")
+
+    assert summary["tools_used"] == ["omniroute_web_search"]
+
+
+def test_the_journal_records_which_tools_were_used(tmp_path, monkeypatch):
+    """Otherwise the answer exists for one response and is then thrown away."""
+    import json
+
+    from agent_sidecar.outcome import journal_run
+
+    path = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("AGENT_SIDECAR_RUN_JOURNAL", str(path))
+
+    journal_run(
+        {
+            "runner": "smolagents",
+            "model": "opencode/big-pickle",
+            "tools": {"selected": ["omniroute_web_search", "get_neighbors"]},
+            "tools_used": ["get_neighbors"],
+            "degraded": False,
+        },
+        task="map the callers",
+        seconds=1.5,
+        caller="mcp",
+    )
+
+    entry = json.loads(path.read_text(encoding="utf-8").strip())
+    assert entry["tools_used"] == ["get_neighbors"]
+    # Both halves are recorded, because the comparison is the point.
+    assert entry["tools"] == ["omniroute_web_search", "get_neighbors"]
