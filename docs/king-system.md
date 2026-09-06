@@ -1222,72 +1222,77 @@ reporting healthy. Each guard below exists because of a specific one.
 | `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Six real calls, not presence tests; two of them assert that a *wrong* token is rejected |
 | `check-model-routing.sh` | After any `git subtree pull` | Whether the gateway still overrides the model you asked for. Exits non-zero while it does |
 
-### The alarm that nobody hears
+### The alarm that now reaches somewhere — wired 2026-09-06
 
-`gateway_monitor` works. Probed 2026-09-05: it runs every fifteen minutes, and
-a real execution returned `{"ok":true,"breach":false,"windowMinutes":15,
-"total":1,"failed":0,"ratio":0,"threshold":0.3}` with a per-provider breakdown.
-It measures.
+`gateway_monitor` works, and always did. It runs every fifteen minutes, reads
+`/api/usage/call-logs`, computes a breach from a 15-minute window with a 0.30
+ratio threshold and a `MIN_CALLS` floor of 3, derives a severity from the shape
+of the failures, and HMAC-POSTs the result to the `gateway_alerts` webhook.
 
-`gateway_alerts` receives what it sends, normalises the payload into
-`{event, at, apiKey, provider, model, reason, raw}` — **and stops there.** The
-flow is two steps: the webhook, and the code step that shapes the object. Its
-return value goes nowhere.
+`gateway_alerts` received every one of those and threw them away. Fourteen
+deliveries between 2026-08-29 and 2026-09-05, five on the last day, all
+`SUCCEEDED`, and the `gateway_alerts` table still held **0 rows**. The flow was
+two steps: the webhook, and a code step that shaped the payload and returned it
+into nothing. Somebody built the sink and never wired the pipe.
 
-Re-counted 2026-09-05 from the run history: **fourteen alerts have fired since
-2026-08-29, five of them today** (00:11, 00:56, 04:41, 07:26, 07:56). Every one
-succeeded, and every one was discarded. The 07:56 delivery carried a 44% error
-ratio over 15 minutes — 9 calls, 4 failed, all of them `antigravity` serving
-`gemini-3.7-flash-{high,medium,low}` with `502 Provider returned empty content`.
-Genuinely worth seeing, and unseen.
+**It is wired now.** Two changes, because the obvious one-step version would
+have half-worked:
 
-That last one deserves a caveat rather than a conclusion. Nine calls in a
-fifteen-minute window is thin, so a handful of failures crosses a 30% threshold
-easily, and today's traffic included this session's own probes. What the run
-history establishes is the *structural* fault — every alert ever raised was
-shaped and dropped — not that antigravity has newly degraded. Whether it has is
-answerable once the table starts accumulating, which is precisely the point.
+1. **`step_1` handles both payload shapes.** It read `d.provider`, `d.model` and
+   `d.apiKeyName` — the shape of OmniRoute's own key/provider webhooks. A
+   `monitor.error_rate` payload carries none of those: its providers are in
+   `data.byProvider` and its models in `data.sample`. So on the alert type that
+   actually fires, all three were `null`. Wiring the table without fixing this
+   would have produced rows with an empty `provider` column for every monitor
+   alert — a sink that looks connected and loses the most useful field in it.
 
-**The destination already exists and is empty.** A `gateway_alerts` table is
-provisioned with exactly the right columns — `received_at`, `event`, `api_key`,
-`provider`, `detail` — and **0 rows**. Somebody built the sink and never wired
-the pipe.
+   It now derives `provider` from the providers in `byProvider` that actually
+   failed — not all of them, because `byProvider` deliberately includes the
+   healthy ones and the local model, and listing every key would put
+   "ollama, tavily-search" on an alert about antigravity. `detail` carries
+   severity, the ratio sentence, the counts, and one real failure rather than a
+   count of them.
 
-**The obvious one-step fix would half-work, which is worse than not working.**
-The shaping step reads `d.provider`, `d.model` and `d.apiKeyName` from the
-payload's `data` object. Those fields exist for OmniRoute's own key/provider
-webhooks — the shape it was written against — but a `monitor.error_rate`
-payload does not carry them: its provider information lives in `data.byProvider`
-and `data.sample`. So on the alert type that actually fires, `apiKey`,
-`provider` and `model` are all `null`, verified in run `0vohqjlRQnD49gNh982Dj`.
-Wiring the table without touching the shaping produces rows whose `provider`
-column is empty for every monitor alert — a sink that looks connected and loses
-the most useful field in it. The same pattern this document opens with.
+2. **`step_2`, `@activepieces/piece-tables` / `tables-create-records`**, writing
+   the five columns. `continueOnFailure` is deliberately off: a failed write
+   should show as a failed run, which is louder than the silent drop being
+   fixed.
 
-So it is two changes, not one, and they belong in one edit:
+**How it was verified, and what is still unobserved.** The shaping was run
+against five payloads — the real 07:56 delivery, an OmniRoute key-cap webhook
+(which must keep working unchanged), a breach with the local model present but
+healthy (which must not name it), an empty body, and a monitor read failure.
+Then the whole flow was run end to end on the real payload, producing:
 
 ```
-1. gateway_alerts / step_1 — derive provider and model for monitor events:
-     from data.byProvider (the failing providers) and data.sample[0].model,
-     falling back to the existing d.provider / d.model for OmniRoute's own
-     events, so both payload shapes populate the same columns.
-
-2. a new step after it:
-   piece   @activepieces/piece-tables    action  tables-create-records
-   table_id  wzZB4ntGPk9OAnzgknJqZ
-   records   [{"received_at": "{{step_1['output'].at}}",
-               "event":       "{{step_1['output'].event}}",
-               "api_key":     "{{step_1['output'].apiKey}}",
-               "provider":    "{{step_1['output'].provider}}",
-               "detail":      "{{step_1['output'].reason}}"}]
+event       monitor.error_rate
+provider    antigravity
+received_at 2026-09-05T07:56:21.923Z
+detail      [WARNING] — error ratio 44% over 15m — 4/9 calls —
+            e.g. antigravity/gemini-3.7-flash-high 502 Provider returned empty content
+api_key     (null — monitor events carry no key, correctly)
 ```
 
-Both are edits to live automation, so they wait on the operator rather than
-being applied unasked.
+That row and three diagnostic ones were then deleted. Fabricated rows in an
+alert log are worse than an empty log: later nobody can tell them from real
+ones.
 
-A push destination — Discord, email — is a second step and needs a URL only the
-operator has. The table does not, and turns "alerts vanish" into "alerts
-accumulate somewhere you can look".
+Running `gateway_monitor` live immediately afterwards wrote no row, and that is
+the correct outcome rather than a failure — the window held 0 ratio-eligible
+calls, below the `MIN_CALLS` floor of 3, so there was no breach to report. It
+was checked rather than assumed.
+
+**Still unobserved: a real production breach writing a real row.** The trigger
+path itself has fourteen prior successes, and the flow is proven end to end on
+the exact payload that path delivers — but those are two facts about parts, and
+this document is emphatic elsewhere about not treating that as a fact about the
+whole. The next genuine breach is the proof, and the table is where to look for
+it.
+
+**A push destination — Discord, email — is still not wired**, and needs a URL
+only the operator has. The table turns "alerts vanish" into "alerts accumulate
+somewhere you can look", which is the part that did not need anyone's
+permission.
 
 **They are `--user` units, and checking them the obvious way says they are
 dead.** `systemctl list-timers` and `systemctl is-active monitor-deadman.timer`
@@ -1453,7 +1458,7 @@ is worse than one that stops.
 | **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here — the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` on the VPS says whether it still reproduces, and exits non-zero while it does; run it after any `git subtree pull` |
 | **Local-only work can leave the host** | Found 2026-09-05 | A request naming `ollama/...` is served elsewhere when the prompt trips the gateway's content-based reroute — for the sidecar's own prompt that destination is `gemini-3.7-flash-high`, i.e. Google, measured 3 of 3 on 2026-09-05. The confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
 | **`agy` is the least reliable tier, not the most** | Measured 2026-09-05 | Over 500 calls since 2026-08-30, every 502 belongs to antigravity — `claude-opus-4-6-thinking-high` 20% of attempts, `gemini-3.7-flash-high` 21%, against `opencode/big-pickle` at 0 of 102. Combo fallthrough absorbs some of that for flows; the sidecar names a model directly and has nothing underneath it, and the content reroute moves it from the 0% model to the 21% one. §4 has the table and the caveats |
-| **Every alert ever raised was discarded** | Measured 2026-09-05 | `gateway_monitor` detects breaches and HMAC-POSTs them to `gateway_alerts`, which shapes the payload and returns it. Fourteen deliveries since 2026-08-29, five of them on 2026-09-05, all `SUCCEEDED`, and the `gateway_alerts` table still has **0 rows**. The fix is two steps in one edit — §7 has the exact mapping, including why the obvious one-step version writes a null `provider` for every monitor alert. Both are edits to live automation, so they wait on the operator |
+| **Alerts now land in a table** | Wired 2026-09-06 | `gateway_monitor` had been delivering breaches to `gateway_alerts` since 2026-08-29 — fourteen of them, all `SUCCEEDED` — and the flow shaped each one and returned it into nothing, leaving the destination table at 0 rows. Two steps now close it: the shaping handles the `monitor.error_rate` payload shape (whose provider lives in `byProvider`, not `data.provider`, so the one-step version would have written a null provider for every alert), and a Tables step records five columns. Verified end to end on the real 07:56 payload; §7 has the row it produced. **Still unobserved: a real breach writing a real row** — that is the proof, and the table is where to look |
 | **The gateway runs a TLS binary with a known CVE** | Found 2026-09-05 | `omniroute:base` was built 2026-08-27 and carries `tls-client-linux-ubuntu-amd64-1.15.1.so`, the binary OmniRoute PR #12612 pinned *away from* over CVE-2025-68121. Verified against the advisory rather than that PR: GHSA-h355-32pf-p2xm is **medium, CVSS 4.8** — a `crypto/tls` session-resumption flaw where a mutated `ClientCAs`/`RootCAs` pool may resume a session it should reject — not the "CVSS 9.8 out-of-bounds read" the PR claims. Rebuilding is what would replace it, and rebuilding is exactly what the upstream break prevents, so the two open items are one problem: the image is frozen at 2026-08-27 until `tls-client-node` is fixed |
 | `GRAPHIFY_API_KEY` exposure | Raised 2026-09-04 | Since the code graph is served through Caddy, this key alone stands between a full map of this repo and the internet |
 | OpenRouter balance | Low, and the failure is shaped by `max_tokens` | A 402 is not a flat "out of credits": it reads *"You requested up to 65536 tokens, but can only afford 7040"*. The cost of the **reservation** is what fails, so the same balance serves a 400-token request and refuses a 65k one. `paid-first` tier 3 answered normally when probed — keep `max_tokens` modest on OpenRouter tiers and it keeps working |
@@ -1540,11 +1545,12 @@ actually showed.
    `omniroute_web_fetch` is in the agent's allowlist and reaches Tavily, the one
    provider configured for both. The flows still work from snippets only, which
    answered the Caddy question but would not answer one needing a page body.
-7. **Alerting that reaches a human.** `gateway_alerts` receives findings and
-   stops. Confirmed on 2026-09-05: three alerts fired, none delivered, and the
-   `gateway_alerts` table that should hold them is provisioned with the right
-   columns and zero rows. §7 records the exact step — piece, action, table id
-   and field mapping. A Discord webhook on top needs only a URL and no OAuth.
+7. **Alerting that reaches a human.** Half done. As of 2026-09-06 alerts are
+   recorded in the `gateway_alerts` table instead of being dropped — see §7 for
+   what changed and how it was verified. That makes them findable, not
+   noticeable: nobody is told, they accumulate somewhere you have to think to
+   look. A push destination closes the rest and needs only a URL — a Discord
+   webhook takes no OAuth — which is why it is still here rather than done.
 
 **Longer term, and only if the need is real**
 
