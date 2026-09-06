@@ -820,8 +820,19 @@ curl -s -X POST http://127.0.0.1:8100/run \
  "tools": {"enabled": true, "offered": 120,
            "selected": ["omniroute_web_search", "get_neighbors", "…"],
            "missing": [], "misdirected": []},
+ "tools_used": ["graph_stats"],
  "model_overridden": false, "degraded": false}
 ```
+
+`tools` is what the agent was **handed**; `tools_used` is what it actually
+reached for. Those are different questions and only the second says whether
+eleven tool descriptions earn the context they cost on every single call.
+Measured live: a code-graph question returns `["graph_stats"]`, and "what is 6
+times 7" returns `[]` — an empty list is a real answer, not a missing one.
+
+`final_answer` is deliberately excluded. It is smolagents' terminator, called on
+essentially every successful run, and a constant in a field whose job is showing
+what varies is how `degraded` stopped being worth reading.
 
 `tokens` is what the run cost. smolagents computes it and prints it to the
 container log, where it is unparseable and scrolls away; it now travels with
@@ -1136,7 +1147,8 @@ the `vps_exec` audit:
 {"at":"2026-09-05T04:40:11+00:00","runner":"smolagents","model":"opencode/big-pickle",
  "task":"Search the web for the release date of…","seconds":18.4,"steps":3,
  "tokens":{"input":23105,"output":986,"total":24091},
- "tools":["omniroute_web_search","…"],"step_errors":[],"degraded":false}
+ "tools":["omniroute_web_search","…"],"tools_used":["omniroute_web_search"],
+ "step_errors":[],"degraded":false}
 ```
 
 Both outcomes are written, the successful one and the 500 — a journal that only
