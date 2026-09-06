@@ -319,14 +319,18 @@ check_ntfy_token() {
 
 check_alerting() {
   echo "profile: alerting (ntfy)"
-  check_ntfy_token "$(lookup NTFY_TOKEN)"
-  check_bind_host "NTFY_BIND_HOST" "$(lookup NTFY_BIND_HOST)" \
+  # `.env` is passed explicitly on every lookup below. Without the file
+  # argument `lookup` reads only the process environment, so both values
+  # reported "unset" on a host where they were correctly configured — and a
+  # preflight that fails a working deployment teaches people to ignore it.
+  check_ntfy_token "$(lookup NTFY_TOKEN .env)"
+  check_bind_host "NTFY_BIND_HOST" "$(lookup NTFY_BIND_HOST .env)" \
     "Reach it through Caddy at /king-ntfy/, which is the only path that should be public."
 
   # The topic is not a password, and saying so here is the point: it travels in
   # the URL of every publish. The token above is the boundary.
   local topic
-  topic=$(lookup NTFY_ALERT_TOPIC)
+  topic=$(lookup NTFY_ALERT_TOPIC .env)
   if [ -z "$topic" ]; then
     fail "NTFY_ALERT_TOPIC is unset; gateway_alerts has nowhere to publish."
   elif [ "${#topic}" -lt 12 ]; then
