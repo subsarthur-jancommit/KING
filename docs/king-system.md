@@ -1496,6 +1496,7 @@ reporting healthy. Each guard below exists because of a specific one.
 | `alerts-report.sh` | When you want to know | What the gateway has been complaining about. Reads Postgres directly, like `monitor-deadman.sh`, so it still answers when the Activepieces engine is wedged — one of the states you would most want to ask about |
 | `pool-prove.timer` | Weekly, Sun 04:17 | A registered provider that has gone silent. OmniRoute's own autopilot reported every provider "healthy, 0 issues" while three failed 100% of real requests; this sends a real completion to each and counts only answers |
 | `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Seven real calls, not presence tests; two of them assert that a *wrong* token is rejected, and one is a real admin login — the check whose absence let four scripts fail silently for two days |
+| `ntfy` | On every breach | Nothing new — it is the one guard that catches no fault. It exists because a guard nobody reads is theatre: it carries the other guards' findings to a phone |
 | `check-model-routing.sh` | After any `git subtree pull` | Whether the gateway still overrides the model you asked for. Exits non-zero while it does |
 
 ### The alarm that now reaches somewhere — wired 2026-09-06
@@ -1558,12 +1559,17 @@ the correct outcome rather than a failure — the window held 0 ratio-eligible
 calls, below the `MIN_CALLS` floor of 3, so there was no breach to report. It
 was checked rather than assumed.
 
-**Still unobserved: a real production breach writing a real row.** The trigger
-path itself has fourteen prior successes, and the flow is proven end to end on
-the exact payload that path delivers — but those are two facts about parts, and
-this document is emphatic elsewhere about not treating that as a fact about the
-whole. The next genuine breach is the proof, and the table is where to look for
-it.
+**Observed, 2026-09-06: two real breaches wrote two real rows.** The prediction
+above held without anyone touching it — a CRITICAL at 04:56 (56% over 15m,
+15/27 calls, `opencode`/`antigravity`/`openrouter`) and a WARNING at 13:41 (50%,
+3/6, `antigravity`/`ollama`). Both carry the sample error that provoked them,
+which is the field that makes a row actionable rather than merely alarming: the
+CRITICAL one is a provider rejecting `tool_choice` values other than `"auto"`,
+not a capacity problem at all.
+
+That is also the caveat below arriving on schedule. 3 of 6 attempts is a 50%
+error ratio computed from six data points, and the fallback almost certainly
+covered it.
 
 **Read the ratio as attempts, not outcomes.** `gateway_monitor` computes its
 breach from `call_logs` rows, and those are individual provider *attempts* —
@@ -1586,14 +1592,54 @@ insert time instead of the alert's own `received_at`, and its timestamp cast
 would have failed the whole report on one malformed cell rather than degrading
 a single line.
 
-`ap_list_connections` returns nothing on this deployment, so there is no Slack,
-Discord or email connection to push through — which is why the table is the
-destination and not a stepping stone to one.
+`ap_list_connections` still returns nothing on this deployment, so there is no
+Slack, Discord or email connection to push through. The table remains the
+durable record — the push below is a notification, not storage, and a phone that
+was off does not lose the row.
 
-**A push destination — Discord, email — is still not wired**, and needs a URL
-only the operator has. The table turns "alerts vanish" into "alerts accumulate
-somewhere you can look", which is the part that did not need anyone's
-permission.
+**And now it reaches a phone — 2026-09-06.** `ntfy`, self-hosted, opt-in via
+`profiles: [alerting]`, behind Caddy at `/king-ntfy/*`. `gateway_alerts` gained
+a fourth step that publishes `detail` after the row is written.
+
+The security posture is stated plainly because ntfy's default is the opposite of
+safe: it ships allowing **anyone to publish and subscribe to any topic**. On a
+public domain that means the alerts — provider names, failure ratios, which
+model broke — are readable by anyone who guesses the topic. A random topic name
+is a secret in a URL, not authentication. So `NTFY_AUTH_DEFAULT_ACCESS=deny-all`
+with a token-bearing user holding read-write on exactly one topic. Proven in
+both directions after the Caddy route went live:
+
+```
+no token      403
+wrong token   401
+right token   200
+```
+
+`ntfy access` confirms it from the other side: user `*` (anonymous) has
+*"no access to any (other) topics (server config)"*.
+
+**Three traps, each of which reported success while doing nothing.**
+
+*It refuses to run on a sub-path.* `NTFY_BASE_URL=…/king-ntfy` crash-looped on
+`base-url must not have a path`. This domain has no wildcard DNS record — that
+is why everything here lives on a path — so a subdomain was not available
+either. It works with the variable unset, because `handle_path` strips the
+prefix before proxying; base-url only feeds generated attachment and click URLs.
+
+*A single-file bind mount goes stale after a `git pull`.* Caddy's Caddyfile is
+mounted file-to-file, so the mount follows the **inode**. `git pull` replaces the
+file, the container keeps the old one, and `caddy reload` cheerfully reports
+`Valid configuration` for the version it can still see. The route 404'd through
+Caddy while working perfectly on the container port. Recreating the container is
+what re-binds it — a reload never will.
+
+*A non-ASCII character in a header fails silently.* The step's `Title` was
+`"KING — {{provider}}"`, and the em dash is code point 8212. HTTP headers are
+ByteStrings, so the request never left: `status: 0`, body
+`Cannot convert argument to a ByteString…`. The step still reported **SUCCEEDED**
+and the flow stayed green, because `retry_5xx` does not consider status 0 an
+error. Titles are ASCII now; the em dashes live in the body, which is UTF-8 and
+fine.
 
 **They are `--user` units, and checking them the obvious way says they are
 dead.** `systemctl list-timers` and `systemctl is-active monitor-deadman.timer`

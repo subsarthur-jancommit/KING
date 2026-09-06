@@ -320,6 +320,40 @@ to succeed without a real completion coming back.
 
 See [`docs/integrations/localmodel.md`](docs/integrations/localmodel.md).
 
+### Alerting
+
+`gateway_monitor` has been writing breach rows to an Activepieces table since
+2026-09-05, and for a day nothing read them. The `alerting` profile adds a
+self-hosted [ntfy](https://ntfy.sh) so a breach reaches a phone — no third-party
+account, no OAuth, one credential:
+
+```bash
+./scripts/stax-preflight.sh alerting
+docker compose --profile alerting up -d ntfy
+```
+
+Then create the token-bearing publisher (`ntfy user add`, `ntfy token add`,
+`ntfy access <user> <topic> rw`), put `NTFY_TOKEN` and `NTFY_ALERT_TOPIC` in
+`.env`, and subscribe the phone app to `https://gateway.arject.co/king-ntfy/`
+with the same token.
+
+**Its default is the opposite of safe** and the profile does not inherit it:
+stock ntfy lets anyone publish to and read any topic, which on a public domain
+means anyone who guesses the topic name reads which providers are failing. A
+random topic is a secret in a URL, not authentication. `NTFY_AUTH_DEFAULT_ACCESS`
+is `deny-all` here, and it is verified in both directions — no token `403`,
+wrong token `401`, correct token `200`.
+
+Three things about it fail *silently*, so preflight and the docs both call them
+out: it refuses to start when its base URL carries a path (this domain has no
+wildcard DNS, so everything lives on one), Caddy's single-file bind mount keeps
+serving the pre-`git pull` inode until the container is recreated, and a
+non-ASCII character anywhere in an HTTP header aborts the request with `status: 0`
+while the workflow step still reports SUCCEEDED. See `docs/king-system.md` §7.
+
+The table stays the durable record; the push is a notification. A phone that was
+off does not lose a row, and `./scripts/alerts-report.sh` reads them back.
+
 ### CI smoke test
 
 [`.github/workflows/omniroute-smoke.yml`](.github/workflows/omniroute-smoke.yml)
