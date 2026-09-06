@@ -131,6 +131,41 @@ if tools:
     for name, n in tools.most_common():
         print(f"    {n:>4}  {name}")
 
+# Offered and used are different questions, and only the second says whether
+# eleven tool descriptions earn the context they cost on every call.
+#
+# Counted against runs that RECORDED it, not all runs: tools_used was added
+# 2026-09-06, and dividing by every run would quietly report older entries as
+# runs that used nothing. Same denominator mistake the override rate made once.
+with_used = [r for r in runs if "tools_used" in r]
+if with_used:
+    used = collections.Counter()
+    for r in with_used:
+        for t in r.get("tools_used") or []:
+            used[t] += 1
+    idle = sum(1 for r in with_used if not (r.get("tools_used") or []))
+    print()
+    print(f"  tools actually used, over {len(with_used)} run(s) that recorded it")
+    if used:
+        for name, n in used.most_common():
+            print(f"    {n:>4}  {name}")
+    else:
+        print("       none — every run answered without reaching for a tool")
+    if idle:
+        print(f"    {idle:>4}  run(s) used no tool at all")
+
+    offered_names = set(tools)
+    never = sorted(offered_names - set(used))
+    if never:
+        print()
+        print("  offered every run, never used in this window")
+        for name in never:
+            print(f"          {name}")
+        print("    Each one rides in the system prompt of every run. That is the")
+        print("    cost side of the trade; a longer window is the honest way to")
+        print("    judge it, since a tool unused this week may be why last week")
+        print("    worked.")
+
 if degraded:
     print("  most recent degraded runs")
     for r in degraded[-5:]:
