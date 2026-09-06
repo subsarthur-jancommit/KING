@@ -34,12 +34,32 @@ url=$(sed -n 's/^AP_POSTGRES_URL=//p' activepieces/.env 2>/dev/null | tail -1)
 # Selecting by field NAME rather than position: positions shift when a column is
 # added, and a report that silently prints the wrong column is worse than one
 # that prints nothing.
+#
+# The time shown is the alert's own `received_at` — when the condition was
+# observed — falling back to the row's insert time when that cell is empty or
+# unparseable. The shape is checked with a regex before the cast rather than
+# cast-and-hope: `::timestamptz` raises on bad input, so one malformed cell
+# written by some future producer would fail the whole report instead of
+# degrading one line of it. Ordering stays on `r.created`, which is always
+# present and always a real timestamp, so a bad `received_at` cannot scramble
+# the sequence either.
+# The two are sub-second apart for a live alert; they diverged by 18 minutes the
+# first time this was tested with a hand-written row, which is how the
+# distinction was noticed.
 q() {
   docker run --rm "$PSQL_IMAGE" psql "$url" -At -F'|' -c "$1"
 }
 
 rows=$(q "
-  select to_char(r.created at time zone 'UTC', 'MM-DD HH24:MI'),
+  select coalesce(
+           to_char(
+             max(case
+                   when f.name = 'received_at'
+                    and c.value ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}'
+                   then c.value::timestamptz
+                 end) at time zone 'UTC',
+             'MM-DD HH24:MI'),
+           to_char(r.created at time zone 'UTC', 'MM-DD HH24:MI')),
          coalesce(max(case when f.name = 'event'    then c.value end), '-'),
          coalesce(max(case when f.name = 'provider' then c.value end), '-'),
          coalesce(max(case when f.name = 'detail'   then c.value end), '-')
