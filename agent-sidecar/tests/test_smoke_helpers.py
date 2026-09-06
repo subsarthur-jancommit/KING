@@ -29,6 +29,29 @@ def test_a_code_parsing_failure_is_forgiven():
     assert path_errors(errors) == []
 
 
+def test_the_other_code_parsing_message_is_forgiven_too():
+    """The form that was missed first time round, verbatim from run 34004843503.
+
+    smolagents has two parse-error messages, from two modules. Matching only
+    the one already seen let this exact failure through, and the next run went
+    green purely because the model happened to format correctly — a pass that
+    proved nothing. Both forms are pinned here so a filter written from one
+    sample cannot come back.
+    """
+    errors = [
+        "step 1: Error in code parsing:\nYour code snippet is invalid, because "
+        "the regex pattern <code>(.*?)</code> was not found in it.\nHere is your "
+        "code snippet:\nSMOKE-TEST-OK</code>\nMake sure to provide correct code blobs."
+    ]
+    assert path_errors(errors) == []
+
+
+def test_the_match_is_case_insensitive():
+    """One message starts "Code parsing", the other says "code parsing"."""
+    assert path_errors(["step 1: Code parsing failed on line 1"]) == []
+    assert path_errors(["step 1: Error in code parsing: whatever"]) == []
+
+
 def test_a_name_error_is_never_forgiven():
     """This is what a missing tool looks like from inside the sandbox.
 

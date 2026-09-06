@@ -15,11 +15,24 @@ from __future__ import annotations
 
 # The one step-error class that cannot indicate a broken path.
 #
-# smolagents raises this when the text the model emitted is not valid Python.
-# It says something about the model's output formatting and nothing about
+# smolagents emits it in two forms, and matching only the one you happen to
+# have seen is how this was got wrong the first time. From its source, both
+# occurrences and no others:
+#
+#   agents.py:1712                "Error in code parsing: ... Make sure to
+#                                  provide correct code blobs."
+#                                 — the model never produced a <code> block
+#   local_python_executor.py:1618 "Code parsing failed on line {n} due to:
+#                                  {SyntaxError}: ..."
+#                                 — the model produced one, and it was not
+#                                   valid Python
+#
+# Both say something about the model's output formatting and nothing about
 # whether the sidecar reached the gateway, whether the gateway routed, or
-# whether the tools loaded.
-_PARSE_FAILURE = "Code parsing failed"
+# whether the tools loaded. The shared substring is matched case-insensitively
+# rather than either literal, so a wording change upstream degrades to a red
+# build rather than a silently wrong classification.
+_PARSE_FAILURE = "code parsing"
 
 
 def path_errors(step_errors: list[str]) -> list[str]:
@@ -28,10 +41,11 @@ def path_errors(step_errors: list[str]) -> list[str]:
     `step_errors` mixes two populations and only one belongs in a smoke test's
     verdict.
 
-    A **code parsing** failure is the model emitting malformed text. Observed
-    2026-09-06: `opencode/big-pickle` wrote a valid
-    `final_answer("SMOKE-TEST-OK")` and then a stray `</` on the next line. The
-    agent recovered and returned the right answer on step 4. Nothing about the
+    A **code parsing** failure is the model emitting malformed text. Both
+    observed on 2026-09-06 within half an hour, from `opencode/big-pickle`:
+    once a valid `final_answer("SMOKE-TEST-OK")` followed by a stray `</`, and
+    once the bare text `SMOKE-TEST-OK</code>` with no code block at all. The
+    agent recovered both times and returned the right answer. Nothing about the
     sidecar, the gateway or the tools was wrong — a free model produced a bad
     first draft, and CI went red for it.
 
@@ -46,4 +60,4 @@ def path_errors(step_errors: list[str]) -> list[str]:
     should still go true when the agent stumbles. It only decides whether a
     third party's output formatting is allowed to fail this repo's build.
     """
-    return [e for e in step_errors if _PARSE_FAILURE not in e]
+    return [e for e in step_errors if _PARSE_FAILURE not in e.lower()]

@@ -457,6 +457,19 @@ the opposite verdict on a different prompt, with nothing changed.
 `scripts/check-model-routing.sh` therefore reports whether two prompts
 *disagree* rather than looking for a particular provider name.
 
+**And once more, on 2026-09-06, in a fix rather than a test.** The smoke test
+was failing on a free model's malformed output, so I filtered out the parse
+error I had seen. The next CI run went green and I read that as the fix working.
+It was not: smolagents has *two* code-parsing messages, from two modules, and I
+had matched one. The run after that failed on the other. Green meant the model
+had happened to format correctly, exactly as `big-pickle` answering a
+`big-pickle`-restricted key had meant nothing.
+
+Two greps of the installed package listed both messages and no others. The
+filter matches their shared substring now, and both forms are pinned by tests —
+one of which was checked against the old filter first, to confirm it would have
+failed.
+
 **Rule.** When testing whether a control holds, choose a case where the control
 and the bypass predict *different* outcomes. If the allowed value is also the
 value the bypass produces, a pass proves nothing. And "not shown to be
