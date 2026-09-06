@@ -192,12 +192,27 @@ live gateway, the probe re-run, and the result was unchanged —
 `strategy=auto; provider=oc` before, during and after. **The setting was
 restored to `true` immediately; nothing persists.**
 
-So the classifier is not the switch, or not the only one. What remains
-unchecked is the `auto_resolve` column on `api_keys`, which the API's key
-listing does not expose.
+So the classifier is not the switch, or not the only one.
+
+**Every lever that looked like the switch has now been checked, and none is.**
+Recorded together so nobody spends the afternoon on it a second time:
+
+| Candidate | Verdict |
+|---|---|
+| `intentDetectionEnabled: false` | Set live on the gateway, probe re-run, `strategy=auto` before, during and after. Restored immediately |
+| A key's `allowed_models` | Not consulted on the rerouted path — a key permitted only `ollama/…` was served `oc/big-pickle`, no 403 |
+| `settings.blockedProviders` | Filters the `auto/*` candidate pool, which is exactly where the reroute lands — but only over `NOAUTH_PROVIDERS`, via `getNoAuthCandidates` in `virtualFactory.ts`. `antigravity` is OAuth-registered, so it cannot be excluded, and there is no equivalent filter for authenticated providers |
+| `api_keys.auto_resolve` | The last unchecked one, and the most promising by name. It is stored, settable through `PATCH /api/keys/{id}`, shown in the dashboard, carried in the sync bundle and declared in `apiKeyPolicy.ts` — and **never read by the routing layer**. The identifier does not occur anywhere in `open-sse/`, and in `apiKeyPolicy.ts` it is a type field with no logic behind it |
+
+The pattern across all four is worth naming: each is a control that *exists* —
+a settings flag, a per-key list, a blocklist, a column — and none of them is
+wired to the decision they appear to govern. A control you can set and that
+changes nothing is worse than an absent one, because setting it feels like
+having acted.
 
 `omniroute/` is a vendored subtree that must not be edited, so any fix is a
-setting or nothing — and the first setting that looked right is now ruled out.
+setting or nothing — and every setting is now ruled out by inspection rather
+than by assumption.
 
 **Diagnostic worth keeping:** `x-omniroute-decision`, `-provider`, `-model` and
 `-request-id` are on every response. Reading them first would have skipped most
