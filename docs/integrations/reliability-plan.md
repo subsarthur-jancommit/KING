@@ -7,7 +7,7 @@ bagian terakhir dan **tidak** dijadikan dasar keputusan.
 
 ---
 
-## Status per 2026-09-05
+## Status per 2026-09-06
 
 Dokumen ini snapshot 30 Agustus. Yang **diverifikasi ulang langsung** sejak itu,
 bukan diasumsikan:
@@ -19,11 +19,40 @@ bukan diasumsikan:
   seolah semuanya mati.
 - **`gateway_monitor` benar-benar mengukur.** Satu eksekusi nyata mengembalikan
   jendela 15 menit dengan rasio, ambang, dan pecahan per provider.
-- **Alarmnya tidak sampai ke siapa pun.** `gateway_alerts` menormalisasi payload
-  lalu berhenti; tiga alarm menyala 5 September dan tak satu pun terkirim.
-  Tabel tujuannya ada, kolomnya benar, isinya nol baris. Ini M1 dalam bentuk
-  baru — bukan guard yang tidak dieksekusi, tapi guard yang dieksekusi ke ruang
-  kosong.
+- **Alarmnya sekarang mendarat di tabel — 2026-09-06.** Sebelumnya
+  `gateway_alerts` menormalisasi payload lalu berhenti: **empat belas** alarm
+  terkirim sejak 29 Agustus, lima di antaranya pada 5 September, semuanya
+  `SUCCEEDED`, dan tabel tujuannya tetap nol baris. Itu M1 dalam bentuk baru —
+  bukan guard yang tidak dieksekusi, tapi guard yang dieksekusi ke ruang kosong.
+
+  Dua perubahan, karena versi satu-langkah hanya setengah bekerja: langkah
+  shaping-nya dulu membaca `data.provider`, yang tidak ada pada payload
+  `monitor.error_rate` (providernya di `data.byProvider`), jadi menulis tabel
+  tanpa memperbaikinya akan menghasilkan kolom `provider` kosong untuk setiap
+  alarm. Rinciannya di `docs/king-system.md` §7.
+
+  **Baca rasionya sebagai percobaan, bukan hasil.** Barisnya adalah percobaan
+  per-provider, termasuk yang sedetik kemudian dipulihkan gateway lewat
+  fallback keluarga model dan yang diulang OpenAI SDK. Rasio 44% bisa
+  menggambarkan jendela yang tak satu pun pemanggilnya melihat kegagalan.
+
+- **Provider yang diam sekarang ketahuan mingguan — 2026-09-06.**
+  `pool-prove.timer` menjalankan `pool-register.sh --prove` tiap Minggu 04:17,
+  mengirim completion sungguhan ke tiap provider dan hanya menghitung yang
+  menjawab. Ini menutup celah autopilot bawaan OmniRoute, yang pernah
+  melaporkan semua provider "healthy, 0 issues" saat tiga di antaranya gagal
+  100%. Gagal → unit gagal **dan** alarm masuk tabel yang sama.
+
+- **Empat skrip operator ternyata tidak bisa login sejak 4 September.**
+  Ditemukan saat memasang timer di atas. `pool-register.sh`,
+  `combo-paid-first.sh`, `local-router.sh`, dan `localmodel-register.sh` membaca
+  `INITIAL_PASSWORD` — nilai bootstrap yang tidak lagi dibaca OmniRoute setelah
+  boot pertama — sementara password admin direset 4 September. Terukur:
+  password baru → HTTP 200, `INITIAL_PASSWORD` → HTTP 401. Tidak ada yang
+  menangkapnya karena variabelnya masih ada dan masih tidak kosong; yang basi
+  hanya kebenarannya. Sekarang keempatnya membaca `OMNIROUTE_ADMIN_PASSWORD`,
+  dan `verify-credentials.sh` melakukan login sungguhan. Lihat entri 24 di
+  `docs/king-mistakes.md`.
 
 Sisanya belum diaudit ulang di sesi ini dan tidak diklaim selesai. Keadaan yang
 terverifikasi hari ini ada di `docs/king-system.md` §7 dan §11.
