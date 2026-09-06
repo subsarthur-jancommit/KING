@@ -577,3 +577,56 @@ def test_the_instructions_pin_both_arguments_the_agent_cannot_guess():
     # graphify-out/graph.json, verified against a live graph_stats call.
     assert "project_path" in text
     assert "/out" in text
+
+
+def test_the_prompt_example_stops_advertising_a_tool_the_agent_lacks():
+    """smolagents demonstrates the Action format with `python_interpreter`.
+
+    A ToolCallingAgent here has no such tool — only the MCP allowlist — so the
+    example advertises a capability that does not exist, and a model following
+    it gets a name error. It is also one of exactly two regions in the 135-line
+    prompt that flip the gateway's routing strategy to `auto`.
+    """
+    class _Templates(dict):
+        pass
+
+    class _Agent:
+        def __init__(self, text):
+            self.prompt_templates = _Templates(system_prompt=text)
+
+    before = (
+        'Action:\n{\n    "name": "python_interpreter",\n'
+        '    "arguments": {"code": "5 + 3 + 1294.678"}\n}\n'
+    )
+    agent = _Agent(before)
+
+    assert smol_runner._retarget_example(agent) is True
+    after = agent.prompt_templates["system_prompt"]
+    assert "python_interpreter" not in after
+    assert "final_answer" in after
+    # The surrounding worked example asks for 5 + 3 + 1294.678, so the answer
+    # substituted in has to be that sum or the example stops making sense.
+    assert "1302.678" in after
+
+
+def test_retargeting_is_a_no_op_when_upstream_reworded_the_example():
+    """It reaches into a third party's template, so it must not assume."""
+    class _Agent:
+        def __init__(self):
+            self.prompt_templates = {"system_prompt": "a prompt with no example in it"}
+
+    agent = _Agent()
+    assert smol_runner._retarget_example(agent) is False
+    assert agent.prompt_templates["system_prompt"] == "a prompt with no example in it"
+
+
+def test_retargeting_never_raises_on_a_strange_agent():
+    """A stale example is a small problem; a crash on every run is not."""
+    class _NoTemplates:
+        pass
+
+    class _WeirdTemplates:
+        prompt_templates = {"system_prompt": None}
+
+    assert smol_runner._retarget_example(_NoTemplates()) is False
+    assert smol_runner._retarget_example(_WeirdTemplates()) is False

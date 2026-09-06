@@ -111,6 +111,45 @@ def uses_tool_calling(tools) -> bool:
     return bool(tools)
 
 
+# smolagents' default ToolCallingAgent prompt demonstrates the Action format
+# with a call to `python_interpreter`. This agent has no such tool — it holds
+# the MCP allowlist and nothing else — so the example advertises a capability
+# that does not exist, and a model that follows it gets a name error.
+#
+# It also trips the gateway's content router. Measured 2026-09-06 by bisecting
+# the real 135-line prompt against `x-omniroute-decision`: exactly two regions
+# flip the strategy from `single` to `auto`, and this example is one of them.
+# The other is the code-graph tool descriptions, which cannot be removed
+# without removing the tools. Removing either alone still routes `auto`;
+# removing both returns `single`, served locally, 3 of 3.
+#
+# So this is half of a trade rather than a fix on its own, and it is the free
+# half: the example is boilerplate for a tool that is not there. With the graph
+# tools also excluded — `AGENT_SIDECAR_AGENT_TOOLS` already does that — the
+# sidecar gets the model it asked for. See docs/king-system.md 4.
+_PY_EXAMPLE = '"name": "python_interpreter",\n    "arguments": {"code": "5 + 3 + 1294.678"}'
+_REPLACEMENT = '"name": "final_answer",\n    "arguments": {"answer": "1302.678"}'
+
+
+def _retarget_example(agent):
+    """Point the prompt's worked example at a tool the agent actually has.
+
+    Defensive on every access. This reaches into a third party's prompt
+    template, so an upstream rewording must leave the agent working rather than
+    raise — the example being stale is a small problem and a crash is not.
+    Returns True when it changed something, for the test to assert on.
+    """
+    try:
+        templates = agent.prompt_templates
+        current = templates["system_prompt"]
+    except Exception:  # noqa: BLE001 - see docstring
+        return False
+    if not isinstance(current, str) or _PY_EXAMPLE not in current:
+        return False
+    templates["system_prompt"] = current.replace(_PY_EXAMPLE, _REPLACEMENT)
+    return True
+
+
 def build_agent(settings: Settings | None = None, tools=None, ceiling=None):
     settings = settings or load_settings()
     model = smolagents_model(settings)
@@ -122,13 +161,15 @@ def build_agent(settings: Settings | None = None, tools=None, ceiling=None):
         # runs no arbitrary Python, so neither the sandbox nor the import
         # allowlist applies. The tool allowlist (config.py + mcp_tools.py) is
         # the whole boundary, and it is enforced before we ever get here.
-        return ToolCallingAgent(
+        agent = ToolCallingAgent(
             tools=tools,
             model=model,
             max_steps=settings.max_steps,
             instructions=TOOL_AGENT_INSTRUCTIONS,
             step_callbacks=callbacks,
         )
+        _retarget_example(agent)
+        return agent
 
     return CodeAgent(
         tools=tools,
