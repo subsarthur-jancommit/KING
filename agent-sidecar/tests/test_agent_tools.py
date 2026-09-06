@@ -372,12 +372,12 @@ def test_one_dead_server_does_not_cost_the_agent_the_other_ones_tools(monkeypatc
     assert report["missing"] == ["get_neighbors"]
 
 
-class _FakeToolCall:
+class _ToolCallStub:
     def __init__(self, name):
         self.name = name
 
 
-class _FakeActionStep:
+class _ActionStepStub:
     """Only the attributes `_diagnostics` actually reads."""
 
     def __init__(self, step_number, tool_calls=(), error=None):
@@ -386,11 +386,20 @@ class _FakeActionStep:
         self.error = error
 
 
-class _FakeTaskStep:
+class _TaskStepStub:
     """No `error` attribute, which is how `_diagnostics` filters non-action steps."""
 
 
-class _FakeAgent:
+class _AgentWithMemorySteps:
+    """Distinct from `_FakeAgent` above, which stands in for the token ceiling.
+
+    Named apart on purpose: defining a second `_FakeAgent` here shadowed the
+    first and broke four unrelated tests that had nothing to do with this
+    change. The suite caught it immediately, which is the system working, but
+    the collision is invisible at the point of writing — the file is long and
+    the other definition is 140 lines up.
+    """
+
     def __init__(self, steps):
         self.memory = type("M", (), {"steps": steps})()
         self.monitor = None
@@ -398,12 +407,12 @@ class _FakeAgent:
 
 def test_diagnostics_records_the_tools_actually_called():
     steps = [
-        _FakeTaskStep(),
-        _FakeActionStep(1, [_FakeToolCall("omniroute_web_search")]),
-        _FakeActionStep(2, [_FakeToolCall("get_neighbors")]),
+        _TaskStepStub(),
+        _ActionStepStub(1, [_ToolCallStub("omniroute_web_search")]),
+        _ActionStepStub(2, [_ToolCallStub("get_neighbors")]),
     ]
 
-    d = smol_runner._diagnostics(_FakeAgent(steps))
+    d = smol_runner._diagnostics(_AgentWithMemorySteps(steps))
 
     assert d["tools_used"] == ["omniroute_web_search", "get_neighbors"]
     # The TaskStep must not be counted as an action step.
@@ -413,13 +422,13 @@ def test_diagnostics_records_the_tools_actually_called():
 def test_diagnostics_keeps_first_use_order_and_drops_repeats():
     """A tool called nine times in a loop should not outweigh one called once."""
     steps = [
-        _FakeActionStep(1, [_FakeToolCall("get_neighbors")]),
-        _FakeActionStep(2, [_FakeToolCall("omniroute_web_search")]),
-        _FakeActionStep(3, [_FakeToolCall("get_neighbors")]),
-        _FakeActionStep(4, [_FakeToolCall("get_neighbors")]),
+        _ActionStepStub(1, [_ToolCallStub("get_neighbors")]),
+        _ActionStepStub(2, [_ToolCallStub("omniroute_web_search")]),
+        _ActionStepStub(3, [_ToolCallStub("get_neighbors")]),
+        _ActionStepStub(4, [_ToolCallStub("get_neighbors")]),
     ]
 
-    d = smol_runner._diagnostics(_FakeAgent(steps))
+    d = smol_runner._diagnostics(_AgentWithMemorySteps(steps))
 
     assert d["tools_used"] == ["get_neighbors", "omniroute_web_search"]
 
@@ -431,25 +440,25 @@ def test_diagnostics_reports_no_tools_used_as_an_empty_list():
     answer, and the field that carries it must not be null, or every reader has
     to handle two spellings of the same thing.
     """
-    d = smol_runner._diagnostics(_FakeAgent([_FakeActionStep(1)]))
+    d = smol_runner._diagnostics(_AgentWithMemorySteps([_ActionStepStub(1)]))
 
     assert d["tools_used"] == []
 
 
 def test_diagnostics_survives_a_step_whose_tool_calls_are_none():
     """smolagents leaves `tool_calls` unset on steps that made none."""
-    step = _FakeActionStep(1)
+    step = _ActionStepStub(1)
     step.tool_calls = None
 
-    d = smol_runner._diagnostics(_FakeAgent([step]))
+    d = smol_runner._diagnostics(_AgentWithMemorySteps([step]))
 
     assert d["tools_used"] == []
 
 
 def test_a_tool_call_with_no_name_is_skipped_not_recorded_as_none():
-    step = _FakeActionStep(1, [_FakeToolCall(None), _FakeToolCall("graph_stats")])
+    step = _ActionStepStub(1, [_ToolCallStub(None), _ToolCallStub("graph_stats")])
 
-    d = smol_runner._diagnostics(_FakeAgent([step]))
+    d = smol_runner._diagnostics(_AgentWithMemorySteps([step]))
 
     assert d["tools_used"] == ["graph_stats"]
 
@@ -457,10 +466,10 @@ def test_a_tool_call_with_no_name_is_skipped_not_recorded_as_none():
 def test_tools_used_is_collected_alongside_errors_not_instead_of_them():
     """Both come from the same pass; a step can fail and still have called something."""
     steps = [
-        _FakeActionStep(1, [_FakeToolCall("omniroute_web_search")], error="boom"),
+        _ActionStepStub(1, [_ToolCallStub("omniroute_web_search")], error="boom"),
     ]
 
-    d = smol_runner._diagnostics(_FakeAgent(steps))
+    d = smol_runner._diagnostics(_AgentWithMemorySteps(steps))
 
     assert d["tools_used"] == ["omniroute_web_search"]
     assert d["step_errors"] == ["step 1: boom"]
