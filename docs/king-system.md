@@ -1165,6 +1165,53 @@ a repeat of the same filler prompt returned in 1.0 s. That was Ollama's KV
 prefix cache, not the fix. Every number above uses text unique to its run.
 
 
+### Local as the default: tried, measured, reverted the same hour
+
+The plan approved on 2026-09-06 made the local model the sidecar's default. It
+was set, measured, and turned off again, because two configurations exist and
+neither works:
+
+```
+7 tools, local model     served_by qwen2.5:1.5b   <- LOCAL, not overridden
+                         degraded=true, 9 step errors, 1m47s
+                         "Error while parsing tool call: no JSON blob" x7
+
+no tools, local model    1 step, 0 errors, 10-21s
+                         served_by gemini-3.7-flash-low   <- NOT local at all
+```
+
+With tools the request stays on the host and the 1.5B model cannot drive the
+protocol: it spent all eight steps failing to emit tool-call JSON and reached
+the right answer only by exhausting `max_steps`. Without tools the model copes
+fine — because `uses_tool_calling([])` selects **CodeAgent**, whose system
+prompt is *about writing Python*, which is trigger B of the content reroute and
+the one no rewording avoided. The work left the machine.
+
+So the local model can stay on the host, or it can be useful as an agent, but
+not both. Making it the default meant `degraded=true` on every call, which
+destroys the flag's meaning — the exact mistake this repo already corrected once
+by splitting `model_overridden` out of `degraded`.
+
+**What survives, and it is the part worth having.** Ask for an `ollama/` model
+explicitly and the guarantee holds, verified after the revert:
+
+```
+model      ollama/qwen2.5:1.5b-instruct-q4_K_M
+served_by  qwen2.5:1.5b-instruct-q4_K_M     <- honoured
+tools      7 (code graph dropped automatically)
+egress     no "left the host" step error
+```
+
+For work that must not leave the machine, that is the only configuration that
+keeps the promise, and it is now one request field away. Direct `/v1` calls to
+the local model — what `local-router.sh` does — were never affected; only the
+agent path fails.
+
+The honest summary is that the ceiling fix was the real win here and the model
+swap was not. A 1.5B model is a classifier, not an agent, and no amount of
+memory or CPU budget on one physical core changes that.
+
+
 ### The default model was left alone, and that was measured
 
 `AGENT_SIDECAR_MODEL_ID` defaults to `opencode/big-pickle`, the free tier. The
