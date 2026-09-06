@@ -1251,6 +1251,7 @@ reporting healthy. Each guard below exists because of a specific one.
 | `monitor-deadman.timer` | 15 min | That the monitor **itself** is still running |
 | `codegraph-refresh.timer` | Daily | The graph ageing silently |
 | `/audit/runs.jsonl` | Every agent run | Cost, tool use, and degradation trends that were previously unrecoverable |
+| `alerts-report.sh` | When you want to know | What the gateway has been complaining about. Reads Postgres directly, like `monitor-deadman.sh`, so it still answers when the Activepieces engine is wedged — one of the states you would most want to ask about |
 | `pool-prove.timer` | Weekly, Sun 04:17 | A registered provider that has gone silent. OmniRoute's own autopilot reported every provider "healthy, 0 issues" while three failed 100% of real requests; this sends a real completion to each and counts only answers |
 | `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Six real calls, not presence tests; two of them assert that a *wrong* token is rejected |
 | `check-model-routing.sh` | After any `git subtree pull` | Whether the gateway still overrides the model you asked for. Exits non-zero while it does |
@@ -1330,6 +1331,22 @@ ratio can describe a window in which no caller saw a single failure. §4 has the
 mechanism. Treat a WARNING as "the providers are working harder than usual" and
 confirm user-visible impact from `served_by` and `degraded` in the run journal
 before calling it an outage.
+
+**Reading them.** `./scripts/alerts-report.sh [days]` prints the table from the
+command line, grouped by event and provider, with the same attempts-not-outcomes
+caveat attached — because that is exactly where someone reads a 44% error ratio
+and concludes there was an outage.
+
+Verified with a positive control rather than by an empty run: an empty report
+and a broken query look identical, so a row was inserted, confirmed to appear,
+and deleted again. That control found two defects — it was printing the row's
+insert time instead of the alert's own `received_at`, and its timestamp cast
+would have failed the whole report on one malformed cell rather than degrading
+a single line.
+
+`ap_list_connections` returns nothing on this deployment, so there is no Slack,
+Discord or email connection to push through — which is why the table is the
+destination and not a stepping stone to one.
 
 **A push destination — Discord, email — is still not wired**, and needs a URL
 only the operator has. The table turns "alerts vanish" into "alerts accumulate
