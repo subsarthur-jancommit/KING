@@ -53,3 +53,11 @@ omniroute/plugins/*
 # Alert webhook URL + HMAC secret for the pool-prove timer, read via
 # EnvironmentFile so the secret never lands in a systemd unit.
 /.pool-prove.env
+
+# Berkas kerja sementara yang saya buat di root saat menjalankan probe. Salah
+# satunya pernah ikut ter-commit karena perintah rm-nya dipindah ke latar
+# sebelum sempat jalan.
+/_*.py
+/_*.tmp
+/_*.txt
+/_*.yml
