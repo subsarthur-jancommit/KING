@@ -1,0 +1,46 @@
+# Weekly proof that every registered provider still answers. Paired with
+# pool-prove.timer.
+#
+# The gap it closes: OmniRoute's built-in health autopilot reported all
+# providers "healthy, 0 issues" while three of them failed 100% of real
+# requests. Registration is not evidence, and neither is a green dashboard —
+# only a real completion is. `pool-register.sh --prove` has always been able to
+# check this; nothing has ever run it on a schedule.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/pool-prove.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pool-prove.timer
+#   sudo loginctl enable-linger "$USER"     # already set for monitor-deadman
+#
+# When a provider goes silent, the unit FAILS:
+#   systemctl --user --failed
+#   journalctl --user -u pool-prove -n 40
+#
+# Weekly, not hourly, and that is deliberate. Every run spends a real
+# completion on every provider. The failure being caught here is a provider
+# going quiet for good, which is a slow event; paying for a probe of the whole
+# pool every hour to notice it sooner is the wrong trade.
+
+[Unit]
+Description=Prove every registered provider still answers a real request
+Documentation=file:%h/KING/docs/integrations/reliability-plan.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/KING
+ExecStart=%h/KING/scripts/pool-prove.sh
+
+# Set both to also post to gateway_alerts, so a silent provider lands in the
+# same table as every other alert instead of only in journalctl. Without them
+# the failing unit above is the only signal, which is a signal nobody sees
+# until they think to look.
+#   Environment=POOL_ALERT_URL=https://flows.arject.co/api/v1/webhooks/...
+#   Environment=POOL_ALERT_SECRET=...
+
+# Generous: the script sends a real completion to every provider in the pool,
+# each with its own 120s curl timeout, and a pool that has grown is exactly
+# when this matters most.
+TimeoutStartSec=20min
+Nice=10

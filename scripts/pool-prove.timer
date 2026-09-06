@@ -1,0 +1,25 @@
+[Unit]
+Description=Weekly proof that every registered provider still answers
+Documentation=file:%h/KING/docs/integrations/reliability-plan.md
+
+[Timer]
+# Sunday, early, and off the quarter-hour the other timers use so a pool probe
+# never overlaps the monitor's own 15-minute window — a burst of probe traffic
+# landing inside that window would move the very ratio the monitor is judging.
+OnCalendar=Sun *-*-* 04:17:00
+
+# A missed run must catch up. The machine being off is not evidence that the
+# providers are fine, and skipping silently would turn a weekly check into an
+# occasional one without saying so.
+Persistent=true
+
+# Wide, because nothing here is time-critical and the default 1-minute accuracy
+# wakes the machine for no reason.
+AccuracySec=5min
+
+# Without this every VPS reboot after a Sunday outage stampedes the whole pool
+# at once, alongside whatever else Persistent=true is catching up.
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
