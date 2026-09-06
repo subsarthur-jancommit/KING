@@ -42,7 +42,13 @@ body=$(curl -s -m 120 "$BASE/api/usage/call-logs?limit=$LIMIT&excludeTests=1" \
   -H "Authorization: Bearer $key") || {
     echo "Could not read call logs from $BASE" >&2; exit 1; }
 
-printf '%s' "$body" | python3 - "$HOURS" "$LIMIT" <<'PY'
+# The analysis goes to a temp file rather than a heredoc on python3's stdin:
+# a heredoc IS stdin, so `printf ... | python3 - <<PY` silently feeds python the
+# script and throws the call logs away. That is exactly how the first run of
+# this script failed, with a JSON parse error on an empty document.
+script=$(mktemp)
+trap 'rm -f "$script"' EXIT INT TERM
+cat > "$script" <<'PY'
 import collections, datetime, json, sys
 
 hours = int(sys.argv[1])
@@ -160,3 +166,5 @@ print("  A requested model and a served one that differ is the content reroute")
 print("  in docs/king-system.md 4. It is not fixable from this repo; what this")
 print("  report is for is knowing which callers it is happening to.")
 PY
+
+printf '%s' "$body" | python3 "$script" "$HOURS" "$LIMIT"
