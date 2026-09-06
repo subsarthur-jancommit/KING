@@ -550,6 +550,43 @@ commit is capable of causing it.
 
 ---
 
+## 22. A test harness that substitutes stored data, and a failure that looked like a bug
+
+**What happened.** Wiring the `gateway_alerts` table step, I tested it with
+`ap_test_step` and got a row with every column `null`. The piece's own
+documentation warns that "any value whose key does not match a real column is
+silently dropped", so the reading was obvious: the field keys are wrong.
+
+They were not. `ap_test_step` does not re-run prior CODE steps — it references
+their stored sample output, and `step_1` had none. Every
+`{{step_1['output'].x}}` resolved to nothing. The step was correct the whole
+time.
+
+**What separated the two.** One literal value. Replacing a single column's
+template with the constant `LITERAL-PROBE` and re-running produced a row with
+`event: "LITERAL-PROBE"` and the rest still null — which proves the key mapping
+works and moves the fault to the reference. `ap_test_flow`, which actually
+executes every step, then wrote the correct row on the first try.
+
+**Why it nearly cost more than it did.** The obvious next move was to rewrite
+the step to use the piece's raw `records` form, keyed by column *name* instead
+of externalId. That would have "fixed" nothing, produced the same nulls, and
+made the real cause harder to see — a rewrite that changes the wrong variable
+leaves you with two unknowns instead of one.
+
+**Rule.** When a check fails and a documented failure mode explains it, that is
+a hypothesis, not a diagnosis — a plausible story available in advance is
+exactly what entries 20 and 21 are about. Before changing anything, find the
+cheapest observation that separates the candidates. A single constant in one
+field cost one call and ruled out half the possibilities; the rewrite would have
+cost more and ruled out nothing.
+
+And know what your harness actually executes. "Test this step" and "run the
+flow" are different operations, and only one of them proves the thing you are
+about to publish.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:
