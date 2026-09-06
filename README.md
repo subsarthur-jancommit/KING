@@ -408,3 +408,52 @@ Three things about it are worth knowing:
   `AGENT_SIDECAR_AUTH_TOKEN is not configured` — the wrapper had required a
   bearer for weeks while CI posted without one, invisible because the job died
   at the build first.
+
+## The scripts, and when to reach for each
+
+Every one of these exists because something failed silently first. They are
+grouped by the question they answer rather than alphabetically, because that is
+how you will be looking for them.
+
+**Before you change anything**
+
+| | |
+|---|---|
+| `stax-preflight.sh <profiles…>` | Missing variables, wrong ports, placeholder secrets, disk. Run it before every `up`; it only asserts files and variables, since nothing else is knowable before containers start. |
+
+**After you change something**
+
+| | |
+|---|---|
+| `verify-credentials.sh` | Every credential, proved with a real call. Seven checks, two of which assert that a *wrong* token is **rejected** — a service that accepts anything would pass every positive check. |
+| `check-model-routing.sh` | Whether the gateway still overrides the model you asked for. Exits non-zero while it does. Run after any `git subtree pull`. |
+| `pool-register.sh --prove` | Every registered provider, proved with a real completion. Runs weekly on its own via `pool-prove.timer`. |
+
+**When you want to know what happened**
+
+| | |
+|---|---|
+| `agent-report.sh [days]` | Cost, tool use, degradation and `served_by` across agent runs. |
+| `alerts-report.sh [days]` | What `gateway_monitor` has been complaining about. Reads Postgres directly, so it answers even when Activepieces is wedged. |
+
+**Setup, run once and rarely again**
+
+| | |
+|---|---|
+| `pool-register.sh` | Register the free-tier pool, then prove each one. |
+| `localmodel-register.sh` | Register Ollama behind the gateway, and prove it answers. |
+| `combo-paid-first.sh` | Build the `paid-first` combo ladder. |
+| `codegraph-refresh.sh` | Rebuild the code graph. A daily timer already does this. |
+
+Two things they share, and both are deliberate. **No script reports success it
+did not measure** — a saved connection that answers nothing has bitten this
+deployment three times, so registration is never counted as proof. And **none of
+them print a secret or pass one on a command line**, because `ps` is readable by
+every process on the box.
+
+The scripts that log in read `OMNIROUTE_ADMIN_PASSWORD` from `omniroute/.env`,
+falling back to `INITIAL_PASSWORD`. That distinction is not cosmetic:
+`INITIAL_PASSWORD` is a bootstrap value the gateway stops consulting after first
+boot, and four of these scripts were silently unable to log in for two days
+after the admin password was changed. See entry 24 in
+[`docs/king-mistakes.md`](docs/king-mistakes.md).
