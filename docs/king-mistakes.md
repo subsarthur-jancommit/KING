@@ -680,6 +680,51 @@ rotation ahead, which touches a dozen more keys than this did.
 
 ---
 
+## 25. Opt-in isolation, and a test suite pointed at production
+
+**What happened.** To get faster feedback than CI, I ran `pytest tests/` inside
+the deployed sidecar container. It passed. It also wrote **105 test entries**
+into `/audit/runs.jsonl`, the production run journal — 87 of the 137 lines it
+then held. Tasks named `t` and `do the thing`, `RuntimeError: boom` in the
+degraded list, and every number `agent-report.sh` reported computed over them.
+
+**Why it was invisible.** Journal writes are best-effort by design: an
+unwritable path must not fail a run. So nothing errored, nothing warned, and
+the suite reported 180 passed. I only saw it because I had just added a report
+section and read its output — `RuntimeError: boom` in a production report is
+hard to misread, and without that I would not have looked.
+
+**The design fault underneath.** Several tests already redirected
+`AGENT_SIDECAR_RUN_JOURNAL` to a `tmp_path`. That looks like the problem being
+handled and is actually the problem in miniature: **opt-in isolation isolates
+only the cases somebody thought of.** Every other test in the suite wrote to
+the default `/audit/...`, which is a real, mounted, shared volume in the one
+environment where the code actually runs. The protection was strongest exactly
+where it was least needed — in CI, where those paths do not exist — and absent
+where it mattered.
+
+**The fix, and its shape.** A session-scoped `autouse` conftest fixture
+redirects both audit paths before any test runs. `autouse` is the point: a
+fixture you have to request is one that will be forgotten, and forgetting it is
+silent. Verified with a before-and-after count on the real file — 32 lines, run
+the suite, 32 lines — rather than by rereading the fixture.
+
+**Rule.** Before running a suite anywhere other than CI, ask what it writes to
+that is not a temporary directory. A test that touches a real path is a test
+that will eventually be run against a real deployment. And when isolation is
+opt-in, treat it as absent: the question is not whether the tests you are
+looking at are isolated, it is whether the ones you are not looking at can be.
+
+**Corollary.** Cleaning up needs the same evidence as the fix. The synthetic
+entries were removable only because they were separable — 100 tasks named `t`,
+5 named `do the thing`, and 3 genuine runs sharing the window — so the filter
+required both a timestamp inside the pytest window and one of those two exact
+strings, and the file was copied first. Had the fixtures used realistic task
+text, there would have been no honest way to tell them apart, and the journal
+would have been permanently untrustworthy.
+
+---
+
 ## The pattern underneath most of these
 
 Three shapes account for nearly every entry:
