@@ -553,3 +553,27 @@ def test_a_run_that_only_terminated_used_no_tools():
     d = smol_runner._diagnostics(_AgentWithMemorySteps(steps))
 
     assert d["tools_used"] == []
+
+
+def test_the_instructions_pin_both_arguments_the_agent_cannot_guess():
+    """Two arguments cost a wasted step and a degraded flag every time.
+
+    smolagents requires every declared tool input whether or not the MCP schema
+    lists it under `required`, so a tool whose spec calls an argument optional
+    still rejects a call that omits it. Measured twice on this deployment:
+    `provider` on the search tools (mistakes entry 15) and `project_path` on the
+    graph tools, the second of which turned a five-step graph query into a
+    degraded run on 2026-09-06.
+
+    Pinned here because the instructions read like prose and prose invites
+    tidying. Dropping either line costs a step on every affected call and says
+    nothing at the time.
+    """
+    text = smol_runner.TOOL_AGENT_INSTRUCTIONS
+
+    assert "tavily-search" in text
+    assert "provider" in text
+    # The value matters, not just the word: /out is where the graph server holds
+    # graphify-out/graph.json, verified against a live graph_stats call.
+    assert "project_path" in text
+    assert "/out" in text

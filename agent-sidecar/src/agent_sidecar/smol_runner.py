@@ -44,10 +44,22 @@ from .omniroute_model import smolagents_model
 # So the field must be set, and set to one that exists. Of the twenty search
 # and fetch providers the gateway advertises, exactly one reports
 # `cred=configured`: tavily-search, which serves both search and fetch.
+# Arguments the agent cannot discover and gets wrong on its first attempt.
+#
+# Both of these cost a wasted step and a `degraded` flag every time they are
+# missed, and both are invisible from the tool schema: smolagents requires every
+# declared input whether or not the MCP schema lists it under `required`, so a
+# tool whose spec says an argument is optional still rejects a call without it.
+# That is how the `provider` line came to be here (mistakes entry 15) and it is
+# the same reason `project_path` follows.
 TOOL_AGENT_INSTRUCTIONS = (
     "For omniroute_web_search and omniroute_web_fetch you MUST set "
     '`provider` to "tavily-search". It is the only provider with credentials '
     "configured on this gateway; any other value returns no results. "
+    "For every code graph tool — get_node, get_neighbors, query_graph, "
+    'graph_stats — you MUST set `project_path` to "/out". That is where the '
+    "graph server holds graphify-out/graph.json; omitting it fails the call "
+    "outright rather than defaulting. "
     "If a tool returns nothing, say you could not find it — never invent an "
     "answer or fall back to your own memory of the world."
 )
