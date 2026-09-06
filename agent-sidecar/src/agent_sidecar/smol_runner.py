@@ -167,6 +167,13 @@ def _diagnostics(agent) -> dict:
     # any tools to use.
     tools_used: list[str] = []
     counted = 0
+    # `final_answer` is smolagents' terminator, not a capability. It is called
+    # on essentially every successful run, so counting it would put a constant
+    # in a field whose entire purpose is telling which tools vary — the same
+    # reason `degraded` was kept out of always-on territory. It is also not in
+    # the allowlist, so it is not part of the context cost this field is meant
+    # to justify.
+    builtin = {"final_answer"}
     for step in steps:
         # TaskStep and PlanningStep carry no `error` attribute; only action
         # steps do, so this both filters and collects in one pass.
@@ -178,7 +185,7 @@ def _diagnostics(agent) -> dict:
             errors.append(f"step {getattr(step, 'step_number', counted)}: {err}")
         for call in getattr(step, "tool_calls", None) or []:
             name = getattr(call, "name", None)
-            if name and name not in tools_used:
+            if name and name not in builtin and name not in tools_used:
                 tools_used.append(name)
     return {
         "steps": counted,

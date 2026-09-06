@@ -525,3 +525,31 @@ def test_tools_used_is_collected_alongside_errors_not_instead_of_them():
 
     assert d["tools_used"] == ["omniroute_web_search"]
     assert d["step_errors"] == ["step 1: boom"]
+
+
+def test_the_final_answer_terminator_is_not_counted_as_a_tool():
+    """Observed on the first live run: tools_used came back as
+    ['graph_stats', 'final_answer'].
+
+    `final_answer` is smolagents' terminator, called on essentially every
+    successful run. Counting it puts a constant into the one field whose job is
+    to show which tools vary, and it is not in the allowlist, so it is not part
+    of the context cost this field exists to justify.
+    """
+    steps = [
+        _ActionStepStub(1, [_ToolCallStub("graph_stats")]),
+        _ActionStepStub(2, [_ToolCallStub("final_answer")]),
+    ]
+
+    d = smol_runner._diagnostics(_AgentWithMemorySteps(steps))
+
+    assert d["tools_used"] == ["graph_stats"]
+
+
+def test_a_run_that_only_terminated_used_no_tools():
+    """Not ['final_answer'] — that would read as a tool having earned its place."""
+    steps = [_ActionStepStub(1, [_ToolCallStub("final_answer")])]
+
+    d = smol_runner._diagnostics(_AgentWithMemorySteps(steps))
+
+    assert d["tools_used"] == []
