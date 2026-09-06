@@ -31,9 +31,25 @@ def _clean_env(monkeypatch):
     monkeypatch.delenv("AGENT_SIDECAR_AGENT_TOOLS", raising=False)
 
 
-def _settings(monkeypatch, allowlist: str | None = None):
+def _settings(monkeypatch, allowlist: str | None = None, graphify: str | None = None):
+    """Settings built from a known environment, not from whatever is ambient.
+
+    `load_settings()` reads the real environment, and `GRAPHIFY_API_KEY` decides
+    whether the agent gets one MCP server or two. Tests that assert a client
+    count were therefore passing only because the machine running them happened
+    to have no key — they were green in CI and red inside the deployed
+    container, where it is set. That is a guard passing for a reason unrelated
+    to what it claims to check.
+
+    So it is cleared by default and set explicitly by the tests that want the
+    two-server case, which is the production shape.
+    """
     if allowlist is not None:
         monkeypatch.setenv("AGENT_SIDECAR_AGENT_TOOLS", allowlist)
+    if graphify is None:
+        monkeypatch.delenv("GRAPHIFY_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("GRAPHIFY_API_KEY", graphify)
     return load_settings()
 
 
@@ -237,6 +253,39 @@ def test_a_working_gateway_returns_tools_and_the_client_to_close(monkeypatch):
     assert len(clients) == 1
     assert report["enabled"] is True
     assert report["offered"] == 2
+
+
+def test_two_servers_are_connected_separately_when_the_graph_key_is_set(monkeypatch):
+    """The production shape, which no test covered.
+
+    Every existing client-count assertion runs with GRAPHIFY_API_KEY cleared, so
+    the deployed configuration — OmniRoute plus the code graph, eleven tools
+    from two servers — was the one arrangement the suite never exercised. It
+    also happens to be the arrangement that broke once: a single MCPClient over
+    both servers is all-or-nothing, so the code graph being down took web search
+    with it. One client per server is the fix, and this pins it.
+    """
+    monkeypatch.setenv("OMNIROUTE_MCP_API_KEY", "a-manage-scoped-key")
+
+    class _Working:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_tools(self):
+            return [_Tool("omniroute_web_search"), _Tool("get_neighbors")]
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr("smolagents.MCPClient", _Working, raising=True)
+
+    tools, clients, report = smol_runner._load_tools(
+        _settings(monkeypatch, "omniroute_web_search,get_neighbors", graphify="a-graph-key")
+    )
+
+    # Two servers, two clients — separately, so one dying cannot take the other.
+    assert len(clients) == 2
+    assert sorted(t.name for t in tools) == ["get_neighbors", "omniroute_web_search"]
 
 
 # --------------------------------------------------------------------------
