@@ -725,9 +725,73 @@ would have been permanently untrustworthy.
 
 ---
 
+## 26. A before/after split whose boundary was a guess, and a lever ruled out by one probe
+
+**What happened.** Two failures in one investigation, in opposite directions.
+
+The day after raising `RATE_LIMIT_MAX_WAIT_MS`, I re-read the call log to check
+the fix had held, splitting it into "before" and "after" at **09:00 UTC** —
+roughly when I remembered doing the work. The split said the failure rate had
+gone from 15% to **24%**: the fix had made things worse. That was alarming
+enough that I nearly published a correction to a document and an artifact I had
+written hours earlier.
+
+The gateway had actually restarted at **14:06:07 UTC**, five hours later —
+`docker inspect omniroute --format '{{.State.StartedAt}}'`, one command. With
+the real boundary the same rows say the opposite:
+
+```
+guessed 09:00   before 15% -> after 24%     "the fix made it worse"
+actual  14:06   before 44% -> after 23%     rate-limit 504s: 27 -> 0
+```
+
+Nothing about the data changed. The five-hour error had put most of the *broken*
+period into the "after" bucket.
+
+**Then the opposite error, caught in time.** The failures remaining after the
+fix carried `Direct response did not start within 30000ms`. Reading the source
+found `OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS` — default 30 s, read from
+`process.env`, therefore settable in `omniroute/.env` with no subtree edit. The
+same shape as the win the day before, and the mechanism was easy to believe:
+local prefill on a novel 2,000-token prompt takes far longer than 30 s, so of
+course the bound would trip.
+
+Every part of that was checkable and none of it had been checked. The probe:
+send a novel prompt through the gateway and time **headers** separately from
+**body**, since the bound measures time-to-headers.
+
+```
+headers after  83.2s      <- 2.8x the supposed 30s ceiling
+body    after  83.2s      status 200, prompt_tokens=2050
+```
+
+The call succeeded. The bound is not applied on the path ollama takes, and the
+tell had been in the log the whole time: all five such rows carry `in=0` — zero
+tokens processed — and a duration of almost exactly 60,000 ms, two 30-second
+attempts on a connection that never started. They hit `opencode` too, so it was
+never an ollama-specific ceiling. Raising it would have slowed dead-socket
+detection for every provider on the deployment while fixing nothing, and would
+have looked like a fix in the changelog.
+
+**The shape of both errors.** A comparison is only as good as its boundary, and
+a boundary from memory is not a measurement — it is the one input to a
+before/after study that nobody thinks to verify, because it feels like
+bookkeeping rather than data. And a lever that is real, configurable, and
+plausibly connected to the symptom is still a guess until something proves it
+connects; "it is an environment variable and the story fits" is how the previous
+entry's mistakes started too.
+
+**What to do instead.** Take the boundary from the system, not from recall —
+container start time, file mtime, deploy log. And when a config lever looks like
+the answer, spend one probe proving the mechanism *before* spending the change,
+because a lever that silently does nothing is indistinguishable from one that
+worked.
+
+---
+
 ## The pattern underneath most of these
 
-Three shapes account for nearly every entry:
+Six shapes account for nearly every entry:
 
 1. **A guard that does not cover the case it appears to cover** — runtime memory
    limits that do not bind builds, gitignore paths that do not match variants,
@@ -746,6 +810,10 @@ Three shapes account for nearly every entry:
    is sound, and then a claim about mechanism, absence, or cause is appended to
    it that no measurement was made for. Entries 20, 21 and 23 are all this, and
    in each the check that would have caught it cost one command.
+6. **An input to the measurement that was never itself measured** — the boundary
+   of a before/after split taken from memory, the fix time recalled rather than
+   read off the container. Entry 26 inverted a conclusion on this alone, and the
+   correcting command was `docker inspect`.
 
 The standing rule that comes out of all three, and the one most worth keeping:
 **anything that cannot be measured is treated as a failure, not a pass.**

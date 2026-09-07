@@ -1163,6 +1163,44 @@ fast. Proven: a 12,088-character local request that takes **80.9 s now returns
 One measurement trap worth repeating, because it produced a false pass first:
 a repeat of the same filler prompt returned in 1.0 s. That was Ollama's KV
 prefix cache, not the fix. Every number above uses text unique to its run.
+**Checked again a day later, because "proven" was one request.** Splitting the
+call log at the exact moment the gateway restarted with the new value
+(2026-09-06T14:06:07Z, from `docker inspect`, not from memory):
+
+```
+ollama, before   63 calls   28 failed  44%   27 were the 15s rate-limit
+ollama, after    22 calls    5 failed  23%    0 were the 15s rate-limit
+```
+
+The ceiling is genuinely gone — 27 to 0. What is **not** gone is ollama's
+failure rate, and saying "the 33% failures disappeared" would be wrong twice
+over: the rate-limit class disappeared, the provider still fails about a quarter
+of the time, and 22 calls over 86 minutes is a thin sample to claim either way.
+The remaining five are a different fault: three stalled connections and two
+`Provider returned empty content`.
+
+An earlier pass through this same data read the split as *worse* after the fix
+(24%), because it bucketed on a guessed 09:00 boundary rather than the container's
+real start time. The conclusion inverted once the boundary came from
+`docker inspect`. A before/after number is only as good as its boundary.
+
+**A second ceiling was suspected here and ruled out — do not spend the change.**
+The three stalled connections carry `Direct response did not start within
+30000ms`, from `OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS` (default 30 s,
+`open-sse/utils/directResponseStartTimeout.ts`). It reads from `process.env`, so
+it looks like exactly the same cheap win as `RATE_LIMIT_MAX_WAIT_MS`, and the
+reasoning is seductive: local prefill on a novel 2,000-token prompt takes far
+longer than 30 s, so of course it would trip.
+
+It does not. Measured directly, timing headers separately from body: a novel
+2,050-token prompt through the gateway returned its **headers after 83.2 s** and
+still completed `200`. The bound is not applied on the path ollama takes, so
+raising it would slow dead-socket detection for every provider and fix nothing.
+The tell in the log is that all five of those rows carry `in=0` and a duration
+of almost exactly 60,000 ms — two 30-second attempts with zero tokens processed
+— and they hit `opencode` as well as `ollama`. That is a connection that never
+started, which is precisely what the bound is for.
+
 
 
 ### Local as the default: tried, measured, reverted the same hour
