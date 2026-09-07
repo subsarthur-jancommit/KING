@@ -1642,6 +1642,63 @@ before calling it an outage.
 command line, grouped by event and provider, with the same attempts-not-outcomes
 caveat attached — because that is exactly where someone reads a 44% error ratio
 and concludes there was an outage.
+
+Verified with a positive control rather than by an empty run: an empty report
+and a broken query look identical, so a row was inserted, confirmed to appear,
+and deleted again. That control found two defects — it was printing the row's
+insert time instead of the alert's own `received_at`, and its timestamp cast
+would have failed the whole report on one malformed cell rather than degrading
+a single line.
+
+`ap_list_connections` still returns nothing on this deployment, so there is no
+Slack, Discord or email connection to push through. The table remains the
+durable record — the push below is a notification, not storage, and a phone that
+was off does not lose the row.
+
+**And now it reaches a phone — 2026-09-06.** `ntfy`, self-hosted, opt-in via
+`profiles: [alerting]`, behind Caddy at `/king-ntfy/*`. `gateway_alerts` gained
+a fourth step that publishes `detail` after the row is written.
+
+The security posture is stated plainly because ntfy's default is the opposite of
+safe: it ships allowing **anyone to publish and subscribe to any topic**. On a
+public domain that means the alerts — provider names, failure ratios, which
+model broke — are readable by anyone who guesses the topic. A random topic name
+is a secret in a URL, not authentication. So `NTFY_AUTH_DEFAULT_ACCESS=deny-all`
+with a token-bearing user holding read-write on exactly one topic. Proven in
+both directions after the Caddy route went live:
+
+```
+no token      403
+wrong token   401
+right token   200
+```
+
+`ntfy access` confirms it from the other side: user `*` (anonymous) has
+*"no access to any (other) topics (server config)"*.
+
+**Three traps, each of which reported success while doing nothing.**
+
+*It refuses to run on a sub-path.* `NTFY_BASE_URL=…/king-ntfy` crash-looped on
+`base-url must not have a path`. This domain has no wildcard DNS record — that
+is why everything here lives on a path — so a subdomain was not available
+either. It works with the variable unset, because `handle_path` strips the
+prefix before proxying; base-url only feeds generated attachment and click URLs.
+
+*A single-file bind mount goes stale after a `git pull`.* Caddy's Caddyfile is
+mounted file-to-file, so the mount follows the **inode**. `git pull` replaces the
+file, the container keeps the old one, and `caddy reload` cheerfully reports
+`Valid configuration` for the version it can still see. The route 404'd through
+Caddy while working perfectly on the container port. Recreating the container is
+what re-binds it — a reload never will.
+
+*A non-ASCII character in a header fails silently.* The step's `Title` was
+`"KING — {{provider}}"`, and the em dash is code point 8212. HTTP headers are
+ByteStrings, so the request never left: `status: 0`, body
+`Cannot convert argument to a ByteString…`. The step still reported **SUCCEEDED**
+and the flow stayed green, because `retry_5xx` does not consider status 0 an
+error. Titles are ASCII now; the em dashes live in the body, which is UTF-8 and
+fine.
+
 **And now the caveat has a number, 2026-09-07.** Every reliability figure in
 this document counts provider *attempts*, and every one of them has carried a
 warning that attempts are not outcomes. A warning tells you not to trust a
@@ -1731,64 +1788,6 @@ severity rules lived in exactly one place, behind a web UI, with no history — 
 rule worth this much scrutiny should be reviewable in a diff. `flows/` mirrors
 it; Activepieces remains the source of truth, and the step's `input` block stays
 out because it holds the bearer token and the HMAC secret.
-
-
-
-Verified with a positive control rather than by an empty run: an empty report
-and a broken query look identical, so a row was inserted, confirmed to appear,
-and deleted again. That control found two defects — it was printing the row's
-insert time instead of the alert's own `received_at`, and its timestamp cast
-would have failed the whole report on one malformed cell rather than degrading
-a single line.
-
-`ap_list_connections` still returns nothing on this deployment, so there is no
-Slack, Discord or email connection to push through. The table remains the
-durable record — the push below is a notification, not storage, and a phone that
-was off does not lose the row.
-
-**And now it reaches a phone — 2026-09-06.** `ntfy`, self-hosted, opt-in via
-`profiles: [alerting]`, behind Caddy at `/king-ntfy/*`. `gateway_alerts` gained
-a fourth step that publishes `detail` after the row is written.
-
-The security posture is stated plainly because ntfy's default is the opposite of
-safe: it ships allowing **anyone to publish and subscribe to any topic**. On a
-public domain that means the alerts — provider names, failure ratios, which
-model broke — are readable by anyone who guesses the topic. A random topic name
-is a secret in a URL, not authentication. So `NTFY_AUTH_DEFAULT_ACCESS=deny-all`
-with a token-bearing user holding read-write on exactly one topic. Proven in
-both directions after the Caddy route went live:
-
-```
-no token      403
-wrong token   401
-right token   200
-```
-
-`ntfy access` confirms it from the other side: user `*` (anonymous) has
-*"no access to any (other) topics (server config)"*.
-
-**Three traps, each of which reported success while doing nothing.**
-
-*It refuses to run on a sub-path.* `NTFY_BASE_URL=…/king-ntfy` crash-looped on
-`base-url must not have a path`. This domain has no wildcard DNS record — that
-is why everything here lives on a path — so a subdomain was not available
-either. It works with the variable unset, because `handle_path` strips the
-prefix before proxying; base-url only feeds generated attachment and click URLs.
-
-*A single-file bind mount goes stale after a `git pull`.* Caddy's Caddyfile is
-mounted file-to-file, so the mount follows the **inode**. `git pull` replaces the
-file, the container keeps the old one, and `caddy reload` cheerfully reports
-`Valid configuration` for the version it can still see. The route 404'd through
-Caddy while working perfectly on the container port. Recreating the container is
-what re-binds it — a reload never will.
-
-*A non-ASCII character in a header fails silently.* The step's `Title` was
-`"KING — {{provider}}"`, and the em dash is code point 8212. HTTP headers are
-ByteStrings, so the request never left: `status: 0`, body
-`Cannot convert argument to a ByteString…`. The step still reported **SUCCEEDED**
-and the flow stayed green, because `retry_5xx` does not consider status 0 an
-error. Titles are ASCII now; the em dashes live in the body, which is UTF-8 and
-fine.
 
 **They are `--user` units, and checking them the obvious way says they are
 dead.** `systemctl list-timers` and `systemctl is-active monitor-deadman.timer`
