@@ -1530,7 +1530,7 @@ reporting healthy. Each guard below exists because of a specific one.
 | `monitor-deadman.timer` | 15 min | That the monitor **itself** is still running |
 | `codegraph-refresh.timer` | Daily | The graph ageing silently |
 | `/audit/runs.jsonl` | Every agent run | Cost, tool use, and degradation trends that were previously unrecoverable |
-| `gateway-report.sh` | When you want to know | How each caller's traffic was routed. Measured 2026-09-06: the sidecar had 141 of 204 calls rerouted through `auto/*`, and `local-router-probe` 4 of 4 — the gateway recording its own override |
+| `gateway-report.sh` | When you want to know | How each caller's traffic was routed, which providers fail, and — via `correlationId` — how many of those failures actually reached a caller rather than being covered by the family fallback (2026-09-07: 2.5% vs 15.8% of attempts). Measured 2026-09-06: the sidecar had 141 of 204 calls rerouted through `auto/*`, and `local-router-probe` 4 of 4 — the gateway recording its own override |
 | `alerts-report.sh` | When you want to know | What the gateway has been complaining about. Reads Postgres directly, like `monitor-deadman.sh`, so it still answers when the Activepieces engine is wedged — one of the states you would most want to ask about |
 | `pool-prove.timer` | Weekly, Sun 04:17 | A registered provider that has gone silent. OmniRoute's own autopilot reported every provider "healthy, 0 issues" while three failed 100% of real requests; this sends a real completion to each and counts only answers |
 | `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Seven real calls, not presence tests; two of them assert that a *wrong* token is rejected, and one is a real admin login — the check whose absence let four scripts fail silently for two days |
@@ -1622,6 +1622,41 @@ before calling it an outage.
 command line, grouped by event and provider, with the same attempts-not-outcomes
 caveat attached — because that is exactly where someone reads a 44% error ratio
 and concludes there was an outage.
+**And now the caveat has a number, 2026-09-07.** Every reliability figure in
+this document counts provider *attempts*, and every one of them has carried a
+warning that attempts are not outcomes. A warning tells you not to trust a
+number; it does not hand you the right one.
+
+`correlationId` does. The attempts behind one client request share it, so the
+last attempt in each correlation is what the caller actually received.
+`gateway-report.sh` now groups by it:
+
+```
+399 client requests behind 481 attempts; 79 attempts failed
+   355 clean
+    34 recovered by the gateway's family fallback (caller saw an answer)
+    10 reached the caller as an error
+caller-visible failure rate 2.5%  (attempt failure rate 15.8%)
+```
+
+The gap is a factor of six, and it is not noise — it is the family fallback
+doing its job. A single correlation from 13:31 shows the whole mechanism:
+`gemini-pro-agent` empty, `gemini-3.7-flash-low` empty, `gemini-3.7-flash-medium`
+empty, then `gemini-3.1-flash-lite` **200**. Three FAILED rows in the log, one
+normal answer at the caller.
+
+**What this reframes.** `antigravity` looks like the second-worst provider on
+attempts (24 failures, 12%) and reached a caller with an error **zero** times in
+the window. So did `opencode`, and so did `openrouter` despite its 53% attempt
+rate. All ten caller-visible failures were the **local model** — eight of them
+the rate-limit ceiling that is now lifted. The one provider whose failures
+actually hurt was the one running on this box, and the remote providers that
+look alarming in the alert are being covered.
+
+Rows with no `correlationId` are counted separately and never folded in: without
+one there is no way to tell a lone failure from an attempt that was retried
+elsewhere, and guessing would defeat the point of the section.
+
 
 Verified with a positive control rather than by an empty run: an empty report
 and a broken query look identical, so a row was inserted, confirmed to appear,

@@ -177,7 +177,9 @@ for name, b in sorted(by_key.items(), key=lambda kv: -kv[1]["n"]):
 # The same attempts-not-outcomes caveat applies here as in the alerts: a row is
 # one provider attempt, so a provider the gateway recovered from via its family
 # fallback still counts a failure here while the caller saw a normal answer.
-# High is worth investigating, not worth panicking about.
+# High is worth investigating, not worth panicking about — and the section
+# immediately below turns that caveat into an actual number instead of leaving
+# it as a warning.
 prov = collections.defaultdict(lambda: {"n": 0, "fail": 0, "sig": collections.Counter()})
 for r in win:
     b = prov[r.get("provider") or "(none)"]
@@ -198,6 +200,63 @@ if hurt:
     clean = sorted(k for k, b in prov.items() if not b["fail"])
     if clean:
         print("    no failures: %s" % ", ".join(clean))
+    print()
+
+# What actually reached the caller.
+#
+# Every number above this line counts provider ATTEMPTS, and the gap between an
+# attempt and an outcome is enormous here: on an empty or failed response the
+# gateway falls back to the next model in the family and serves that instead
+# (`chatCore.ts`, EMPTY_CONTENT_FALLBACK), so a caller can see a perfectly
+# normal answer while three FAILED rows land in this log.
+#
+# That is why every report and alert in this repo carries an
+# "attempts, not outcomes" caveat. A caveat tells you not to trust a number;
+# it does not give you the right one. `correlationId` does: the attempts for a
+# single client request share one, so the LAST attempt in each correlation is
+# what the caller actually got.
+#
+# Measured 2026-09-07 over 500 rows: 81 failed attempts (16.2%) were 12
+# caller-visible failures (3.0%), and all twelve were the local model. Every
+# antigravity, opencode and openrouter failure in that window was recovered.
+corr = collections.defaultdict(list)
+nocorr = []
+for r in win:
+    cid = r.get("correlationId")
+    corr[cid].append(r) if cid else nocorr.append(r)
+
+if corr:
+    clean = recovered = reached = 0
+    seen = collections.Counter()
+    for attempts in corr.values():
+        attempts.sort(key=lambda r: r.get("timestamp") or "")
+        last = attempts[-1]
+        if failed(last):
+            reached += 1
+            seen[(last.get("provider"), str(last.get("error") or "").strip()[:52])] += 1
+        elif any(failed(a) for a in attempts):
+            recovered += 1
+        else:
+            clean += 1
+
+    n_att = sum(1 for r in win if failed(r))
+    print("  what reached the caller")
+    print("    %d client request(s) behind %d attempt(s); %d attempt(s) failed"
+          % (len(corr), len(win) - len(nocorr), n_att))
+    print("      %4d clean" % clean)
+    print("      %4d recovered by the gateway's family fallback (caller saw an answer)"
+          % recovered)
+    print("      %4d reached the caller as an error" % reached)
+    if len(win):
+        print("    caller-visible failure rate %.1f%% (attempt failure rate %.1f%%)"
+              % (100.0 * reached / len(corr), 100.0 * n_att / len(win)))
+    for (pv, msg), n in seen.most_common(6):
+        print("      %4dx %-12s %s" % (n, pv or "?", msg or "(no message)"))
+    if nocorr:
+        # Never fold these into the counts above: without a correlationId there
+        # is no way to tell a lone failure from one that was retried elsewhere.
+        print("    %d row(s) carry no correlationId and are not judged here (%d failed)"
+              % (len(nocorr), sum(1 for r in nocorr if failed(r))))
     print()
 
 errs = collections.Counter()
