@@ -725,7 +725,7 @@ would have been permanently untrustworthy.
 
 ---
 
-## 26. A before/after split whose boundary was a guess, and a lever ruled out by one probe
+## 26. A boundary taken from memory, and a probe pointed at the wrong hop
 
 **What happened.** Two failures in one investigation, in opposite directions.
 
@@ -748,44 +748,61 @@ actual  14:06   before 44% -> after 23%     rate-limit 504s: 27 -> 0
 Nothing about the data changed. The five-hour error had put most of the *broken*
 period into the "after" bucket.
 
-**Then the opposite error, caught in time.** The failures remaining after the
-fix carried `Direct response did not start within 30000ms`. Reading the source
-found `OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS` — default 30 s, read from
-`process.env`, therefore settable in `omniroute/.env` with no subtree edit. The
-same shape as the win the day before, and the mechanism was easy to believe:
-local prefill on a novel 2,000-token prompt takes far longer than 30 s, so of
-course the bound would trip.
+**Then a second error, in the same investigation, not caught until later.** The
+failures remaining after the fix carried `Direct response did not start within
+30000ms`. Reading the source found `OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS` —
+default 30 s, read from `process.env`, therefore settable with no subtree edit.
+The same shape as the win the day before.
 
-Every part of that was checkable and none of it had been checked. The probe:
-send a novel prompt through the gateway and time **headers** separately from
-**body**, since the bound measures time-to-headers.
+I probed it: send a novel 2,050-token prompt through the gateway and time
+headers separately from body, since the bound measures time-to-headers.
 
 ```
-headers after  83.2s      <- 2.8x the supposed 30s ceiling
-body    after  83.2s      status 200, prompt_tokens=2050
+headers after  83.2s      status 200
 ```
 
-The call succeeded. The bound is not applied on the path ollama takes, and the
-tell had been in the log the whole time: all five such rows carry `in=0` — zero
-tokens processed — and a duration of almost exactly 60,000 ms, two 30-second
-attempts on a connection that never started. They hit `opencode` too, so it was
-never an ollama-specific ceiling. Raising it would have slowed dead-socket
-detection for every provider on the deployment while fixing nothing, and would
-have looked like a fix in the changelog.
+I read that as proof the bound never fired — 83 seconds is far past 30, and the
+call succeeded — and wrote "the bound is not applied on the path ollama takes"
+into a document and a published artifact.
+
+The probe measured the wrong hop. `OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS` bounds
+the **gateway-to-provider** connection. I had timed **client-to-gateway**, which
+is the sum of everything the gateway does internally and cannot show a bound
+firing inside it. Grouping the same request by `correlationId` showed it plainly:
+
+```
+504  dur=60111ms  in=0      <- the bound firing, twice, zero tokens processed
+200  dur=28102ms  in=2050   <- the attempt that answered
+                               60.1 + 28.1 = 88s ~= the 90.6s I had measured
+```
+
+The number I collected was real, and it was consistent with both stories. I only
+checked that it was consistent with mine.
 
 **The shape of both errors.** A comparison is only as good as its boundary, and
 a boundary from memory is not a measurement — it is the one input to a
 before/after study that nobody thinks to verify, because it feels like
-bookkeeping rather than data. And a lever that is real, configurable, and
-plausibly connected to the symptom is still a guess until something proves it
-connects; "it is an environment variable and the story fits" is how the previous
-entry's mistakes started too.
+bookkeeping rather than data.
+
+The second is worse, because it wore the costume of the fix. I did run a probe.
+It returned a real number. But a measurement only tests a claim if it is taken
+at the layer the claim is about, and an end-to-end timing cannot observe a bound
+*inside* the thing being timed — both stories predict 83 seconds. Asking "what
+else would produce this same number?" costs one sentence and would have caught
+it; instead the number that agreed with me ended the investigation. Entry 19's
+control passed by coincidence too, and this is the same failure wearing
+better clothes.
 
 **What to do instead.** Take the boundary from the system, not from recall —
-container start time, file mtime, deploy log. And when a config lever looks like
-the answer, spend one probe proving the mechanism *before* spending the change,
-because a lever that silently does nothing is indistinguishable from one that
-worked.
+container start time, file mtime, deploy log. And when a probe appears to settle
+a question, name the layer it was taken at and check that the claim lives at the
+same layer. Here `correlationId` grouping was the right instrument all along and
+was already in the data.
+
+The lever is still not raised, but the reasoning that survives is different from
+the reasoning that was published: it is global, its benefit is latency on a path
+nothing waits on, and its cost is slower dead-socket detection for every
+provider.
 
 ---
 

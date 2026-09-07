@@ -1184,24 +1184,41 @@ An earlier pass through this same data read the split as *worse* after the fix
 real start time. The conclusion inverted once the boundary came from
 `docker inspect`. A before/after number is only as good as its boundary.
 
-**A second ceiling was suspected here and ruled out — do not spend the change.**
-The three stalled connections carry `Direct response did not start within
+**A second ceiling is real, fires, and is still not worth raising — corrected
+2026-09-07.** The stalled rows carry `Direct response did not start within
 30000ms`, from `OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS` (default 30 s,
 `open-sse/utils/directResponseStartTimeout.ts`). It reads from `process.env`, so
-it looks like exactly the same cheap win as `RATE_LIMIT_MAX_WAIT_MS`, and the
-reasoning is seductive: local prefill on a novel 2,000-token prompt takes far
-longer than 30 s, so of course it would trip.
+it looks like the same cheap win as `RATE_LIMIT_MAX_WAIT_MS`.
 
-It does not. Measured directly, timing headers separately from body: a novel
-2,050-token prompt through the gateway returned its **headers after 83.2 s** and
-still completed `200`. The bound is not applied on the path ollama takes, so
-raising it would slow dead-socket detection for every provider and fix nothing.
-The tell in the log is that all five of those rows carry `in=0` and a duration
-of almost exactly 60,000 ms — two 30-second attempts with zero tokens processed
-— and they hit `opencode` as well as `ollama`. That is a connection that never
-started, which is precisely what the bound is for.
+An earlier version of this section said the bound "is not applied on the path
+ollama takes", on the strength of a probe that sent a novel 2,050-token prompt
+through the gateway and got its headers after 83.2 s with a `200`. That probe
+measured the **client-to-gateway** hop. The bound governs the
+**gateway-to-provider** hop, so the measurement could not see it at all.
 
+Grouping the same request by `correlationId` shows what really happened, and the
+arithmetic closes exactly:
 
+```
+07:52:00  504  dur=60111ms  in=0      two 30s attempts, zero tokens processed
+07:52:31  200  dur=28102ms  in=2050   the attempt that actually answered
+                                      60.1 + 28.1 = 88s, the 90.6s the client saw
+```
+
+So the bound **does** fire, twice, and burns 60 seconds in which the model
+processes nothing. The attempt that follows then completes unusually fast —
+20–28 s for 2,050 novel tokens, against the ~26 tok/s prefill measured directly
+— because the aborted attempt left Ollama's KV cache warm. The work is done
+twice and paid for once.
+
+**It is still not raised, for a better reason than the wrong one above.** The
+setting is global, so the benefit is latency on the local path — which is
+already minutes and which nothing waits on synchronously — while the cost falls
+on every provider: a genuinely dead socket would take the new bound to detect
+instead of 30 s. And the caller-visible benefit is zero, because all of these
+were recovered (see §7). Trading slower failure detection everywhere for latency
+on a path nobody waits on is the wrong side of that trade. If the local model
+ever moves onto a synchronous path, this is the first setting to revisit.
 
 ### Local as the default: tried, measured, reverted the same hour
 
