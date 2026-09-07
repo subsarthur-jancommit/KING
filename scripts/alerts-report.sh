@@ -108,11 +108,18 @@ printf '%s\n' "$rows" | awk -F'|' '
 
 cat <<'NOTE'
 
-  Read the ratios in these as ATTEMPTS, not outcomes. gateway_monitor counts
-  rows in call_logs, which are per-provider attempts — including every one the
-  gateway recovered from a moment later via its model-family fallback, and
-  every one the OpenAI SDK retried. A 44% error ratio can describe a window in
-  which no caller saw a single failure.
+  Ratios here are ATTEMPTS, not outcomes. gateway_monitor counts rows in
+  call_logs, which are per-provider attempts — including every one the gateway
+  recovered a moment later via its model-family fallback, and every one the
+  OpenAI SDK retried. That is not a small correction: measured over 168h, a
+  15.8% attempt failure rate was a 2.5% caller-visible one.
+
+  Rows written from 2026-09-07 say so themselves — look for
+  "N/M request(s) reached a caller" in the detail. A row without that phrase
+  predates the change and carries only the attempt ratio, so the two real
+  alerts before it both read far worse than they were: the 04:56 CRITICAL
+  reported 56% and reached zero callers.
 
   Confirm real impact from served_by and degraded:  ./scripts/agent-report.sh
+  Or read it per provider and per caller:           ./scripts/gateway-report.sh
 NOTE
