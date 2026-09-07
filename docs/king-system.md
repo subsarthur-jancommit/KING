@@ -1622,9 +1622,12 @@ which is the field that makes a row actionable rather than merely alarming: the
 CRITICAL one is a provider rejecting `tool_choice` values other than `"auto"`,
 not a capacity problem at all.
 
-That is also the caveat below arriving on schedule. 3 of 6 attempts is a 50%
-error ratio computed from six data points, and the fallback almost certainly
-covered it.
+That is also the caveat below arriving on schedule — and it stopped being a
+hedge the next day. Replayed against `correlationId`, **both** of these reached
+zero callers: 9 client requests behind the CRITICAL and 2 behind the WARNING,
+none of which ended in an error. The 50% is a ratio computed from six data
+points, and the fallback did cover it. What that cost, and the one rule that
+made a no-victim window CRITICAL, is below.
 
 **Read the ratio as attempts, not outcomes.** `gateway_monitor` computes its
 breach from `call_logs` rows, and those are individual provider *attempts* —
