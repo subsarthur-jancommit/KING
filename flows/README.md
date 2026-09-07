@@ -45,9 +45,12 @@ ap_list_flows(name: "gateway")      -> the flowId
 ap_read_step_code(flowId, "step_1") -> { code, packageJson, input }
 ```
 
-Look the id up rather than hardcoding it here: an id pasted into a document is
-one more thing that can go stale silently, and the flow's webhook id is not
-worth publishing in a repo when one call derives it.
+Look the id up rather than pasting it here. `scripts/monitor-deadman.sh` already
+carries the monitor's flow id as its `MONITOR_FLOW_ID` default, and one
+authoritative copy is better than two that can disagree. The `gateway_alerts`
+webhook id is deliberately in neither: it is the URL an unauthenticated POST
+would target, and HMAC verification is a reason not to worry about it, not a
+reason to publish it.
 
 Copy only the `code` field. `ap_read_step_code` also returns `input`, which
 carries the secrets above.
