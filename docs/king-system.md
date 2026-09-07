@@ -1673,6 +1673,62 @@ look alarming in the alert are being covered.
 Rows with no `correlationId` are counted separately and never folded in: without
 one there is no way to tell a lone failure from an attempt that was retried
 elsewhere, and guessing would defeat the point of the section.
+**The monitor was crying wolf, and the reason was a status code, 2026-09-07.**
+Once caller-visible impact was measurable, it could be pointed at the two real
+alerts this deployment has produced. Replaying the exact 04:56 window reproduces
+the alert's own text — 27 attempts, 15 failed, 56% — and then says something the
+alert did not:
+
+```
+04:56  attempts 27, failed 15, ratio 56%   ->  9 requests, 0 reached a caller
+13:41  attempts  6, failed  3, ratio 50%   ->  2 requests, 0 reached a caller
+```
+
+Zero, at every window from 10 to 60 minutes. **The only CRITICAL this system has
+ever emitted described an event no user experienced.** That is not a
+threshold-tuning problem, it is the thing that makes people stop reading alerts.
+
+The cause was one rule. `severityFromShape` ranked any `401`/`403` as CRITICAL,
+on the reasoning that a rejected credential never heals on its own. The
+reasoning is right; the test for it was not. `opencode` answers
+`[401]: Model hy3-free is not supported` — a model-catalogue problem wearing an
+auth status code — and four of those rows are the whole of that CRITICAL.
+
+Three changes, in the order they matter:
+
+1. `isCredentialFailure()` requires a 401/403 **and** a message that does not
+   identify itself as a model-catalogue problem. It fails safe: an unrecognised
+   or absent message still counts as a credential failure, so only a message
+   that positively excuses itself is excused. Ten cases pinned, including
+   `user model quota exceeded`, which is a credential problem and must stay
+   CRITICAL.
+2. Every alert now carries caller impact in its `reason`, so the row reads
+   `error ratio 56% over 15m - 0/9 request(s) reached a caller, 4 recovered by
+   fallback` instead of a bare ratio.
+3. A narrow cap: a breach where **no** request reached a caller cannot be
+   CRITICAL. It never silences the alert — a window full of recovered failures
+   still means providers are degrading — it only refuses to spend the top
+   severity on an event with no victim. Credential failures are exempt, for the
+   reason rule 1 already gives.
+
+With all three, 04:56 sends WARNING instead of CRITICAL — and it is rule 1 that
+does it, not the cap. The cap never fires on that window, which is the right
+outcome: the root cause was fixed rather than masked.
+
+Proven end to end rather than reasoned about, with four real calls to
+`opencode/hy3-free` — the exact failure class — which produced a genuine breach:
+`alertStatus: 200`, `callerImpact {requests: 4, reached: 4, recovered: 0}`, and a
+row reading `error ratio 100% over 15m - 4/4 request(s) reached a caller`.
+Severity stayed CRITICAL there, correctly: those four did reach a caller, and
+the cap declined to apply. The test row was then deleted and the two genuine
+production alerts left in place.
+
+**The flow's source is now in the repo.** Until this change the monitor's
+severity rules lived in exactly one place, behind a web UI, with no history — a
+rule worth this much scrutiny should be reviewable in a diff. `flows/` mirrors
+it; Activepieces remains the source of truth, and the step's `input` block stays
+out because it holds the bearer token and the HMAC secret.
+
 
 
 Verified with a positive control rather than by an empty run: an empty report
