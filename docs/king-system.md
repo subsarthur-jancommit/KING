@@ -1789,6 +1789,27 @@ rule worth this much scrutiny should be reviewable in a diff. `flows/` mirrors
 it; Activepieces remains the source of truth, and the step's `input` block stays
 out because it holds the bearer token and the HMAC secret.
 
+**Republishing the flow skips a slot, and the deadman has less margin than it
+looks, 2026-09-07.** Publishing `gateway_monitor` re-registers its schedule from
+the moment of publish rather than resuming the old cadence. Measured while
+shipping the severity fix above: runs had been landing at :11, :26, :41, :56;
+a publish at 08:23 skipped the 08:26 slot entirely and the next run landed at
+**08:38 — a 27-minute gap** where 15 was normal.
+
+`monitor-deadman.sh` allows 35 minutes, chosen because observed spacing has
+reached 22.5 minutes under load. Those two facts do not compose comfortably:
+22.5 under load plus a republish-shifted slot is 37.5, past the limit. A
+republish at a busy moment can therefore fail the deadman for a monitor that is
+working perfectly.
+
+The limit is deliberately **not** raised for this. It exists to catch a real
+stall, and widening it to accommodate a rare human-initiated event trades away
+the thing it is for. The cheap fix is knowing: after publishing this flow, one
+scheduled run is skipped by design, and a deadman failure within about half an
+hour of a publish is that, not an outage. `queueCounts.workerJobs.delayed` in
+the Activepieces logs shows the next job is genuinely queued, which is how this
+was told apart from a broken trigger at the time.
+
 **They are `--user` units, and checking them the obvious way says they are
 dead.** `systemctl list-timers` and `systemctl is-active monitor-deadman.timer`
 both report nothing, because these run under the `subsa` user manager rather
