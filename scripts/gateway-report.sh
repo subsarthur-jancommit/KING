@@ -164,13 +164,49 @@ for name, b in sorted(by_key.items(), key=lambda kv: -kv[1]["n"]):
         print("      %4d  %-30s -> %s" % (n, combo[:30], got))
     print()
 
+# Per-provider reliability.
+#
+# The section above groups by API key, which answers "what is this caller
+# getting". It cannot answer "which provider is unreliable", because one key
+# spreads its calls across every provider the router picks. That question is
+# the one the alerts raise: `gateway_monitor` reports a single blended error
+# ratio, and the first thing anyone asks on reading one is which provider it
+# came from. Working that out used to mean pulling the raw call log and
+# grouping it by hand.
+#
+# The same attempts-not-outcomes caveat applies here as in the alerts: a row is
+# one provider attempt, so a provider the gateway recovered from via its family
+# fallback still counts a failure here while the caller saw a normal answer.
+# High is worth investigating, not worth panicking about.
+prov = collections.defaultdict(lambda: {"n": 0, "fail": 0, "sig": collections.Counter()})
+for r in win:
+    b = prov[r.get("provider") or "(none)"]
+    b["n"] += 1
+    if failed(r):
+        b["fail"] += 1
+        b["sig"][(r.get("status"), str(r.get("error") or "").strip()[:44])] += 1
+
+hurt = [(k, b) for k, b in prov.items() if b["fail"]]
+if hurt:
+    print("  provider reliability (attempts, not outcomes)")
+    print("    %-14s %6s %7s %6s   %s" % ("provider", "calls", "failed", "rate", "commonest failure"))
+    for k, b in sorted(hurt, key=lambda kv: (-kv[1]["fail"], -kv[1]["n"])):
+        (st, msg), _ = b["sig"].most_common(1)[0]
+        print("    %-14s %6d %7d %5.0f%%   %s %s"
+              % (k[:14], b["n"], b["fail"], 100.0 * b["fail"] / b["n"],
+                 st if st is not None else "---", msg or "(no message)"))
+    clean = sorted(k for k, b in prov.items() if not b["fail"])
+    if clean:
+        print("    no failures: %s" % ", ".join(clean))
+    print()
+
 errs = collections.Counter()
 for r in win:
     if failed(r):
-        errs[(r.get("status"), str(r.get("error") or "")[:60])] += 1
+        errs[(r.get("status"), str(r.get("error") or "").strip()[:96])] += 1
 if errs:
     print("  failure signatures")
-    for (st, msg), n in errs.most_common(6):
+    for (st, msg), n in errs.most_common(8):
         print("    %4s x%-4d %s" % (st, n, msg or "(no message)"))
     print()
 
