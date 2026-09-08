@@ -748,6 +748,7 @@ dim_G() {
     # Activepieces flow re-registers its schedule and skips a slot, so the
     # worst legitimate gap is larger than the interval.
     if [ -f scripts/monitor-deadman.sh ]; then
+        # shellcheck disable=SC2016  # the sed pattern matches the literal ${...} in that file
         _max=$(sed -n 's/^MAX_AGE_MIN="\${MONITOR_MAX_AGE_MIN:-\([0-9]*\)}"/\1/p' scripts/monitor-deadman.sh | head -1)
         if [ -n "$_max" ]; then
             metric g4_deadman_max_min "$_max"
@@ -819,6 +820,7 @@ dim_I() {
     # I-3: a cross-reference to a file that no longer exists is the cheapest
     # kind of wrong, and the easiest to check.
     _bad=""
+    # shellcheck disable=SC2016  # a grep pattern, not a string to expand
     for _f in $(grep -ohE '`(scripts|docs|flows|agent-sidecar)/[A-Za-z0-9_./-]+`' \
                 docs/*.md README.md CLAUDE.md 2>/dev/null | tr -d '`' | sort -u); do
         [ -e "$_f" ] && continue
