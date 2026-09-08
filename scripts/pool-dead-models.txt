@@ -38,4 +38,13 @@ opencode/muse-spark-1.2                  # 402 "requires an opencode API key"
 # has been zero so far because the family fallback covers it — see
 # docs/king-system.md 7 — which is exactly why it needed a guard to be visible
 # at all.
+#
+# A FIX EXISTS AND IS DECLINED, deliberately. `smolagents/models.py:510` takes
+# `tool_choice` as a parameter, defaulting to "required", so the sidecar could
+# pass "auto" and this model would start answering. But that setting is global
+# to the model client, not per-provider: "required" is what forces a
+# ToolCallingAgent to actually call a tool instead of replying from memory.
+# Relaxing it everywhere, to recover one free model whose failures no caller
+# has ever seen, trades the agent's behaviour on every provider for a metric.
+# Revisit only if this provider becomes load-bearing.
 opencode/muse-spark-1.2-contributor-free # 400 only "auto" is supported for tool_choice
