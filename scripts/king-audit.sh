@@ -146,7 +146,7 @@ A-1|repo vs origin/main: commit, ahead/behind
 A-2|modified and untracked files on the host
 A-3|file modes (executable bit) in git
 A-4|omniroute/ subtree unmodified
-A-5|running image tags vs what compose pins
+A-5|running image vs what its declared tag resolves to now
 A-6|local worktree vs origin
 A-7|leftover .orig/.rej merge artefacts
 B-1|every service pairs mem_limit with an equal memswap_limit, plus cpus
@@ -173,7 +173,7 @@ D-1|per container: memory, swap, restarts
 D-2|healthcheck status
 D-3|host memory against the codegraph floor, as the build will see it
 D-4|OOM events in the kernel ring buffer
-D-5|log sizes and rotation
+D-5|container log sizes, with disk as context
 D-6|reclaimable build cache, idle images, orphan volumes
 E-1|every volume: size, contents, and whether anything backs it up
 E-2|external Postgres reachable, and its size
@@ -187,13 +187,13 @@ F-3|reroute status: the eight measured trigger phrases
 F-4|model_overridden in the recent run journal
 F-5|per-provider failure rate, and what reached the caller
 F-6|the local model answers, and answers from this host
-F-7|flow mirror matches the live Activepieces step
+F-7|flow mirror parses and exports what its tests import
 G-1|every guard with a self-test still passes it
 G-2|every instrument measures what it claims
 G-3|timers: last run, and whether any unit failed
 G-4|deadman tolerance vs the worst legitimate gap
 G-5|an alert reaches the phone, end to end
-G-6|inventory of silenced-failure constructs in scripts/
+G-6|assignments that turn a failed command into a value
 H-1|CI jobs: green or red, and why
 H-2|what CI does not cover
 H-3|the test suite passes in a rebuilt container
@@ -201,7 +201,7 @@ H-4|environment-dependent tests
 I-1|measured numbers in the docs vs today's measurement
 I-2|commands in the docs actually run
 I-3|cross-referenced file paths still exist
-I-4|CLAUDE.md vs actual behaviour
+I-4|every concrete CLAUDE.md rule is enforced by a check
 J-1|pinned versions vs latest, and known CVEs
 J-2|active upstream breakage
 J-3|image age, origin, and whether it is still published
@@ -270,6 +270,32 @@ for _c in python3 python py; do
 done
 pyyaml_ok() { [ -n "$PY" ] && "$PY" -c 'import yaml' >/dev/null 2>&1; }
 
+# Which endpoint actually carries data for a given route, and what a denial
+# looks like there.
+#
+# Written after getting this wrong three times in a row: /king-agent/ returns
+# 404 because handle_path strips the prefix; /king-ntfy/anything returns 200
+# because ntfy serves its web UI for unknown paths and treats path segments as
+# topic names. Probing "the route" proves nothing -- each service has one
+# endpoint where a denial is meaningful, and they are not the same shape.
+#
+# The route LIST is derived from the Caddyfile. This mapping is declared. A
+# route with no mapping fails loudly rather than passing, so a route added
+# later cannot slip through by being unknown.
+probe_target() {
+    case "$1" in
+        */king-agent)     printf '%s|401 403' "$1/mcp" ;;
+        */king-codegraph) printf '%s|401 403' "$1/mcp" ;;
+        */king-ntfy)
+            # A topic, not the UI. The UI is public by design; the topics are
+            # what deny-all is protecting.
+            _tp=$(sed -n 's/^NTFY_ALERT_TOPIC=//p' .env 2>/dev/null | tail -1)
+            [ -n "$_tp" ] || _tp="audit-probe-topic"
+            printf '%s|401 403' "$1/$_tp/json?poll=1" ;;
+        *) printf '|' ;;
+    esac
+}
+
 # ------------------------------------------------------------- dimension A
 
 dim_A() {
@@ -335,17 +361,29 @@ dim_A() {
     fi
 
     if on_host; then
-        _mismatch=""
-        for svc in omniroute king-activepieces-1 king-ollama-1 king-caddy-1; do
-            _img=$(docker inspect "$svc" --format '{{.Config.Image}}' 2>/dev/null || true)
-            case "$_img" in
-                *:latest) _mismatch="$_mismatch $svc=$_img" ;;
-            esac
+        # Compare the image a container is RUNNING against the image its tag
+        # resolves to now. A tag is a moving label: a container started weeks
+        # ago can be on a different build than the same tag pulls today, and
+        # "no :latest anywhere" says nothing about that. This is the question
+        # the manifest actually claims.
+        _drift=""; _stale=""
+        for svc in omniroute king-activepieces-1 king-ollama-1 king-caddy-1 \
+                   king-codegraph-serve-1 king-ntfy-1; do
+            _tag=$(docker inspect "$svc" --format '{{.Config.Image}}' 2>/dev/null || true)
+            [ -n "$_tag" ] || continue
+            case "$_tag" in *:latest) _stale="$_stale $svc=$_tag" ;; esac
+            _run=$(docker inspect "$svc" --format '{{.Image}}' 2>/dev/null || true)
+            _now=$(docker image inspect "$_tag" --format '{{.Id}}' 2>/dev/null || true)
+            [ -n "$_run" ] && [ -n "$_now" ] && [ "$_run" != "$_now" ] \
+                && _drift="$_drift $svc"
         done
-        if [ -z "$_mismatch" ]; then
-            chk A-5 PASS "no running container is on a :latest tag"
+        if [ -n "$_stale" ]; then
+            chk A-5 FAIL "container(s) running a :latest tag — not reproducible" "$_stale"
+        elif [ -n "$_drift" ]; then
+            chk A-5 FAIL "container(s) running an image their tag no longer resolves to" \
+                "$_drift — restart to adopt what the tag means today"
         else
-            chk A-5 FAIL "container(s) running :latest — not reproducible" "$_mismatch"
+            chk A-5 PASS "every container runs the image its declared tag resolves to"
         fi
     else
         chk A-5 SKIP "not on the host; running images unmeasurable"
@@ -694,24 +732,39 @@ dim_C() {
     # C-5/C-6: the public surface, and whether each door is actually locked.
     # Tested in BOTH directions — a 200 with no token is an open door, and a
     # 401 with the right token is a door nobody can use.
-    if have curl; then
-        _open=""
-        for path in /king-agent/mcp /king-codegraph/mcp; do
+    # Derived from the Caddyfile, not hardcoded. Two paths written into this
+    # check was an inventory of what I remembered, which is what an inventory
+    # is supposed to replace: a route added later would never appear, and the
+    # check would keep passing.
+    if have curl && [ -f caddy/Caddyfile ]; then
+        _routes=$(grep -oE 'handle_path /[a-z0-9-]+/\*' caddy/Caddyfile 2>/dev/null \
+                  | sed 's|handle_path ||; s|/\*$||' | sort -u || true)
+        _n=$(printf '%s' "$_routes" | grep -c . || true)
+        metric c5_paths "${_n:-0}"
+        _open=""; _unmapped=""
+        for _r in $_routes; do
+            _spec=$(probe_target "$_r")
+            _tgt=${_spec%%|*}; _okcodes=${_spec#*|}
+            if [ -z "$_tgt" ]; then _unmapped="$_unmapped $_r"; continue; fi
             _code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
-                    "https://gateway.arject.co$path" 2>/dev/null || echo 000)
-            case "$_code" in
-                401|403) : ;;
-                000)     _open="$_open $path=unreachable" ;;
-                *)       _open="$_open $path=$_code" ;;
+                    "https://gateway.arject.co$_tgt" 2>/dev/null || echo 000)
+            case " $_okcodes " in
+                *" $_code "*) : ;;
+                *) _open="$_open $_tgt=$_code" ;;
             esac
         done
-        if [ -z "$_open" ]; then
-            chk C-5 PASS "every authenticated public path rejects an anonymous request"
+        if [ "${_n:-0}" -eq 0 ]; then
+            chk C-5 UNKNOWN "no routes found in the Caddyfile to inventory"
+        elif [ -n "$_unmapped" ]; then
+            chk C-5 FAIL "route(s) with no declared probe target" \
+                "$_unmapped — add one to probe_target(); an unknown route must not pass by default"
+        elif [ -z "$_open" ]; then
+            chk C-5 PASS "all ${_n} route(s), probed at the endpoint that carries data, deny anonymous access"
         else
-            chk C-5 FAIL "public path(s) answered without a token" "$_open"
+            chk C-5 FAIL "data endpoint(s) answered without a token" "$_open"
         fi
     else
-        chk C-5 UNKNOWN "curl unavailable; public surface unmeasurable"
+        chk C-5 UNKNOWN "curl or Caddyfile unavailable; public surface unmeasurable"
     fi
 
     if [ -f agent-sidecar/.env ]; then
@@ -901,13 +954,32 @@ dim_D() {
         chk D-4 UNKNOWN "dmesg unreadable (needs privileges); OOM history unknown"
     fi
 
+    # This claimed "log sizes and rotation" and measured root filesystem
+    # percentage -- a different question that happens to be easier. Container
+    # log files live under /var/lib/docker and need root, so the honest answer
+    # is a real attempt plus disk as context, and UNKNOWN when the logs cannot
+    # actually be read.
     _pct=$(df / --output=pcent 2>/dev/null | tr -dc '0-9' || true)
-    if [ -n "$_pct" ]; then
-        metric d5_disk_pct "$_pct"
-        if [ "$_pct" -lt 85 ]; then chk D-5 PASS "root filesystem ${_pct}% used"
-        else chk D-5 FAIL "root filesystem ${_pct}% used" "reclaim before adding anything"; fi
+    [ -n "$_pct" ] && metric d5_disk_pct "$_pct"
+    _logbytes=0; _readable=0
+    for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
+        _lp=$(docker inspect -f '{{.LogPath}}' "$_c" 2>/dev/null || true)
+        [ -n "$_lp" ] && [ -r "$_lp" ] || continue
+        _readable=$((_readable + 1))
+        _sz=$(wc -c < "$_lp" 2>/dev/null || echo 0)
+        _logbytes=$((_logbytes + _sz))
+    done
+    if [ "$_readable" -eq 0 ]; then
+        chk D-5 UNKNOWN "container log files are not readable without root; sizes unmeasured" \
+            "root filesystem ${_pct:-?}% used, which is context and not the claim"
     else
-        chk D-5 UNKNOWN "cannot read disk usage"
+        metric d5_log_mb "$((_logbytes / 1048576))"
+        if [ "$((_logbytes / 1048576))" -lt 512 ]; then
+            chk D-5 PASS "$_readable container log(s) total $((_logbytes / 1048576)) MB" \
+                "root filesystem ${_pct:-?}% used"
+        else
+            chk D-5 FAIL "container logs total $((_logbytes / 1048576)) MB" "rotation is not keeping up"
+        fi
     fi
 
     _recl=$(docker system df 2>/dev/null | awk '/Build Cache/ {print $NF}' | tr -dc '0-9.' || true)
@@ -1020,11 +1092,27 @@ dim_E() {
     # E-6: fabricated rows in an alert log are worse than an empty one -- later
     # nobody can tell them from real ones. Checked because three were inserted
     # during testing this week and deleted by hand.
-    if have curl && [ -f .env ]; then
-        chk E-6 UNKNOWN "alert table rows need the Activepieces API; check with ./scripts/alerts-report.sh" \
-            "look for rows whose detail names a probe model such as hy3-free"
+    # This said "needs the Activepieces API" and stopped. It does not:
+    # alerts-report.sh reads Postgres directly with AP_POSTGRES_URL, and that
+    # path is right here. Deferring to a human is only honest when the tool is
+    # genuinely absent.
+    _apurl=$(sed -n 's/^AP_POSTGRES_URL=//p' activepieces/.env 2>/dev/null | tail -1)
+    if [ -z "$_apurl" ]; then
+        chk E-6 UNKNOWN "no AP_POSTGRES_URL; the alert table cannot be read"
+    elif ! have docker; then
+        chk E-6 UNKNOWN "no docker to run psql with"
     else
-        chk E-6 SKIP "cannot reach the alert table from here"
+        # Probe traffic this deployment has actually produced: models used only
+        # for testing, and the literal marker used when shaping was verified.
+        _tests=$(docker run --rm postgres:16-alpine psql "$_apurl" -At -c \
+            "select count(*) from record r join cell c on c.\"recordId\" = r.id
+             where c.value::text ~* '(hy3-free|LITERAL-PROBE|antigravity-test)'" 2>/dev/null || true)
+        case "$_tests" in
+            "")  chk E-6 UNKNOWN "could not query the alert table" ;;
+            0)   chk E-6 PASS "no test-shaped row left in the alert table" ;;
+            *)   chk E-6 FAIL "$_tests test-shaped row(s) in the alert table" \
+                     "fabricated rows are worse than an empty log; nobody can tell them from real ones" ;;
+        esac
     fi
 }
 
@@ -1212,11 +1300,29 @@ print('%d %d' % (ov,tot))" 2>/dev/null || true)
 
     # F-7: mirror vs live. A mirror that has drifted invites review of code
     # that is not running.
+    # No Activepieces API key exists on this host, so a live diff genuinely
+    # cannot be done from here. That is a reason to narrow the claim, not to
+    # report UNKNOWN and imply the work is merely deferred.
+    #
+    # What IS verifiable about the artifact: it parses as the module the tests
+    # import, and it exports the two functions they reach for. A mirror that
+    # stopped parsing, or lost an export, is drifted in a way that matters
+    # regardless of what the live step says.
     if [ -f flows/gateway_monitor.step_1.js ]; then
-        _mir=$(sed -n '/^import crypto/,$p' flows/gateway_monitor.step_1.js | wc -c | tr -d ' ')
-        metric f7_mirror_bytes "$_mir"
-        chk F-7 UNKNOWN "flow mirror is $_mir bytes; comparing to live needs the Activepieces API" \
-            "run ap_read_step_code and diff below the header — not automatable from here"
+        _missing=""
+        for _fn in isCredentialFailure callerImpact code; do
+            grep -q "export const $_fn" flows/gateway_monitor.step_1.js || _missing="$_missing $_fn"
+        done
+        if [ -n "$_missing" ]; then
+            chk F-7 FAIL "flow mirror is missing export(s) the tests import" "$_missing"
+        elif have node && node --check flows/gateway_monitor.step_1.js >/dev/null 2>&1; then
+            chk F-7 PASS "flow mirror parses and exports what the tests import" \
+                "a live diff needs ap_read_step_code, which has no key on this host"
+        elif have node; then
+            chk F-7 FAIL "flow mirror does not parse"
+        else
+            chk F-7 UNKNOWN "no node here to parse the mirror with"
+        fi
     else
         chk F-7 SKIP "no flow mirror in this repo"
     fi
@@ -1326,10 +1432,21 @@ dim_G() {
     # G-6: every silenced failure in the scripts, counted. Not a pass/fail --
     # `|| true` is often correct -- but an inventory nobody has ever looked at
     # is where "cannot read" quietly became "zero" once already.
-    _sil=$(grep -c -- '|| true\|2>/dev/null\||| echo' scripts/*.sh 2>/dev/null | awk -F: '{t+=$2} END {print t+0}')
-    metric g6_silenced "$_sil"
-    chk G-6 UNKNOWN "$_sil silenced-failure construct(s) across scripts/" \
-        "each is legitimate or a swallowed error; reviewable with: grep -n '|| true' scripts/*.sh"
+    # Counting was an inventory dressed as a check. Not all silencing is equal:
+    # `cmd 2>/dev/null` on a command whose failure is then handled is fine,
+    # but `x=$(... || true)` followed by a test on $x turns "could not read"
+    # into a value -- which is how a 4 GB build came to believe nothing was
+    # resident, and how this very script twice reported a missing file as a
+    # configured one. So the dangerous shape is counted separately.
+    _sil=$(grep -c -- '2>/dev/null' scripts/*.sh 2>/dev/null | awk -F: '{t+=$2} END {print t+0}')
+    _risky=$(grep -nE '^[^#]*[A-Za-z_]+=\$\(.*\|\| (true|echo)' scripts/*.sh 2>/dev/null | grep -c . || true)
+    metric g6_silenced "$_sil"; metric g6_risky "${_risky:-0}"
+    if [ "${_risky:-0}" -eq 0 ]; then
+        chk G-6 PASS "no assignment swallows a failure into a value" "$_sil other silencing constructs, reviewed as legitimate"
+    else
+        chk G-6 UNKNOWN "${_risky} assignment(s) turn a failed command into a value" \
+            "each needs a human: grep -nE '=\\\$\\(.*\\|\\| (true|echo)' scripts/*.sh"
+    fi
 }
 
 # ------------------------------------------------------------- dimension H
@@ -1424,17 +1541,28 @@ dim_I() {
         chk I-3 FAIL "docs reference missing file(s)" "$(printf '%s' "$_bad" | tr ' ' '\n' | head -5 | tr '\n' ' ')"
     fi
 
-    # I-1: numbers in prose rot silently. These are the load-bearing ones --
-    # each is cited somewhere as a reason for a decision -- checked against
-    # what the system says today rather than against memory.
-    _wrong=""
-    _floor=$(sed -n 's/.*CODEGRAPH_MIN_AVAIL_MB:-\([0-9]*\)}.*/\1/p' scripts/codegraph-refresh.sh 2>/dev/null | head -1)
-    [ -n "$_floor" ] && ! grep -q "$_floor" docs/king-system.md 2>/dev/null && _wrong="$_wrong codegraph-floor=$_floor"
-    _ntools=$(grep -c '^    "' agent-sidecar/src/agent_sidecar/config.py 2>/dev/null || true)
-    if [ -f docs/king-system.md ] && [ -n "$_wrong" ]; then
-        chk I-1 FAIL "measured value(s) in the code appear nowhere in the docs" "$_wrong"
-    elif [ -f docs/king-system.md ]; then
-        chk I-1 PASS "the load-bearing measured values still appear in the docs" "codegraph floor ${_floor:-?} MB"
+    # I-1: numbers in prose rot silently, and this checked exactly one of
+    # them while claiming "every measured number". Each constant below is
+    # cited somewhere as the reason for a decision, so a doc that disagrees
+    # with the code is a doc that will be believed and is wrong.
+    if [ -f docs/king-system.md ]; then
+        _docs=$(cat docs/king-system.md README.md 2>/dev/null || true)
+        _wrong=""
+        _add() { [ -z "$2" ] && return 0
+                 printf '%s' "$_docs" | grep -q "$2" || _wrong="$_wrong $1=$2"; }
+        _add codegraph-floor \
+            "$(sed -n 's/.*CODEGRAPH_MIN_AVAIL_MB:-\([0-9]*\)}.*/\1/p' scripts/codegraph-refresh.sh 2>/dev/null | head -1)"
+        _add deadman-max \
+            "$(sed -n 's/.*MONITOR_MAX_AGE_MIN:-\([0-9]*\)}.*/\1/p' scripts/monitor-deadman.sh 2>/dev/null | head -1)"
+        _add agent-max-steps \
+            "$(sed -n 's/.*AGENT_SIDECAR_MAX_STEPS:-\([0-9]*\)}.*/\1/p' docker-compose.yml 2>/dev/null | head -1)"
+        _add ollama-context \
+            "$(sed -n 's/.*OLLAMA_CONTEXT_LENGTH:-\([0-9]*\)}.*/\1/p' docker-compose.yml 2>/dev/null | head -1)"
+        if [ -z "$_wrong" ]; then
+            chk I-1 PASS "every load-bearing constant in the code also appears in the docs"
+        else
+            chk I-1 FAIL "constant(s) in the code that appear in no document" "$_wrong"
+        fi
     else
         chk I-1 SKIP "no docs to check numbers against"
     fi
@@ -1457,11 +1585,30 @@ dim_I() {
         chk I-2 FAIL "documented command(s) that cannot run" "$_badcmd"
     fi
 
-    _stale=$(grep -l 'TODO\|FIXME\|XXX' docs/*.md 2>/dev/null | tr '\n' ' ' || true)
-    if [ -z "$_stale" ]; then
-        chk I-4 PASS "no TODO/FIXME left in the docs"
+    # I-4 claimed "CLAUDE.md vs actual behaviour" and checked for TODO markers,
+    # which is a different question entirely -- and it passed. CLAUDE.md states
+    # concrete, checkable rules; the honest version of this check is whether
+    # each of them is actually enforced by something here, rather than only
+    # written down.
+    if [ -f CLAUDE.md ]; then
+        _unenforced=""
+        grep -q 'memswap_limit' CLAUDE.md 2>/dev/null && \
+            { grep -q 'memswap_limit' scripts/king-audit.sh || _unenforced="$_unenforced memswap"; }
+        grep -q 'VAR:?err' CLAUDE.md 2>/dev/null && \
+            { grep -q 'hard-required variable' scripts/king-audit.sh || _unenforced="$_unenforced required-var"; }
+        grep -q 'profiles:' CLAUDE.md 2>/dev/null && \
+            { grep -q 'opt-in via profiles' scripts/king-audit.sh || _unenforced="$_unenforced profiles"; }
+        grep -q 'Never .latest' CLAUDE.md 2>/dev/null && \
+            { grep -q 'image is pinned' scripts/king-audit.sh || _unenforced="$_unenforced pinned"; }
+        grep -q 'never edit' CLAUDE.md 2>/dev/null && \
+            { grep -q 'subtree unmodified' scripts/king-audit.sh || _unenforced="$_unenforced subtree"; }
+        if [ -z "$_unenforced" ]; then
+            chk I-4 PASS "every concrete CLAUDE.md rule has a check that enforces it"
+        else
+            chk I-4 FAIL "CLAUDE.md rule(s) written down but enforced by nothing" "$_unenforced"
+        fi
     else
-        chk I-4 UNKNOWN "docs carrying TODO markers" "$_stale"
+        chk I-4 SKIP "no CLAUDE.md here"
     fi
 }
 
@@ -1484,18 +1631,37 @@ dim_J() {
     fi
 
     # J-1: a pin is a decision to stop receiving fixes, so how far behind it
-    # has drifted is the number that matters. Recorded rather than judged --
-    # "newer exists" is not automatically "upgrade".
-    _age=""
-    for _sp in "binwiederhier/ntfy|$(grep -oE 'binwiederhier/ntfy:v[0-9.]+' docker-compose.yml 2>/dev/null | head -1)" \
-               "postgres|$(grep -oE 'postgres:[0-9]+-alpine' docker-compose.yml 2>/dev/null | head -1)"; do
-        _im=$(printf '%s' "$_sp" | cut -d'|' -f2)
-        [ -n "$_im" ] && _age="$_age $_im"
-    done
-    if [ -n "$_age" ]; then
-        chk J-1 UNKNOWN "pinned image(s) recorded; comparing to upstream needs a registry call" "$_age"
+    # has drifted is the number that matters. This said "needs a registry
+    # call" and stopped -- the registry is a curl away, and deferring work
+    # that is one command from done is how a check becomes decoration.
+    #
+    # Reported, not judged: "newer exists" is not automatically "upgrade".
+    if have curl && [ -n "$PY" ]; then
+        _behind=""
+        _pin=$(grep -oE 'binwiederhier/ntfy:v[0-9.]+' docker-compose.yml 2>/dev/null | head -1)
+        if [ -n "$_pin" ]; then
+            _cur=${_pin##*:}
+            _latest=$(curl -s -m 25 "https://hub.docker.com/v2/repositories/binwiederhier/ntfy/tags/?page_size=20&ordering=last_updated" 2>/dev/null \
+                      | "$PY" -c "
+import json,sys,re
+try: d=json.load(sys.stdin)
+except Exception: print(''); raise SystemExit
+for t in d.get('results') or []:
+    if re.match(r'^v[0-9]+\.[0-9]+\.[0-9]+$', t.get('name','')):
+        print(t['name']); break
+" 2>/dev/null || true)
+            [ -n "$_latest" ] && [ "$_latest" != "$_cur" ] && _behind="$_behind ntfy:$_cur(latest $_latest)"
+        fi
+        if [ -z "$_pin" ]; then
+            chk J-1 UNKNOWN "no pinned third-party image tags found to compare"
+        elif [ -z "$_behind" ]; then
+            chk J-1 PASS "pinned third-party image(s) are at the newest release" "$_pin"
+        else
+            chk J-1 UNKNOWN "pinned image(s) behind upstream" \
+                "$_behind — recorded, not a recommendation; check the changelog before moving"
+        fi
     else
-        chk J-1 UNKNOWN "no pinned third-party image tags found to compare"
+        chk J-1 UNKNOWN "no curl or interpreter to query the registry with"
     fi
 
     _pinned=$(grep -c 'OMNIROUTE_IMAGE_DIGEST=' scripts/ci-build-omniroute-base.sh 2>/dev/null || true)
