@@ -79,6 +79,7 @@ A-2
 A-3
 A-4
 A-5
+A-6
 A-7
 B-1
 B-2
@@ -87,13 +88,19 @@ B-4
 B-5
 B-6
 B-7
+B-8
+B-9
+B-10
 B-11
 C-1
+C-2
 C-3
 C-4
 C-5
+C-6
 C-7
 C-8
+C-9
 D-1
 D-2
 D-3
@@ -331,6 +338,17 @@ dim_A() {
         chk A-5 SKIP "not on the host; running images unmeasurable"
     fi
 
+    # A-6: work that exists only here. A-1 reports the count; this names the
+    # commits, because "ahead 3" and "ahead 3 of things you meant to push" read
+    # identically until you look.
+    _unpushed=$(git log --oneline origin/main..HEAD 2>/dev/null | head -5 || true)
+    if [ -z "$_unpushed" ]; then
+        chk A-6 PASS "nothing committed here is missing from origin"
+    else
+        chk A-6 FAIL "commit(s) exist only in this checkout" \
+            "$(printf '%s' "$_unpushed" | head -3 | tr '\n' '; ')"
+    fi
+
     _stray=$(find . -maxdepth 3 \( -name '*.orig' -o -name '*.rej' \) \
              -not -path './omniroute/*' -not -path './.git/*' 2>/dev/null | head -5 || true)
     if [ -z "$_stray" ]; then
@@ -456,6 +474,121 @@ PYAUDIT
         chk B-7 SKIP "caddy not running here"
     fi
 
+    # B-8: every route Caddy serves, and what an anonymous request gets. A
+    # route inventory that lists paths without testing them is a table, not a
+    # check -- the question is whether each door is locked, not whether it
+    # exists.
+    if [ -f caddy/Caddyfile ]; then
+        _routes=$(grep -oE 'handle_path /[a-z0-9-]+/\*' caddy/Caddyfile 2>/dev/null \
+                  | sed 's|handle_path ||; s|/\*$||' | sort -u || true)
+        _n=$(printf '%s' "$_routes" | grep -c . || true)
+        metric b8_routes "${_n:-0}"
+        if [ -z "$_routes" ]; then
+            chk B-8 UNKNOWN "no handle_path routes found in the Caddyfile"
+        elif have curl; then
+            # A 200 at a route root is not automatically an open door. ntfy
+            # serves a web UI there and protects its TOPICS, which is a
+            # different resource -- proven separately at 403/401/200. Treating
+            # "serves a page" as "is open" produces a finding that is wrong,
+            # and a check people learn to ignore.
+            #
+            # So the API routes are held to 401 and the rest are reported with
+            # their status for a human to judge, rather than guessed at.
+            _bad=""; _info=""
+            for _r in $_routes; do
+                # Probe the endpoint the route actually serves, not its root.
+                # `handle_path` strips the prefix, so /king-agent/ reaches the
+                # sidecar as / and correctly 404s -- which proves nothing about
+                # the door. The MCP endpoint is the door.
+                case "$_r" in
+                    */king-agent|*/king-codegraph) _probe="${_r}/mcp" ;;
+                    *)                             _probe="${_r}/" ;;
+                esac
+                _c=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
+                     "https://gateway.arject.co${_probe}" 2>/dev/null || echo 000)
+                case "$_r" in
+                    */king-agent|*/king-codegraph)
+                        case "$_c" in
+                            401|403) : ;;
+                            *) _bad="$_bad ${_r}=$_c" ;;
+                        esac ;;
+                    *) _info="$_info ${_r}=$_c" ;;
+                esac
+            done
+            if [ -n "$_bad" ]; then
+                chk B-8 FAIL "API route(s) not demanding a token" "$_bad"
+            elif [ -n "$_info" ]; then
+                chk B-8 PASS "every API route demands a token" \
+                    "other route(s), status for review:$_info"
+            else
+                chk B-8 PASS "${_n} route(s); every API route demands a token"
+            fi
+        else
+            chk B-8 UNKNOWN "curl unavailable; routes listed but not probed" "$_routes"
+        fi
+    else
+        chk B-8 SKIP "no Caddyfile here"
+    fi
+
+    # B-9: the env surface, in three populations that should agree. A variable
+    # used by compose and set nowhere silently takes its default; one set and
+    # never used is dead weight that outlives its reason.
+    if pyyaml_ok; then
+        _envpy=$(mktemp)
+        cat > "$_envpy" <<'PYENV'
+import io, os, re, sys
+comp = io.open("docker-compose.yml", encoding="utf-8").read()
+used = {v for v in re.findall(r'\$\{([A-Z0-9_]+)[:}-]', comp) if v != "VAR"}
+docs = ""
+for f in ("docs/king-system.md", "README.md", ".env.example"):
+    try: docs += io.open(f, encoding="utf-8").read()
+    except OSError: pass
+setv = set()
+for f in (".env", "omniroute/.env", "agent-sidecar/.env"):
+    try:
+        for line in io.open(f, encoding="utf-8"):
+            m = re.match(r'^([A-Z0-9_]+)=', line.strip())
+            if m: setv.add(m.group(1))
+    except OSError: pass
+undoc = sorted(v for v in used if v not in docs)
+print("used=%d set=%d undocumented=%d" % (len(used), len(setv), len(undoc)))
+print(" ".join(undoc[:8]))
+PYENV
+        _eo=$("$PY" "$_envpy" 2>/dev/null || true); rm -f "$_envpy"
+        _ud=$(printf '%s' "$_eo" | head -1 | sed 's/.*undocumented=//')
+        metric b9_undocumented "${_ud:-0}"
+        if [ "${_ud:-99}" -eq 0 ]; then
+            chk B-9 PASS "every compose variable is documented somewhere"
+        else
+            chk B-9 FAIL "${_ud} compose variable(s) documented nowhere" \
+                "$(printf '%s' "$_eo" | sed -n 2p)"
+        fi
+    else
+        chk B-9 UNKNOWN "cannot parse compose for the env surface"
+    fi
+
+    # B-10: a unit that only exists on the host is one `rm -rf` from gone, and
+    # a schedule is only sane relative to the timezone people live in.
+    _units=$(ls scripts/*.timer 2>/dev/null | wc -l | tr -d ' ')
+    if have systemctl; then
+        _live=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $NF}' \
+                | sed 's/\.service$//' | grep -v '^$' | sort -u || true)
+        _unversioned=""
+        for _t in $_live; do
+            case "$_t" in
+                launchpadlib*|systemd-*) continue ;;
+            esac
+            [ -f "scripts/$_t.timer" ] || _unversioned="$_unversioned $_t"
+        done
+        if [ -z "$_unversioned" ]; then
+            chk B-10 PASS "every active user timer has its unit in the repo" "$_units in scripts/"
+        else
+            chk B-10 FAIL "active timer(s) with no unit file in the repo" "$_unversioned"
+        fi
+    else
+        chk B-10 SKIP "systemctl unavailable; installed units unmeasurable" "$_units unit(s) in scripts/"
+    fi
+
     # B-11: a profile with no preflight check deploys unguarded.
     if [ -f scripts/stax-preflight.sh ] && pyyaml_ok; then
         _cp=$("$PY" -c "
@@ -579,11 +712,94 @@ dim_C() {
         chk C-7 SKIP "no agent-sidecar/.env here"
     fi
 
-    _allow=$(grep -c '^AGENT_SIDECAR_MCP_ALLOWED_HOSTS=..*' agent-sidecar/.env 2>/dev/null || true)
-    if [ "$_allow" = "0" ]; then
-        chk C-8 FAIL "no egress allowlist set for the agent's MCP hosts"
+    # C-2: rotation does not help if the old value is still in the history.
+    # Bounded to token-shaped prefixes rather than a full entropy scan, so it
+    # stays fast enough to run every time -- an audit nobody runs finds nothing.
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        _hist=""
+        for _pat in 'sk-[A-Za-z0-9]\{24,\}' 'oma_live_[A-Za-z0-9]\{16,\}' \
+                    'tk_[A-Za-z0-9]\{20,\}' 'AKIA[0-9A-Z]\{16\}'; do
+            _h=$(git log --all --oneline -S"$_pat" --pickaxe-regex 2>/dev/null | head -2 || true)
+            [ -n "$_h" ] && _hist="$_hist $(printf '%s' "$_h" | awk '{print $1}' | tr '\n' ',')"
+        done
+        if [ -z "$_hist" ]; then
+            chk C-2 PASS "no token-shaped string appears anywhere in git history"
+        else
+            chk C-2 FAIL "token-shaped string(s) in history — rotation alone is not enough" "$_hist"
+        fi
     else
+        chk C-2 UNKNOWN "not a git checkout; history unscannable"
+    fi
+
+    # C-6: both directions. A 401 for everyone is a wall, not a door; the
+    # check has to prove the right token gets in as well as that the wrong one
+    # does not. Guards tested in one direction are how this repo has been
+    # bitten before.
+    if have curl && [ -f agent-sidecar/.env ]; then
+        _t1=$(sed -n 's/^AGENT_SIDECAR_AUTH_TOKEN=//p' agent-sidecar/.env 2>/dev/null | tail -1)
+        _g1=$(sed -n 's/^GRAPHIFY_API_KEY=//p' .env 2>/dev/null | tail -1)
+        _prob=""
+        for _spec in "king-agent|/king-agent/mcp|$_t1" "codegraph|/king-codegraph/mcp|$_g1"; do
+            _nm=$(printf '%s' "$_spec" | cut -d'|' -f1)
+            _pt=$(printf '%s' "$_spec" | cut -d'|' -f2)
+            _tk=$(printf '%s' "$_spec" | cut -d'|' -f3)
+            [ -n "$_tk" ] || { _prob="$_prob $_nm=no-token"; continue; }
+            _u="https://gateway.arject.co$_pt"
+            _none=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "$_u" 2>/dev/null || echo 000)
+            _wrong=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -H "Authorization: Bearer wrong-$$" "$_u" 2>/dev/null || echo 000)
+            case "$_none/$_wrong" in
+                401/401|403/403|401/403|403/401) : ;;
+                *) _prob="$_prob $_nm(none=$_none,wrong=$_wrong)" ;;
+            esac
+        done
+        if [ -z "$_prob" ]; then
+            chk C-6 PASS "every MCP rejects both no token and a wrong token" \
+                "the right-token direction is proved by F-1, which calls a tool"
+        else
+            chk C-6 FAIL "MCP auth did not behave in both directions" "$_prob"
+        fi
+    else
+        chk C-6 UNKNOWN "cannot read tokens or curl missing; MCP auth untested"
+    fi
+
+    # C-9: a rotation list is only useful if it names everything that exists.
+    if [ -f docs/king-system.md ] || [ -f README.md ]; then
+        _secrets=$(for f in $SECRET_FILES; do
+                     [ -f "$f" ] || continue
+                     grep -oE '^[A-Z0-9_]+=' "$f" 2>/dev/null | tr -d '='
+                   done | sort -u | grep -E 'KEY|TOKEN|SECRET|PASSWORD|DSN|URL' || true)
+        _unlisted=""
+        for _sc in $_secrets; do
+            grep -rq "$_sc" docs/ README.md 2>/dev/null || _unlisted="$_unlisted $_sc"
+        done
+        _n=$(printf '%s' "$_unlisted" | wc -w | tr -d ' ')
+        _found=$(printf '%s' "$_secrets" | wc -w | tr -d ' ')
+        if [ "${_found:-0}" -eq 0 ]; then
+            # No secret files here means nothing was compared. Passing on an
+            # empty set is how a check reports success for doing nothing.
+            chk C-9 UNKNOWN "no secret files present; the rotation list was compared against nothing"
+        elif [ "${_n:-0}" -eq 0 ]; then
+            chk C-9 PASS "all ${_found} secret-shaped variable(s) are named in the docs"
+        else
+            chk C-9 FAIL "${_n} secret(s) exist but appear in no document" \
+                "$(printf '%s' "$_unlisted" | tr ' ' '\n' | head -5 | tr '\n' ' ')"
+        fi
+    else
+        chk C-9 SKIP "no docs here to compare the rotation list against"
+    fi
+
+    # Three outcomes, not two. `grep -c` on a MISSING file errors, `|| true`
+    # turned that into an empty string, and `[ "" = "0" ]` is false -- so a
+    # file that does not exist reported the allowlist as configured. That is
+    # the `|| echo 0` shape this script's own header warns about, committed
+    # by the script itself for the second time.
+    if [ ! -f agent-sidecar/.env ]; then
+        chk C-8 UNKNOWN "no agent-sidecar/.env here; egress allowlist unmeasurable"
+    elif grep -qE '^AGENT_SIDECAR_MCP_ALLOWED_HOSTS=.+' agent-sidecar/.env 2>/dev/null; then
         chk C-8 PASS "agent MCP egress allowlist is set"
+    else
+        chk C-8 FAIL "no egress allowlist set for the agent's MCP hosts" \
+            "the agent reads web pages; this is the boundary that bounds it"
     fi
 }
 
