@@ -124,6 +124,12 @@ jobs:
       - name: Local secret scanner self-test
         run: ./scripts/local-secret-scan.sh --self-test
 
+      # Fixtures only: no host, no secrets, no network. It guards the compose
+      # rule parser, which is what decides whether the audit can see a defect
+      # at all.
+      - name: Audit self-test
+        run: ./scripts/king-audit.sh --self-test
+
       - name: Shell lint
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
