@@ -275,7 +275,7 @@ PYAUDIT
     for _r in B2:B-2:"every published port binds loopback (Caddy excepted)" \
               B3:B-3:"every image is pinned" \
               B4:B-4:"every service is opt-in via profiles:" \
-              B5:B-5:'no ${VAR:?err} outside comments' \
+              B5:B-5:"no hard-required variable syntax outside comments" \
               B6:B-6:"root compose declares no omniroute/ service"; do
         _tag=${_r%%:*}; _rest=${_r#*:}; _id=${_rest%%:*}; _title=${_rest#*:}
         _hits=$(printf '%s' "$_res" | grep -c "^$_tag	" || true)
@@ -329,6 +329,542 @@ print(' '.join(sorted(ps)))" 2>/dev/null || true)
         fi
     else
         chk B-11 UNKNOWN "cannot compare profiles to preflight"
+    fi
+}
+
+# ------------------------------------------------------------- dimension C
+
+# Files that hold live credentials on this deployment. Each is checked with its
+# BACKUP VARIANTS, because `providers.env` was ignored while
+# `providers.env.bak.20260906` sat beside it untracked and unignored, one
+# `git add -A` from being committed.
+SECRET_FILES=".env omniroute/.env agent-sidecar/.env activepieces/.env providers.env observability/.env .claude/settings.local.json"
+
+dim_C() {
+    echo; echo "C  secrets and access"
+
+    _leaky=""
+    for f in $SECRET_FILES; do
+        for v in "$f" "$f.bak" "$f.old" "$f.bak.20260101" "$f.save" "$f~"; do
+            git check-ignore -q "$v" 2>/dev/null || _leaky="$_leaky $v"
+        done
+    done
+    if [ -z "$_leaky" ]; then
+        chk C-1 PASS "every secret file and its backup variants are gitignored"
+    else
+        chk C-1 FAIL "secret path(s) not ignored — one \`git add -A\` from a commit" \
+            "$(printf '%s' "$_leaky" | tr ' ' '\n' | grep -v '^$' | head -4 | tr '\n' ' ')"
+    fi
+
+    # Untracked AND unignored files that look secret-bearing. This is the check
+    # that would have caught providers.env.bak.20260906 the day it appeared.
+    _stray=$(git status --porcelain --untracked-files=all 2>/dev/null \
+             | awk '/^\?\?/ {print $2}' \
+             | grep -iE '(^|/)\.env|secret|token|credential|\.bak(\.|$)|\.pem$|\.key$' || true)
+    if [ -z "$_stray" ]; then
+        chk C-1b PASS "no untracked, unignored file looks secret-bearing"
+    else
+        chk C-1b FAIL "untracked secret-shaped file(s) present" "$(printf '%s' "$_stray" | tr '\n' ' ')"
+    fi
+
+    _ph=""
+    for f in $SECRET_FILES; do
+        [ -f "$f" ] || continue
+        grep -nEi '=(CHANGEME|changeme|your[-_]|placeholder|xxxxx|TODO|example)' "$f" 2>/dev/null \
+            | head -2 | while IFS= read -r l; do printf '%s:%s\n' "$f" "${l%%:*}"; done
+    done > "$METRICS.ph" 2>/dev/null || true
+    _ph=$(cat "$METRICS.ph" 2>/dev/null || true); rm -f "$METRICS.ph"
+    if [ -z "$_ph" ]; then
+        chk C-3 PASS "no placeholder values left in secret files"
+    else
+        chk C-3 FAIL "placeholder value(s) still installed" "$(printf '%s' "$_ph" | tr '\n' ' ')"
+    fi
+
+    # C-4: blast radius, not just presence. A credential's label must match
+    # what holding it actually gets you.
+    if on_host; then
+        _sock=$(docker inspect king-agent-sidecar-http-1 \
+                --format '{{range .Mounts}}{{if eq .Destination "/var/run/docker.sock"}}{{.RW}}{{end}}{{end}}' 2>/dev/null || true)
+        _exec=$(docker exec king-agent-sidecar-http-1 printenv AGENT_SIDECAR_EXEC_ENABLED 2>/dev/null || true)
+        if [ "$_sock" = "true" ] && [ -n "$_exec" ]; then
+            chk C-4 FAIL "AGENT_SIDECAR_AUTH_TOKEN is a ROOT credential, not a service token" \
+                "docker.sock mounted rw + EXEC_ENABLED=$_exec: vps_exec can run --privileged -v /:/host"
+        elif [ "$_sock" = "true" ]; then
+            chk C-4 FAIL "sidecar holds a writable docker.sock (root-equivalent if exec is enabled)"
+        else
+            chk C-4 PASS "sidecar has no writable docker socket"
+        fi
+    else
+        chk C-4 SKIP "not on the host; blast radius unmeasurable"
+    fi
+
+    # C-5/C-6: the public surface, and whether each door is actually locked.
+    # Tested in BOTH directions — a 200 with no token is an open door, and a
+    # 401 with the right token is a door nobody can use.
+    if have curl; then
+        _open=""
+        for path in /king-agent/mcp /king-codegraph/mcp; do
+            _code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
+                    "https://gateway.arject.co$path" 2>/dev/null || echo 000)
+            case "$_code" in
+                401|403) : ;;
+                000)     _open="$_open $path=unreachable" ;;
+                *)       _open="$_open $path=$_code" ;;
+            esac
+        done
+        if [ -z "$_open" ]; then
+            chk C-5 PASS "every authenticated public path rejects an anonymous request"
+        else
+            chk C-5 FAIL "public path(s) answered without a token" "$_open"
+        fi
+    else
+        chk C-5 UNKNOWN "curl unavailable; public surface unmeasurable"
+    fi
+
+    if [ -f agent-sidecar/.env ]; then
+        _perm=$(stat -c '%a' agent-sidecar/.env 2>/dev/null || stat -f '%A' agent-sidecar/.env 2>/dev/null || true)
+        case "$_perm" in
+            ""|*[!0-9]*) chk C-7 UNKNOWN "could not read .env permissions" ;;
+            *[2367])     chk C-7 FAIL "agent-sidecar/.env is world-readable" "mode $_perm" ;;
+            *)           chk C-7 PASS "secret file permissions are not world-readable" "mode $_perm" ;;
+        esac
+    else
+        chk C-7 SKIP "no agent-sidecar/.env here"
+    fi
+
+    _allow=$(grep -c '^AGENT_SIDECAR_MCP_ALLOWED_HOSTS=..*' agent-sidecar/.env 2>/dev/null || true)
+    if [ "$_allow" = "0" ]; then
+        chk C-8 FAIL "no egress allowlist set for the agent's MCP hosts"
+    else
+        chk C-8 PASS "agent MCP egress allowlist is set"
+    fi
+}
+
+# ------------------------------------------------------------- dimension D
+
+dim_D() {
+    echo; echo "D  runtime health"
+    if ! on_host; then
+        chk D-1 SKIP "not on the host; runtime unmeasurable"
+        return
+    fi
+
+    # Swap per container. The rule in CLAUDE.md exists so a container OOMs
+    # inside its own cgroup instead of dragging the host into swap; this is
+    # where you find out whether it is working.
+    _sw=$(for c in $(docker ps --format '{{.Names}}'); do
+            id=$(docker inspect -f '{{.Id}}' "$c" 2>/dev/null) || continue
+            for b in "/sys/fs/cgroup/system.slice/docker-$id.scope" "/sys/fs/cgroup/docker/$id"; do
+                [ -r "$b/memory.swap.current" ] || continue
+                v=$(cat "$b/memory.swap.current" 2>/dev/null || echo 0)
+                [ "$v" -gt 52428800 ] && printf '%s=%sMB ' "$c" "$((v/1048576))"
+                break
+            done
+          done; true)
+    metric d1_swapping "$(printf '%s' "$_sw" | wc -w | tr -d ' ')"
+    if [ -z "$_sw" ]; then
+        chk D-1 PASS "no container holds more than 50 MB of swap"
+    else
+        chk D-1 FAIL "container(s) swapping" "$_sw"
+    fi
+
+    _unhealthy=$(docker ps --format '{{.Names}} {{.Status}}' | grep -i 'unhealthy' || true)
+    _restarts=$(for c in $(docker ps --format '{{.Names}}'); do
+                  r=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo 0)
+                  [ "$r" -gt 3 ] && printf '%s=%s ' "$c" "$r"
+                done; true)
+    if [ -z "$_unhealthy" ] && [ -z "$_restarts" ]; then
+        chk D-2 PASS "no unhealthy container, none restarting repeatedly"
+    else
+        chk D-2 FAIL "container health problems" "$_unhealthy $_restarts"
+    fi
+
+    if [ -r /proc/meminfo ]; then
+        _avail=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)
+        _swap=$(awk '/^SwapTotal:/{t=$2}/^SwapFree:/{f=$2}END{print int((t-f)/1024)}' /proc/meminfo)
+        metric d3_mem_available_mb "$_avail"; metric d3_swap_used_mb "$_swap"
+
+        # The floor must be compared against what the BUILD will see, not
+        # against now. codegraph-refresh.sh unloads the resident model before
+        # it checks, so raw MemAvailable under-reports the headroom by whatever
+        # Ollama happens to be holding -- and that moved ~800 MB in one day.
+        # Comparing the wrong number reported a failure that would not happen,
+        # which is the same class of error this whole audit exists to catch.
+        _oll=0
+        _cid=$(docker compose --profile localmodel ps -q ollama 2>/dev/null || true)
+        if [ -n "$_cid" ]; then
+            for _b in "/sys/fs/cgroup/system.slice/docker-$_cid.scope" "/sys/fs/cgroup/docker/$_cid"; do
+                [ -r "$_b/memory.current" ] || continue
+                _oll=$(( $(cat "$_b/memory.current") / 1048576 ))
+                break
+            done
+        fi
+        _eff=$((_avail + _oll))
+        metric d3_effective_headroom_mb "$_eff"
+        metric d3_ollama_resident_mb "$_oll"
+        if [ "$_eff" -ge 3584 ]; then
+            chk D-3 PASS "codegraph build would see ${_eff} MB, above its 3584 MB floor" "MemAvailable ${_avail} + Ollama ${_oll} released first; swap used ${_swap} MB"
+        else
+            chk D-3 FAIL "codegraph build would see only ${_eff} MB, below its 3584 MB floor" "MemAvailable ${_avail} + Ollama ${_oll}; the daily graph refresh will refuse"
+        fi
+    else
+        chk D-3 UNKNOWN "cannot read /proc/meminfo"
+    fi
+
+    # Readability and count are separate questions. Folding them together with
+    # `|| echo UNKNOWN` reported "unknown" whenever the count was legitimately
+    # zero, because grep -c exits 1 on no match.
+    if _dm=$(dmesg 2>/dev/null); then
+        _oom=$(printf '%s' "$_dm" | grep -ci 'out of memory\|oom-kill' || true)
+        if [ "${_oom:-0}" -eq 0 ]; then
+            chk D-4 PASS "no OOM kill in the kernel ring buffer"
+        else
+            chk D-4 FAIL "$_oom OOM event(s) in dmesg" "the kernel has been choosing victims by RSS"
+        fi
+    else
+        chk D-4 UNKNOWN "dmesg unreadable (needs privileges); OOM history unknown"
+    fi
+
+    _pct=$(df / --output=pcent 2>/dev/null | tr -dc '0-9' || true)
+    if [ -n "$_pct" ]; then
+        metric d5_disk_pct "$_pct"
+        if [ "$_pct" -lt 85 ]; then chk D-5 PASS "root filesystem ${_pct}% used"
+        else chk D-5 FAIL "root filesystem ${_pct}% used" "reclaim before adding anything"; fi
+    else
+        chk D-5 UNKNOWN "cannot read disk usage"
+    fi
+
+    _recl=$(docker system df 2>/dev/null | awk '/Build Cache/ {print $NF}' | tr -dc '0-9.' || true)
+    [ -n "$_recl" ] && metric d6_reclaimable_gb "$_recl"
+    chk D-6 PASS "reclaimable build cache recorded" "${_recl:-unknown} (informational)"
+}
+
+# ------------------------------------------------------------- dimension E
+
+dim_E() {
+    echo; echo "E  data and state"
+    if ! on_host; then
+        chk E-1 SKIP "not on the host; state unmeasurable"
+        return
+    fi
+
+    # E-1 is deliberately blunt: this deployment has no backup mechanism at
+    # all, so the honest answer is a list of what would be lost, not a PASS.
+    _vols=$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -c . || true); _vols=${_vols:-0}
+    chk E-1 UNKNOWN "$_vols docker volume(s); no backup mechanism exists to verify" \
+        "loss would be silent until needed — this is a decision, not a check"
+
+    for _j in /audit/runs.jsonl /audit/vps_exec.log; do
+        _n=$(docker exec king-agent-sidecar-http-1 sh -c "wc -l < $_j 2>/dev/null" 2>/dev/null | tr -d ' ' || true)
+        case "$_n" in
+            ""|*[!0-9]*) chk "E-3" UNKNOWN "cannot read $_j" ;;
+            0)           chk "E-3" FAIL "$_j is empty — the journal stopped recording" ;;
+            *)           chk "E-3" PASS "$_j has $_n line(s)"; metric "e3_$(basename "$_j" | tr . _)" "$_n" ;;
+        esac
+    done
+
+    # E-4/E-5: freshness AND correctness. A date check passes on a graph built
+    # today from a stale checkout, which is exactly what happened on
+    # 2026-09-08: BUILD_INFO said today, commit said 18 behind.
+    _bi=$(docker exec king-codegraph-serve-1 cat /out/graphify-out/BUILD_INFO 2>/dev/null || true)
+    _gc=$(printf '%s' "$_bi" | sed -n 's/^commit=//p' | cut -c1-40)
+    _head=$(git rev-parse HEAD 2>/dev/null || true)
+    _origin=$(git rev-parse origin/main 2>/dev/null || true)
+    if [ -z "$_gc" ]; then
+        chk E-4 UNKNOWN "cannot read the graph's BUILD_INFO"
+    elif [ "$_gc" = "$_origin" ]; then
+        chk E-4 PASS "code graph indexes origin/main" "${_gc}"
+    elif [ "$_gc" = "$_head" ]; then
+        chk E-4 FAIL "code graph indexes the local HEAD, which is not origin/main" \
+            "graph=$(printf '%s' "$_gc" | cut -c1-8) origin=$(printf '%s' "$_origin" | cut -c1-8)"
+    else
+        chk E-4 FAIL "code graph indexes neither HEAD nor origin/main" \
+            "graph=$(printf '%s' "$_gc" | cut -c1-8) head=$(printf '%s' "$_head" | cut -c1-8)"
+    fi
+}
+
+# ------------------------------------------------------------- dimension F
+
+dim_F() {
+    echo; echo "F  the agentic layer"
+    if ! on_host; then
+        chk F-1 SKIP "not on the host; MCP servers unreachable from here"
+        return
+    fi
+    if [ -z "$PY" ]; then
+        chk F-1 UNKNOWN "no working python3; MCP cannot be spoken to"
+        return
+    fi
+
+    # F-1 calls a tool rather than reading a status code. An endpoint that
+    # answers 401 proves a guard, not a working server; this deployment has
+    # shipped both live-but-broken and dead-but-authenticating before.
+    _mcp=$(mktemp)
+    cat > "$_mcp" <<'PYMCP'
+import json, sys, urllib.request as u
+base, tok, want = sys.argv[1], sys.argv[2], sys.argv[3]
+def rpc(m, p, sid=None):
+    b = {"jsonrpc": "2.0", "id": 1, "method": m}
+    if p is not None: b["params"] = p
+    h = {"Content-Type": "application/json",
+         "Accept": "application/json, text/event-stream",
+         "Authorization": "Bearer " + tok}
+    if sid: h["Mcp-Session-Id"] = sid
+    r = u.urlopen(u.Request(base, data=json.dumps(b).encode(), headers=h, method="POST"), timeout=90)
+    raw = r.read().decode("utf-8", "replace"); s2 = r.headers.get("Mcp-Session-Id")
+    if raw.lstrip().startswith("event:") or "\ndata:" in raw:
+        for ln in raw.splitlines():
+            if ln.startswith("data:"): raw = ln[5:].strip(); break
+    return json.loads(raw), (s2 or sid)
+try:
+    _, sid = rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
+                                "clientInfo": {"name": "king-audit", "version": "1"}})
+    try: rpc("notifications/initialized", {}, sid)
+    except Exception: pass
+    res, _ = rpc("tools/list", {}, sid)
+    tools = [t["name"] for t in ((res.get("result") or {}).get("tools") or [])]
+    if want not in tools:
+        print("MISSING\t%s not offered; got %d tool(s)" % (want, len(tools))); raise SystemExit(0)
+    res, _ = rpc("tools/call", {"name": want, "arguments": {}}, sid)
+    c = (res.get("result") or {}).get("content") or []
+    body = (c[0].get("text") if c else "")
+    if not body:
+        print("EMPTY\t%s returned nothing" % want); raise SystemExit(0)
+    print("OK\t%d tool(s); %s answered %d chars" % (len(tools), want, len(body)))
+except Exception as e:
+    print("ERROR\t%s: %s" % (type(e).__name__, e))
+PYMCP
+
+    _tok=$(sed -n 's/^AGENT_SIDECAR_AUTH_TOKEN=//p' agent-sidecar/.env 2>/dev/null | tail -1)
+    _gk=$(sed -n 's/^GRAPHIFY_API_KEY=//p' .env 2>/dev/null | tail -1)
+
+    for _spec in "bridge|http://127.0.0.1:8100/mcp|$_tok|vps_status" \
+                 "codegraph|http://127.0.0.1:8130/mcp|$_gk|graph_stats"; do
+        _n=$(printf '%s' "$_spec" | cut -d'|' -f1)
+        _u=$(printf '%s' "$_spec" | cut -d'|' -f2)
+        _t=$(printf '%s' "$_spec" | cut -d'|' -f3)
+        _w=$(printf '%s' "$_spec" | cut -d'|' -f4)
+        if [ -z "$_t" ]; then
+            chk "F-1" UNKNOWN "$_n: no token available to test with"
+            continue
+        fi
+        _out=$("$PY" "$_mcp" "$_u" "$_t" "$_w" 2>/dev/null || printf 'ERROR\tprobe crashed')
+        case "$_out" in
+            OK*)      chk "F-1" PASS "$_n MCP answers a real call" "$(printf '%s' "$_out" | cut -f2)" ;;
+            MISSING*) chk "F-1" FAIL "$_n MCP is up but the tool is gone" "$(printf '%s' "$_out" | cut -f2)" ;;
+            EMPTY*)   chk "F-1" FAIL "$_n MCP returned an empty result" "$(printf '%s' "$_out" | cut -f2)" ;;
+            *)        chk "F-1" FAIL "$_n MCP call failed" "$(printf '%s' "$_out" | cut -f2)" ;;
+        esac
+    done
+    rm -f "$_mcp"
+
+    # F-2: the tools actually offered to the agent, against the allowlist and
+    # against the set that must never reach it.
+    _health=$(curl -s -m 15 http://127.0.0.1:8100/healthz 2>/dev/null || true)
+    if [ -n "$_health" ]; then
+        _leak=""
+        for _never in vps_exec run_agent ask_model; do
+            printf '%s' "$_health" | grep -q "\"$_never\"" && _leak="$_leak $_never"
+        done
+        if [ -z "$_leak" ]; then
+            chk F-2 PASS "no NEVER_REGISTER tool appears in the agent's offered set"
+        else
+            chk F-2 FAIL "tool(s) that must never reach the agent are offered" "$_leak"
+        fi
+        _n=$(printf '%s' "$_health" | tr ',' '\n' | grep -c '"[a-z_]*"' || true)
+        chk F-2b PASS "agent toolset readable from /healthz" "$(printf '%s' "$_health" | sed -n 's/.*"agent_tools":\[\([^]]*\)\].*/\1/p' | tr -d '"' | tr ',' ' ' | cut -c1-90)"
+    else
+        chk F-2 UNKNOWN "sidecar /healthz unreachable; offered toolset unknown"
+    fi
+
+    # F-6: the local-only guarantee, checked where it is actually made — the
+    # container, not the gateway. Routing through the gateway cannot prove it,
+    # because the gateway is allowed to decide otherwise.
+    _cid=$(docker compose --profile localmodel ps -q ollama 2>/dev/null || true)
+    if [ -n "$_cid" ]; then
+        _ip=$(docker inspect "$_cid" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' 2>/dev/null | awk '{print $1}')
+        if [ -n "$_ip" ] && curl -s -m 15 "http://$_ip:11434/api/tags" 2>/dev/null | grep -q '"models"'; then
+            chk F-6 PASS "local model answers directly, with no gateway on the path"
+        else
+            chk F-6 FAIL "local model not reachable without the gateway" \
+                "the local-only guarantee has no path that holds it"
+        fi
+    else
+        chk F-6 SKIP "localmodel profile not running"
+    fi
+
+    # F-7: mirror vs live. A mirror that has drifted invites review of code
+    # that is not running.
+    if [ -f flows/gateway_monitor.step_1.js ]; then
+        _mir=$(sed -n '/^import crypto/,$p' flows/gateway_monitor.step_1.js | wc -c | tr -d ' ')
+        metric f7_mirror_bytes "$_mir"
+        chk F-7 UNKNOWN "flow mirror is $_mir bytes; comparing to live needs the Activepieces API" \
+            "run ap_read_step_code and diff below the header — not automatable from here"
+    else
+        chk F-7 SKIP "no flow mirror in this repo"
+    fi
+}
+
+# ------------------------------------------------------------- dimension G
+
+dim_G() {
+    echo; echo "G  guards and instruments"
+
+    # G-1: a guard is only a guard if it can go red. Every script here that
+    # ships a --self-test is asked to prove it still passes.
+    _st_ok=""; _st_bad=""
+    for _g in scripts/stax-preflight.sh scripts/local-secret-scan.sh scripts/king-audit.sh; do
+        [ -x "$_g" ] || continue
+        grep -q -- '--self-test' "$_g" 2>/dev/null || continue
+        if "$_g" --self-test >/dev/null 2>&1; then _st_ok="$_st_ok $(basename "$_g")"
+        else _st_bad="$_st_bad $(basename "$_g")"; fi
+    done
+    if [ -z "$_st_bad" ]; then
+        chk G-1 PASS "every guard with a self-test passes it" "$_st_ok"
+    else
+        chk G-1 FAIL "guard self-test(s) failing" "$_st_bad"
+    fi
+
+    # G-3: a timer that stopped is a guard that is gone, and it is silent.
+    if have systemctl; then
+        _failed=$(systemctl --user --failed --no-legend 2>/dev/null | awk '{print $1}' | tr '\n' ' ' || true)
+        if [ -z "$_failed" ]; then
+            chk G-3 PASS "no failed user unit"
+        else
+            chk G-3 FAIL "failed unit(s)" "$_failed"
+        fi
+        _timers=$(systemctl --user list-timers --no-legend 2>/dev/null | grep -c . || true)
+        metric g3_timers "${_timers:-0}"
+        if [ "${_timers:-0}" -ge 3 ]; then
+            chk G-3b PASS "${_timers} user timer(s) registered"
+        else
+            chk G-3b FAIL "only ${_timers:-0} user timer(s); expected the monitor, codegraph and pool-prove"
+        fi
+    else
+        chk G-3 SKIP "systemctl unavailable here"
+    fi
+
+    # G-4: the deadman's tolerance against the real worst gap. Publishing an
+    # Activepieces flow re-registers its schedule and skips a slot, so the
+    # worst legitimate gap is larger than the interval.
+    if [ -f scripts/monitor-deadman.sh ]; then
+        _max=$(sed -n 's/^MAX_AGE_MIN="\${MONITOR_MAX_AGE_MIN:-\([0-9]*\)}"/\1/p' scripts/monitor-deadman.sh | head -1)
+        if [ -n "$_max" ]; then
+            metric g4_deadman_max_min "$_max"
+            if [ "$_max" -ge 40 ]; then
+                chk G-4 PASS "deadman tolerance ${_max} min covers a republish-skipped slot"
+            else
+                chk G-4 FAIL "deadman tolerance ${_max} min is under the worst legitimate gap" \
+                    "22.5 min observed under load + a 15 min slot skipped by a republish = 37.5"
+            fi
+        else
+            chk G-4 UNKNOWN "could not read the deadman tolerance"
+        fi
+    else
+        chk G-4 SKIP "no deadman script here"
+    fi
+
+    # G-6: every silenced failure in the scripts, counted. Not a pass/fail --
+    # `|| true` is often correct -- but an inventory nobody has ever looked at
+    # is where "cannot read" quietly became "zero" once already.
+    _sil=$(grep -c -- '|| true\|2>/dev/null\||| echo' scripts/*.sh 2>/dev/null | awk -F: '{t+=$2} END {print t+0}')
+    metric g6_silenced "$_sil"
+    chk G-6 UNKNOWN "$_sil silenced-failure construct(s) across scripts/" \
+        "each is legitimate or a swallowed error; reviewable with: grep -n '|| true' scripts/*.sh"
+}
+
+# ------------------------------------------------------------- dimension H
+
+dim_H() {
+    echo; echo "H  tests and CI"
+
+    if have gh; then
+        _runs=$(gh run list --limit 4 --json workflowName,conclusion,headSha \
+                --jq '.[] | "\(.conclusion // "running")/\(.workflowName)"' 2>/dev/null || true)
+        if [ -z "$_runs" ]; then
+            chk H-1 UNKNOWN "gh returned nothing; CI state unknown"
+        else
+            _fail=$(printf '%s' "$_runs" | grep -c '^failure' || true)
+            if [ "${_fail:-0}" -eq 0 ]; then
+                chk H-1 PASS "no failing job in the last 4 runs"
+            else
+                chk H-1 FAIL "${_fail} failing job(s) in the last 4 runs" \
+                    "$(printf '%s' "$_runs" | grep '^failure' | tr '\n' ' ')"
+            fi
+        fi
+    else
+        chk H-1 SKIP "gh unavailable here"
+    fi
+
+    # H-2 is the honest one: naming what CI does NOT cover is worth more than
+    # celebrating what it does.
+    _uncovered=""
+    grep -q 'king-audit.sh --self-test' .github/workflows/*.yml 2>/dev/null || _uncovered="$_uncovered audit-self-test"
+    grep -q 'shellcheck' .github/workflows/*.yml 2>/dev/null || _uncovered="$_uncovered shellcheck"
+    grep -q 'flows/\*.test.mjs' .github/workflows/*.yml 2>/dev/null || _uncovered="$_uncovered flow-tests"
+    if [ -z "$_uncovered" ]; then
+        chk H-2 PASS "audit self-test, shellcheck and flow tests all run in CI"
+    else
+        chk H-2 FAIL "not covered by CI:" "$_uncovered"
+    fi
+    chk H-2b UNKNOWN "compose rules, Caddy config and the live stack are not exercised by CI" \
+        "that is what this audit is for; it is a statement of scope, not a defect"
+}
+
+# ------------------------------------------------------------- dimension I
+
+dim_I() {
+    echo; echo "I  documentation truth"
+
+    # I-3: a cross-reference to a file that no longer exists is the cheapest
+    # kind of wrong, and the easiest to check.
+    _bad=""
+    for _f in $(grep -ohE '`(scripts|docs|flows|agent-sidecar)/[A-Za-z0-9_./-]+`' \
+                docs/*.md README.md CLAUDE.md 2>/dev/null | tr -d '`' | sort -u); do
+        [ -e "$_f" ] && continue
+        # A gitignored path is absent by design: agent-sidecar/.env is
+        # documented precisely because it must exist on the host and never in
+        # the repo. Flagging it would teach people to ignore this check.
+        git check-ignore -q "$_f" 2>/dev/null && continue
+        _bad="$_bad $_f"
+    done
+    if [ -z "$_bad" ]; then
+        chk I-3 PASS "every file path referenced in the docs exists"
+    else
+        chk I-3 FAIL "docs reference missing file(s)" "$(printf '%s' "$_bad" | tr ' ' '\n' | head -5 | tr '\n' ' ')"
+    fi
+
+    _stale=$(grep -l 'TODO\|FIXME\|XXX' docs/*.md 2>/dev/null | tr '\n' ' ' || true)
+    if [ -z "$_stale" ]; then
+        chk I-4 PASS "no TODO/FIXME left in the docs"
+    else
+        chk I-4 UNKNOWN "docs carrying TODO markers" "$_stale"
+    fi
+}
+
+# ------------------------------------------------------------- dimension J
+
+dim_J() {
+    echo; echo "J  dependencies and supply chain"
+
+    if have gh; then
+        _omni=$(gh run list --workflow=omniroute-smoke.yml --limit 1 \
+                --json conclusion --jq '.[0].conclusion' 2>/dev/null || true)
+        case "$_omni" in
+            success) chk J-2 PASS "omniroute-smoke is green" ;;
+            failure) chk J-2 UNKNOWN "omniroute-smoke is red — known upstream break" \
+                         "tls-client-node asset renamed upstream; not caused here, not fixable here" ;;
+            *)       chk J-2 UNKNOWN "omniroute-smoke state unreadable" ;;
+        esac
+    else
+        chk J-2 SKIP "gh unavailable here"
+    fi
+
+    _pinned=$(grep -c 'OMNIROUTE_IMAGE_DIGEST=' scripts/ci-build-omniroute-base.sh 2>/dev/null || true)
+    if [ "${_pinned:-0}" -ge 1 ]; then
+        chk J-3 PASS "the vendored gateway image is pinned by digest"
+    else
+        chk J-3 FAIL "no digest pin for the gateway image"
     fi
 }
 
@@ -409,14 +945,28 @@ PYFIX
 
 echo "king audit — $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 c_dim "  repo $REPO"; echo
-on_host && c_dim "  on the host (docker visible)" || c_dim "  off-host: container checks will be skipped"
+# if/then/else, not `A && B || C`: in that form C also runs when A succeeded
+# and B failed, so a failing printf would claim we are off-host. pool-prove.sh
+# carries a comment about this same trap (SC2015) and this script reproduced it.
+if on_host; then
+    c_dim "  on the host (docker visible)"
+else
+    c_dim "  off-host: container checks will be skipped"
+fi
 echo
 
 for _d in $WANT; do
     case "$_d" in
         A) dim_A ;;
         B) dim_B ;;
-        C|D|E|F|G|H|I|J) echo; echo "$_d  not implemented yet"; chk "$_d-0" SKIP "dimension not built" ;;
+        C) dim_C ;;
+        D) dim_D ;;
+        E) dim_E ;;
+        F) dim_F ;;
+        G) dim_G ;;
+        H) dim_H ;;
+        I) dim_I ;;
+        J) dim_J ;;
         *) echo "unknown dimension: $_d" >&2; exit 2 ;;
     esac
 done
