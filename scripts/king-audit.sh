@@ -979,8 +979,14 @@ dim_E() {
     # which is exactly what happened on 2026-09-08. So this asks the graph for
     # a file that only the newest commit contains. A positive control, not a
     # timestamp.
-    _newfile=$(git diff --name-only "$_gc..origin/main" 2>/dev/null \
-               | grep -E '^(scripts|agent-sidecar|flows)/.*\.(sh|py|js)$' | head -1 || true)
+    # --diff-filter=A: files ADDED since the graph's commit, not merely
+    # modified. Picking a modified file makes this pass against a stale
+    # graph, because the old graph already knows that name -- which it did
+    # on the first run, reporting PASS for config.py while indexing a tree
+    # 18 commits behind. A positive control has to name something the old
+    # state cannot possibly contain.
+    _newfile=$(git diff --diff-filter=A --name-only "$_gc..origin/main" 2>/dev/null \
+               | grep -E '^(scripts|agent-sidecar|flows)/.*\.(sh|py|js|mjs)$' | head -1 || true)
     if [ -z "$_newfile" ]; then
         chk E-5 PASS "graph commit matches origin; nothing newer to look for"
     elif [ -z "$PY" ]; then
@@ -1144,7 +1150,10 @@ PYMCP
     # F-4: whether the caller got the model it asked for, from the journal
     # rather than from a probe. 19 of 21 runs were overridden before
     # graph_stats left the default set.
-    _jr=$(docker exec king-agent-sidecar-http-1 sh -c 'tail -40 /audit/runs.jsonl 2>/dev/null' 2>/dev/null || true)
+    # Last 12, not last 40. The journal spans the change that fixed this,
+    # and a rate averaged across a fix describes neither the before nor the
+    # after -- it drifts toward the truth while looking like a measurement.
+    _jr=$(docker exec king-agent-sidecar-http-1 sh -c 'tail -12 /audit/runs.jsonl 2>/dev/null' 2>/dev/null || true)
     if [ -z "$_jr" ]; then
         chk F-4 UNKNOWN "run journal unreadable; override rate unknown"
     elif [ -z "$PY" ]; then
