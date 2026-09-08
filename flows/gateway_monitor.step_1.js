@@ -1,8 +1,13 @@
 // MIRROR of Activepieces flow `gateway_monitor`, step_1 ("Assess gateway health").
 //
 // Activepieces is the source of truth; this file exists to make the logic
-// diffable. See flows/README.md — including why the step's `input` block, which
-// carries the bearer token and the HMAC secret, is not mirrored.
+// diffable, and — via the two `export`s below — testable by
+// flows/gateway_monitor.test.mjs. Activepieces only needs `code`; the extra
+// named exports are inert there and are present in the live step too, so the
+// mirror stays byte-identical to it below this header.
+//
+// See flows/README.md, including why the step's `input` block — which carries
+// the bearer token and the HMAC secret — is not mirrored.
 //
 // Runs every 15 minutes. Reads the gateway's own call log, decides whether the
 // window is a breach, and on a breach POSTs to the `gateway_alerts` webhook,
@@ -26,7 +31,7 @@ import crypto from 'node:crypto';
 // It fails safe: an unrecognised or absent message is treated as a genuine
 // credential failure, so only a message that positively identifies itself as a
 // model-catalogue problem is excused.
-const isCredentialFailure = (r) => {
+export const isCredentialFailure = (r) => {
   if (r.status !== 401 && r.status !== 403) return false;
   return !/\bmodels?\b[^.]{0,60}?\b(is |are )?(not supported|unsupported|not found|unavailable|does not exist)/i
     .test(String(r.error ?? ''));
@@ -90,7 +95,7 @@ const severityFromShape = (byProvider, failures) => {
 // Rows with no correlationId each count as their own single-attempt request.
 // That is the conservative direction on purpose: it can only ever make impact
 // look higher, so a missing field can never silently downgrade a real alert.
-const callerImpact = (rows, isFailure) => {
+export const callerImpact = (rows, isFailure) => {
   const groups = new Map();
   for (const r of rows) {
     const key = r.correlationId || `_${r.id ?? Math.random()}`;

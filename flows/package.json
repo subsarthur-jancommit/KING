@@ -1,0 +1,9 @@
+{
+  "name": "king-flows-mirror",
+  "private": true,
+  "type": "module",
+  "description": "Marks this directory as ESM so the mirrored Activepieces step (.js, using import/export exactly as the live step does) can be imported by gateway_monitor.test.mjs. Node otherwise reads a bare .js as CommonJS and the import fails. There are no dependencies and nothing is published; renaming the mirror to .mjs would work too, but the file is meant to be pasted to and from Activepieces verbatim, so its extension should not be a detail of our test setup. The test script matches *.test.mjs only: `node --test .` would also try to run the mirror itself, which defines no tests and is therefore reported as a failing test file.",
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  }
+}

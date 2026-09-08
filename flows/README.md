@@ -18,6 +18,16 @@ worth that much scrutiny should be reviewable in a diff.
 | File | Flow | Step |
 |---|---|---|
 | `gateway_monitor.step_1.js` | `gateway_monitor` | `step_1` — *Assess gateway health* |
+| `gateway_monitor.test.mjs` | — | Tests for the two pure decisions in it |
+
+`package.json` marks this directory as ESM so the mirror — which uses
+`import`/`export` exactly as the live step does — can be imported by the test.
+Node reads a bare `.js` as CommonJS otherwise. Nothing here is published or has
+dependencies.
+
+Run them with `node --test "flows/*.test.mjs"`, which CI also does. The pattern
+matters: `node --test flows/` would also try to run the mirror itself, which
+defines no tests and is therefore reported as a failing test file.
 
 ## What is deliberately NOT here
 
@@ -54,3 +64,11 @@ reason to publish it.
 
 Copy only the `code` field. `ap_read_step_code` also returns `input`, which
 carries the secrets above.
+
+The mirror is byte-identical to the live step below its header comment,
+including the two `export` keywords on `isCredentialFailure` and `callerImpact`.
+Those exist so the test can import them; Activepieces only ever calls `code`, so
+they are inert there. They were added to the draft and the draft was tested
+before publishing, rather than trusted — the step runs inside a sandbox this
+repo does not own, and "extra exports are surely fine" is the kind of assumption
+that has cost this deployment before.

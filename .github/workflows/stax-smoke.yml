@@ -123,6 +123,13 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck scripts/*.sh
 
+      # The mirrored gateway_monitor logic decides production alert severity.
+      # It is JavaScript, so the Python suite below cannot reach it, and it was
+      # verified once by hand against real call-log windows before those
+      # scratch files were deleted. Node is already on the runner.
+      - name: Alert-severity logic (flows/)
+        run: node --test "flows/*.test.mjs"
+
   # Our own code, with no OmniRoute anywhere near it.
   #
   # The `agent-sidecar` job below is an integration test and rightly builds
