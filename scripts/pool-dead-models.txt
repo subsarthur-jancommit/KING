@@ -1,0 +1,41 @@
+# Models the router selects that have never once answered.
+#
+# `pool-prove.sh` fails when it finds a (provider, model) pair with at least
+# three attempts and zero successes in the call log. Every pair listed here is
+# acknowledged: the guard stays green for it and goes red for anything new.
+#
+# This file exists because the alternative is a guard nobody can leave green,
+# which decays into a guard nobody reads. Acknowledging a fault is not the same
+# as accepting it — each line carries why it is here and what would remove it.
+#
+# Format:  provider/model    # reason
+# Blank lines and #-comments are ignored. Matching is exact.
+#
+# Measured 2026-09-08 over the last 500 calls.
+
+# --- opencode: catalogue drift ------------------------------------------
+# The gateway's model catalogue for this provider lists names the provider no
+# longer serves. `pool-register.sh --prove` cannot see it: it proves the
+# provider answers, using a model that works, so the provider is genuinely
+# healthy while several of the names the router can pick are not.
+#
+# Removing these needs the catalogue refreshed upstream, or the names dropped
+# from the pool. Neither is fixable from this repo.
+opencode/hy3-free                        # 401 "Model hy3-free is not supported"
+opencode-zen/hy3-free                    # same model, reached via the -zen route
+opencode/deepseek-v4-flash-free          # 400 "Model is unavailable"
+opencode/nemotron-3-ultra-free           # 504, never returns a first byte
+
+# --- opencode: needs a key we have not provisioned -----------------------
+# Not a fault in the pool. The model is real and the gateway is willing; there
+# is simply no opencode API key configured for the paid tier. It is listed so
+# the guard does not report a spending decision as an outage.
+opencode/muse-spark-1.2                  # 402 "requires an opencode API key"
+
+# --- opencode: rejects the tool_choice smolagents sends -------------------
+# The provider only accepts tool_choice="auto"; smolagents' ToolCallingAgent
+# sends "required". Every agent run that lands here 400s. Caller-visible impact
+# has been zero so far because the family fallback covers it — see
+# docs/king-system.md 7 — which is exactly why it needed a guard to be visible
+# at all.
+opencode/muse-spark-1.2-contributor-free # 400 only "auto" is supported for tool_choice

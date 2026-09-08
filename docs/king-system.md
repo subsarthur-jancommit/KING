@@ -1628,7 +1628,7 @@ reporting healthy. Each guard below exists because of a specific one.
 | `/audit/runs.jsonl` | Every agent run | Cost, tool use, and degradation trends that were previously unrecoverable |
 | `gateway-report.sh` | When you want to know | How each caller's traffic was routed, which providers fail, and — via `correlationId` — how many of those failures actually reached a caller rather than being covered by the family fallback (2026-09-07: 2.5% vs 15.8% of attempts). Measured 2026-09-06: the sidecar had 141 of 204 calls rerouted through `auto/*`, and `local-router-probe` 4 of 4 — the gateway recording its own override |
 | `alerts-report.sh` | When you want to know | What the gateway has been complaining about. Reads Postgres directly, like `monitor-deadman.sh`, so it still answers when the Activepieces engine is wedged — one of the states you would most want to ask about |
-| `pool-prove.timer` | Weekly, Sun 04:17 | A registered provider that has gone silent. OmniRoute's own autopilot reported every provider "healthy, 0 issues" while three failed 100% of real requests; this sends a real completion to each and counts only answers |
+| `pool-prove.timer` | Weekly, Sun 04:17 | A registered provider that has gone silent, **and** a model the router can select that has never once answered. OmniRoute's own autopilot reported every provider "healthy, 0 issues" while three failed 100% of real requests; this sends a real completion to each and counts only answers. The second check reads the call log instead, because a provider passes on one working model while other names it offers are dead — acknowledged pairs live in `scripts/pool-dead-models.txt` |
 | `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Seven real calls, not presence tests; two of them assert that a *wrong* token is rejected, and one is a real admin login — the check whose absence let four scripts fail silently for two days |
 | `ntfy` | On every breach | Nothing new — it is the one guard that catches no fault. It exists because a guard nobody reads is theatre: it carries the other guards' findings to a phone |
 | `check-model-routing.sh` | After any `git subtree pull` | Whether the gateway still overrides the model you asked for, and whether the **trigger vocabulary** has drifted — eight measured phrases, four that reroute and four that do not. The classifier lives in the subtree, so this list is the only record of it this repo controls; a drift here means the decision to drop `graph_stats` needs re-deriving |
@@ -1867,6 +1867,49 @@ severity rules lived in exactly one place, behind a web UI, with no history — 
 rule worth this much scrutiny should be reviewable in a diff. `flows/` mirrors
 it; Activepieces remains the source of truth, and the step's `input` block stays
 out because it holds the bearer token and the HMAC secret.
+
+**The pool guard was green against the wrong question — fixed 2026-09-08.**
+`pool-register.sh --prove` sends one completion per **provider**, so a provider
+passes the moment any one of its models replies. Its own output says so:
+
+```
+openrouter   MENJAWAB (ling-3.0-flash-fin:free)
+```
+
+That is the *free* model. Over the same week every **paid** OpenRouter model the
+router selected failed on an account with no credit — "can only afford 6 tokens"
+— and the guard reported the provider healthy throughout, truthfully, because it
+was answering a different question than the one that mattered.
+
+`pool-prove.sh` now asks the second question too, and asks it of the call log
+rather than by sending more traffic: **which (provider, model) pairs were
+selected at least three times and never once answered.** It costs nothing and
+reflects what the router actually did, not what a probe would have done. Six
+pairs qualify today, every one of them `opencode`:
+
+```
+opencode-zen/hy3-free                     4/4   401 Model hy3-free is not supported
+opencode/hy3-free                         4/4   401 Model hy3-free is not supported
+opencode/deepseek-v4-flash-free           3/3   400 Model is unavailable
+opencode/nemotron-3-ultra-free            3/3   504 never returns a first byte
+opencode/muse-spark-1.2                   3/3   402 requires an opencode API key
+opencode/muse-spark-1.2-contributor-free  3/3   400 only "auto" is supported for tool_choice
+```
+
+None of these is an outage — the family fallback covers all of them, which is
+precisely why they needed a guard to be visible at all. They are catalogue
+drift: names the router may pick that the provider no longer serves.
+
+**Acknowledged, not suppressed.** `scripts/pool-dead-models.txt` lists each pair
+with a reason and what would remove it, so the guard is green for what is known
+and red for anything new. A guard nobody can leave green decays into a guard
+nobody reads; a guard that cannot go red for a new fault was never a guard. The
+file is the seam between those two failures.
+
+Proven both ways rather than assumed: emptied, the check names all six and exits
+`1`; restored, it exits `0`. And the alert distinguishes its two causes — a dead
+selectable model is reported as *"selectable model(s) that never answer"*, never
+as a silent provider, because the two send you to look in different places.
 
 **Republishing the flow skips a slot, and the deadman has less margin than it
 looks, 2026-09-07.** Publishing `gateway_monitor` re-registers its schedule from
