@@ -967,7 +967,13 @@ dim_E() {
     elif [ "$_gc" = "$_origin" ]; then
         chk E-4 PASS "code graph indexes origin/main" "${_gc}"
     elif [ "$_gc" = "$_head" ]; then
-        chk E-4 FAIL "code graph indexes the local HEAD, which is not origin/main" \
+        # E-4 measures the LABEL; E-5 measures the CONTENT, and they can
+        # disagree. graphify scans the working tree while BUILD_INFO records
+        # HEAD, so a graph built on a host with uncommitted files contains
+        # code its own provenance line does not describe. Observed
+        # 2026-09-08: E-4 said 18 commits behind, E-5 found a file added
+        # after that commit. Neither is wrong; reading either alone is.
+        chk E-4 FAIL "the graph provenance label is behind origin/main (E-5 checks its contents)" \
             "graph=$(printf '%s' "$_gc" | cut -c1-8) origin=$(printf '%s' "$_origin" | cut -c1-8)"
     else
         chk E-4 FAIL "code graph indexes neither HEAD nor origin/main" \
