@@ -30,7 +30,7 @@
 #   ./scripts/king-audit.sh --positive-control
 #   ./scripts/king-audit.sh --all --baseline # rewrite audit/baseline.json
 #
-# Exit: 0 all PASS, 1 any FAIL, 2 any UNKNOWN with no FAIL.
+# Exit: 0 all PASS, 1 any FAIL, 2 any UNKNOWN, 3 any planned check not implemented.
 set -eu
 
 DIMENSIONS="A B C D E F G H I J"
@@ -56,11 +56,143 @@ cd "$(dirname "$0")/.."
 REPO=$(pwd)
 BASELINE="${KING_AUDIT_BASELINE:-audit/baseline.json}"
 
+# ------------------------------------------------------------- the manifest
+#
+# Every check this audit CLAIMS to perform, declared in one place.
+#
+# This exists because the first version of this script shipped 43 of the 62
+# checks its own plan defined and reported the result as "the audit". Nothing
+# in the output said otherwise: an unimplemented check is invisible, and
+# invisible is indistinguishable from passing.
+#
+# So coverage is declared rather than inferred. Measuring it by grepping the
+# source was itself wrong -- five checks emitted through a loop variable were
+# counted as missing -- which is the same lesson one level up: a number you
+# derive by guessing at your own code is not a measurement.
+#
+# A manifest entry with no matching chk() call is reported as TODO and counted.
+# The run cannot go green while any selected dimension is incomplete.
+implemented() {
+    cat <<'IMPL'
+A-1
+A-2
+A-3
+A-4
+A-5
+A-7
+B-1
+B-2
+B-3
+B-4
+B-5
+B-6
+B-7
+B-11
+C-1
+C-3
+C-4
+C-5
+C-7
+C-8
+D-1
+D-2
+D-3
+D-4
+D-5
+D-6
+E-1
+E-3
+E-4
+F-1
+F-2
+F-6
+F-7
+G-1
+G-3
+G-4
+G-6
+H-1
+H-2
+I-3
+I-4
+J-2
+J-3
+IMPL
+}
+
+manifest() {
+    cat <<'MANIFEST'
+A-1|repo vs origin/main: commit, ahead/behind
+A-2|modified and untracked files on the host
+A-3|file modes (executable bit) in git
+A-4|omniroute/ subtree unmodified
+A-5|running image tags vs what compose pins
+A-6|local worktree vs origin
+A-7|leftover .orig/.rej merge artefacts
+B-1|every service pairs mem_limit with an equal memswap_limit, plus cpus
+B-2|every published port binds loopback, Caddy excepted
+B-3|every image pinned to an exact tag or digest
+B-4|every service opt-in via profiles:
+B-5|no hard-required variable syntax outside comments
+B-6|root compose declares no omniroute/ service
+B-7|caddy validates, and still validates with each domain variable empty
+B-8|Caddy route inventory: every route and its auth layer
+B-9|env vars: used vs defined vs documented vs actually set
+B-10|systemd units are in the repo, active, and scheduled sanely in local time
+B-11|every compose profile has a preflight check
+C-1|every secret file and its backup variants are gitignored
+C-2|no secret in git history
+C-3|no placeholder value still installed
+C-4|token to blast-radius map
+C-5|public surface inventory: every reachable path and its anonymous status
+C-6|every MCP: no token 401, wrong token 401, right token 200
+C-7|secret file permissions are not world-readable
+C-8|the agent egress allowlist is actually in force
+C-9|the rotation list matches the secrets that exist
+D-1|per container: memory, swap, restarts
+D-2|healthcheck status
+D-3|host memory against the codegraph floor, as the build will see it
+D-4|OOM events in the kernel ring buffer
+D-5|log sizes and rotation
+D-6|reclaimable build cache, idle images, orphan volumes
+E-1|every volume: size, contents, and whether anything backs it up
+E-2|external Postgres reachable, and its size
+E-3|journals exist, grow, and are readable
+E-4|code graph freshness: BUILD_INFO commit vs HEAD vs origin
+E-5|code graph correctness: it finds a file only the newest commit has
+E-6|no test rows left in production tables
+F-1|every MCP server: tools/list and one real call
+F-2|offered tools vs allowlist vs NEVER_REGISTER
+F-3|reroute status: the eight measured trigger phrases
+F-4|model_overridden in the recent run journal
+F-5|per-provider failure rate, and what reached the caller
+F-6|the local model answers, and answers from this host
+F-7|flow mirror matches the live Activepieces step
+G-1|every guard with a self-test still passes it
+G-2|every instrument measures what it claims
+G-3|timers: last run, and whether any unit failed
+G-4|deadman tolerance vs the worst legitimate gap
+G-5|an alert reaches the phone, end to end
+G-6|inventory of silenced-failure constructs in scripts/
+H-1|CI jobs: green or red, and why
+H-2|what CI does not cover
+H-3|the test suite passes in a rebuilt container
+H-4|environment-dependent tests
+I-1|measured numbers in the docs vs today's measurement
+I-2|commands in the docs actually run
+I-3|cross-referenced file paths still exist
+I-4|CLAUDE.md vs actual behaviour
+J-1|pinned versions vs latest, and known CVEs
+J-2|active upstream breakage
+J-3|image age, origin, and whether it is still published
+MANIFEST
+}
+
 # ---------------------------------------------------------------- reporting
 
-n_pass=0; n_fail=0; n_unknown=0; n_skip=0
-FINDINGS=$(mktemp); trap 'rm -f "$FINDINGS" "${METRICS:-}"' EXIT INT TERM
-METRICS=$(mktemp)
+n_pass=0; n_fail=0; n_unknown=0; n_skip=0; n_todo=0
+FINDINGS=$(mktemp); METRICS=$(mktemp); SEEN=$(mktemp)
+trap 'rm -f "$FINDINGS" "$METRICS" "$SEEN"' EXIT INT TERM
 
 c_red()   { printf '\033[31m%s\033[0m' "$*"; }
 c_green() { printf '\033[32m%s\033[0m' "$*"; }
@@ -71,6 +203,9 @@ c_dim()   { printf '\033[2m%s\033[0m' "$*"; }
 chk() {
     _id="$1"; _st="$2"; _t="$3"; shift 3
     _ev="$*"
+    # Record the base id (B-1b counts as B-1) so --coverage is exact rather
+    # than grepped out of the source, which under-counted by five.
+    printf '%s\n' "$_id" | sed 's/[a-z]$//' >> "$SEEN"
     case "$_st" in
         PASS)    n_pass=$((n_pass+1));    printf '  %s  %-5s %s\n' "$(c_green PASS)" "$_id" "$_t" ;;
         FAIL)    n_fail=$((n_fail+1));    printf '  %s  %-5s %s\n' "$(c_red FAIL)" "$_id" "$_t"
@@ -84,6 +219,18 @@ chk() {
 # metric <key> <value>  — numeric facts that belong in the baseline, so the
 # next run reports movement rather than only state.
 metric() { printf '%s\t%s\n' "$1" "$2" >> "$METRICS"; }
+
+# When a dimension cannot run at all — off-host, no interpreter — every check
+# in it must be marked skipped, not left silent. Otherwise coverage reports
+# "not implemented" for checks that exist and simply were not reachable, which
+# is the same conflation this manifest was added to remove.
+skip_rest() {
+    _dim="$1"; shift
+    manifest | grep "^$_dim-" | while IFS='|' read -r _cid _ctitle; do
+        implemented | grep -qx "$_cid" || continue
+        grep -qx "$_cid" "$SEEN" 2>/dev/null || chk "$_cid" SKIP "$_ctitle" "$*"
+    done
+}
 
 have() { command -v "$1" >/dev/null 2>&1; }
 on_host() { [ -S /var/run/docker.sock ] && have docker; }
@@ -113,7 +260,7 @@ dim_A() {
     # directory test reports "not a git checkout" and silently skips all of
     # dimension A. Caught by running this against its own repo on 2026-09-08.
     if ! git rev-parse --git-dir >/dev/null 2>&1; then
-        chk A-1 UNKNOWN "not a git checkout; source integrity unmeasurable"
+        skip_rest A "not a git checkout; source integrity unmeasurable"
         return
     fi
 
@@ -199,11 +346,11 @@ dim_B() {
     echo; echo "B  configuration correctness"
 
     if [ ! -f docker-compose.yml ]; then
-        chk B-1 UNKNOWN "no docker-compose.yml here"
+        skip_rest B "no docker-compose.yml here"
         return
     fi
     if ! pyyaml_ok; then
-        chk B-1 UNKNOWN "no working python3 with pyyaml; compose rules unparseable"
+        skip_rest B "no working python3 with pyyaml; compose rules unparseable"
         return
     fi
 
@@ -445,7 +592,7 @@ dim_C() {
 dim_D() {
     echo; echo "D  runtime health"
     if ! on_host; then
-        chk D-1 SKIP "not on the host; runtime unmeasurable"
+        skip_rest D "not on the host; runtime unmeasurable"
         return
     fi
 
@@ -544,7 +691,7 @@ dim_D() {
 dim_E() {
     echo; echo "E  data and state"
     if ! on_host; then
-        chk E-1 SKIP "not on the host; state unmeasurable"
+        skip_rest E "not on the host; state unmeasurable"
         return
     fi
 
@@ -588,11 +735,11 @@ dim_E() {
 dim_F() {
     echo; echo "F  the agentic layer"
     if ! on_host; then
-        chk F-1 SKIP "not on the host; MCP servers unreachable from here"
+        skip_rest F "not on the host; MCP servers unreachable from here"
         return
     fi
     if [ -z "$PY" ]; then
-        chk F-1 UNKNOWN "no working python3; MCP cannot be spoken to"
+        skip_rest F "no working python3; MCP cannot be spoken to"
         return
     fi
 
@@ -973,11 +1120,33 @@ for _d in $WANT; do
     esac
 done
 
+# Coverage, always reported. A check that was planned and never ran is not
+# absent from the result -- it is a TODO line, counted, and it keeps the run
+# from going green.
+echo
+echo "coverage"
+for _d in $WANT; do
+    manifest | grep "^$_d-" | while IFS='|' read -r _cid _ctitle; do
+        if ! implemented | grep -qx "$_cid"; then
+            printf '  %s  %-5s %s\n' "$(c_yell TODO)" "$_cid" "$_ctitle"
+        fi
+    done
+done > "$SEEN.todo"
+n_todo=$(grep -c . "$SEEN.todo" 2>/dev/null || true); n_todo=${n_todo:-0}
+if [ "$n_todo" -eq 0 ]; then
+    _planned=$(manifest | grep -c "^\($(echo "$WANT" | tr ' ' '|' | sed 's/^|//;s/|$//')\)-" || true)
+    printf '  %s every planned check in the selected dimension(s) ran\n' "$(c_green 'OK  ')"
+else
+    cat "$SEEN.todo"
+fi
+rm -f "$SEEN.todo"
+
 echo
 printf '  %s pass, ' "$(c_green "$n_pass")"
 printf '%s fail, ' "$(c_red "$n_fail")"
 printf '%s unknown, ' "$(c_yell "$n_unknown")"
-printf '%s skipped\n' "$n_skip"
+printf '%s skipped, ' "$n_skip"
+printf '%s not implemented\n' "$(c_yell "$n_todo")"
 
 if [ "$WRITE_BASELINE" = "1" ] && [ -n "$PY" ]; then
     mkdir -p "$(dirname "$BASELINE")"
@@ -993,5 +1162,8 @@ io.open(sys.argv[2],'a',encoding='utf-8').write('\n')
 fi
 
 [ "$n_fail" -gt 0 ] && exit 1
+# An incomplete audit is not a passing audit. This is the whole reason the
+# manifest exists.
+[ "$n_todo" -gt 0 ] && exit 3
 [ "$n_unknown" -gt 0 ] && exit 2
 exit 0
