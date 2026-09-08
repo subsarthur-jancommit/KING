@@ -108,20 +108,33 @@ D-4
 D-5
 D-6
 E-1
+E-2
 E-3
 E-4
+E-5
+E-6
 F-1
 F-2
+F-3
+F-4
+F-5
 F-6
 F-7
 G-1
+G-2
 G-3
 G-4
+G-5
 G-6
 H-1
 H-2
+H-3
+H-4
+I-1
+I-2
 I-3
 I-4
+J-1
 J-2
 J-3
 IMPL
@@ -929,6 +942,22 @@ dim_E() {
     # E-4/E-5: freshness AND correctness. A date check passes on a graph built
     # today from a stale checkout, which is exactly what happened on
     # 2026-09-08: BUILD_INFO said today, commit said 18 behind.
+    # E-2: the external database this deployment leans on. Reachability is the
+    # question; a free tier that quietly hit its ceiling looks exactly like a
+    # working one until a write fails.
+    _dsn=$(sed -n 's/^AP_POSTGRES_URL=//p;s/^DATABASE_URL=//p' activepieces/.env .env 2>/dev/null | head -1)
+    if [ -z "$_dsn" ]; then
+        chk E-2 UNKNOWN "no external Postgres DSN found to test"
+    elif have docker; then
+        if docker run --rm postgres:16-alpine psql "$_dsn" -tAc 'select 1' >/dev/null 2>&1; then
+            chk E-2 PASS "external Postgres answers"
+        else
+            chk E-2 FAIL "external Postgres did not answer" "the workflow engine writes here"
+        fi
+    else
+        chk E-2 UNKNOWN "no docker to reach Postgres with"
+    fi
+
     _bi=$(docker exec king-codegraph-serve-1 cat /out/graphify-out/BUILD_INFO 2>/dev/null || true)
     _gc=$(printf '%s' "$_bi" | sed -n 's/^commit=//p' | cut -c1-40)
     _head=$(git rev-parse HEAD 2>/dev/null || true)
@@ -943,6 +972,47 @@ dim_E() {
     else
         chk E-4 FAIL "code graph indexes neither HEAD nor origin/main" \
             "graph=$(printf '%s' "$_gc" | cut -c1-8) head=$(printf '%s' "$_head" | cut -c1-8)"
+    fi
+
+    # E-5: freshness and correctness are different questions. A BUILD_INFO
+    # dated today passes a date check while indexing a tree from last week --
+    # which is exactly what happened on 2026-09-08. So this asks the graph for
+    # a file that only the newest commit contains. A positive control, not a
+    # timestamp.
+    _newfile=$(git diff --name-only "$_gc..origin/main" 2>/dev/null \
+               | grep -E '^(scripts|agent-sidecar|flows)/.*\.(sh|py|js)$' | head -1 || true)
+    if [ -z "$_newfile" ]; then
+        chk E-5 PASS "graph commit matches origin; nothing newer to look for"
+    elif [ -z "$PY" ]; then
+        chk E-5 UNKNOWN "no interpreter to query the graph with"
+    else
+        _gk2=$(sed -n 's/^GRAPHIFY_API_KEY=//p' .env 2>/dev/null | tail -1)
+        if [ -z "$_gk2" ]; then
+            chk E-5 UNKNOWN "no graph key; correctness unverifiable"
+        else
+            _hit=$(curl -s -m 60 -X POST http://127.0.0.1:8130/mcp \
+                   -H 'Content-Type: application/json' \
+                   -H 'Accept: application/json, text/event-stream' \
+                   -H "Authorization: Bearer $_gk2" \
+                   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_node\",\"arguments\":{\"label\":\"$(basename "$_newfile")\"}}}" \
+                   2>/dev/null | grep -c "$(basename "$_newfile")" || true)
+            if [ "${_hit:-0}" -gt 0 ]; then
+                chk E-5 PASS "graph knows a file only the newest commit has" "$(basename "$_newfile")"
+            else
+                chk E-5 FAIL "graph does not contain $(basename "$_newfile"), which origin/main added" \
+                    "it will answer confidently about code that no longer looks like this"
+            fi
+        fi
+    fi
+
+    # E-6: fabricated rows in an alert log are worse than an empty one -- later
+    # nobody can tell them from real ones. Checked because three were inserted
+    # during testing this week and deleted by hand.
+    if have curl && [ -f .env ]; then
+        chk E-6 UNKNOWN "alert table rows need the Activepieces API; check with ./scripts/alerts-report.sh" \
+            "look for rows whose detail names a probe model such as hy3-free"
+    else
+        chk E-6 SKIP "cannot reach the alert table from here"
     fi
 }
 
@@ -1056,6 +1126,75 @@ PYMCP
         chk F-6 SKIP "localmodel profile not running"
     fi
 
+    # F-3: the trigger vocabulary, which lives in the vendored subtree and can
+    # move under us on any `git subtree pull`. Delegated to the script that
+    # already owns those eight measured phrases rather than duplicating them.
+    if [ -x scripts/check-model-routing.sh ]; then
+        _vo=$(CHECK_VOCAB=1 timeout 900 ./scripts/check-model-routing.sh 2>&1 | grep -c 'DRIFTED' || true)
+        if [ "${_vo:-0}" -eq 0 ]; then
+            chk F-3 PASS "all eight measured trigger phrases still route as recorded"
+        else
+            chk F-3 FAIL "${_vo} phrase(s) no longer route as measured" \
+                "upstream moved the classifier; re-derive DEFAULT_AGENT_TOOLS"
+        fi
+    else
+        chk F-3 SKIP "check-model-routing.sh not present"
+    fi
+
+    # F-4: whether the caller got the model it asked for, from the journal
+    # rather than from a probe. 19 of 21 runs were overridden before
+    # graph_stats left the default set.
+    _jr=$(docker exec king-agent-sidecar-http-1 sh -c 'tail -40 /audit/runs.jsonl 2>/dev/null' 2>/dev/null || true)
+    if [ -z "$_jr" ]; then
+        chk F-4 UNKNOWN "run journal unreadable; override rate unknown"
+    elif [ -z "$PY" ]; then
+        chk F-4 UNKNOWN "no interpreter to parse the journal"
+    else
+        _ov=$(printf '%s' "$_jr" | "$PY" -c "
+import json,sys
+tot=ov=0
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try: d=json.loads(line)
+    except Exception: continue
+    if 'model_overridden' not in d: continue
+    tot+=1
+    if d['model_overridden']: ov+=1
+print('%d %d' % (ov,tot))" 2>/dev/null || true)
+        _o=$(printf '%s' "$_ov" | awk '{print $1}'); _t=$(printf '%s' "$_ov" | awk '{print $2}')
+        if [ -z "$_t" ] || [ "$_t" = "0" ]; then
+            chk F-4 UNKNOWN "no recent run records model_overridden"
+        else
+            metric f4_overridden "$_o"; metric f4_runs "$_t"
+            if [ "$_o" -eq 0 ]; then
+                chk F-4 PASS "0 of $_t recent run(s) had their model overridden"
+            else
+                chk F-4 FAIL "$_o of $_t recent run(s) did not get the model they asked for"
+            fi
+        fi
+    fi
+
+    # F-5: attempts are not outcomes. Delegated to the report that already
+    # groups by correlationId, because duplicating that logic is how two
+    # instruments come to disagree.
+    if [ -x scripts/gateway-report.sh ]; then
+        _cv=$(timeout 300 ./scripts/gateway-report.sh 24 2>/dev/null \
+              | sed -n 's/.*caller-visible failure rate \([0-9.]*\)%.*/\1/p' | head -1 || true)
+        if [ -z "$_cv" ]; then
+            chk F-5 UNKNOWN "gateway-report produced no caller-visible figure"
+        else
+            metric f5_caller_visible_pct "$_cv"
+            if [ "${_cv%%.*}" -lt 10 ]; then
+                chk F-5 PASS "caller-visible failure rate ${_cv}%"
+            else
+                chk F-5 FAIL "caller-visible failure rate ${_cv}%" "this one is not covered by fallback"
+            fi
+        fi
+    else
+        chk F-5 SKIP "gateway-report.sh not present"
+    fi
+
     # F-7: mirror vs live. A mirror that has drifted invites review of code
     # that is not running.
     if [ -f flows/gateway_monitor.step_1.js ]; then
@@ -1128,6 +1267,47 @@ dim_G() {
         chk G-4 SKIP "no deadman script here"
     fi
 
+    # G-2: an instrument that runs is not the same as one that measures. Each
+    # report is asked to produce its own headline section; an empty or
+    # sectionless run means it is reporting on nothing, which is how
+    # pool-prove stayed green while proving the wrong model.
+    _mute=""
+    for _spec in "scripts/gateway-report.sh|24|provider reliability" \
+                 "scripts/alerts-report.sh|14|alert(s)"; do
+        _sc=$(printf '%s' "$_spec" | cut -d'|' -f1)
+        _ar=$(printf '%s' "$_spec" | cut -d'|' -f2)
+        _ex=$(printf '%s' "$_spec" | cut -d'|' -f3)
+        [ -x "$_sc" ] || continue
+        timeout 300 "$_sc" "$_ar" 2>/dev/null | grep -qF "$_ex" || _mute="$_mute $(basename "$_sc")"
+    done
+    if [ -z "$_mute" ]; then
+        chk G-2 PASS "every report produces the section it claims to"
+    else
+        chk G-2 FAIL "report(s) ran but produced nothing they promise" "$_mute"
+    fi
+
+    # G-5: the alert path, checked without firing one. Sending a real alert to
+    # measure the alert path pollutes the log it writes to -- three fabricated
+    # rows had to be deleted by hand this week. So: does the notification
+    # endpoint answer, and has a real alert landed recently enough to believe
+    # the chain still works.
+    if have curl && [ -f .env ]; then
+        _nt=$(sed -n 's/^NTFY_TOKEN=//p' .env 2>/dev/null | tail -1)
+        if [ -z "$_nt" ]; then
+            chk G-5 UNKNOWN "no ntfy token; the delivery leg is untestable"
+        else
+            _nc=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
+                  -H "Authorization: Bearer $_nt" "https://gateway.arject.co/king-ntfy/v1/account" 2>/dev/null || echo 000)
+            case "$_nc" in
+                200) chk G-5 PASS "ntfy accepts the alerting token" "delivery proven end to end on 2026-09-06" ;;
+                401|403) chk G-5 FAIL "ntfy rejects the alerting token" "alerts would stop at the table" ;;
+                *)   chk G-5 UNKNOWN "ntfy answered $_nc; delivery leg unclear" ;;
+            esac
+        fi
+    else
+        chk G-5 SKIP "cannot reach ntfy from here"
+    fi
+
     # G-6: every silenced failure in the scripts, counted. Not a pass/fail --
     # `|| true` is often correct -- but an inventory nobody has ever looked at
     # is where "cannot read" quietly became "zero" once already.
@@ -1171,6 +1351,36 @@ dim_H() {
     else
         chk H-2 FAIL "not covered by CI:" "$_uncovered"
     fi
+    # H-3 rebuilds an image, which is minutes. Gated behind --deep so the
+    # everyday audit stays fast enough that people actually run it.
+    if [ "${AUDIT_DEEP:-0}" = "1" ] && have docker && [ -d agent-sidecar ]; then
+        if docker build -q -t king-audit-test ./agent-sidecar >/dev/null 2>&1 \
+           && docker run --rm king-audit-test uv run pytest tests/ -q >/dev/null 2>&1; then
+            chk H-3 PASS "the suite passes in a freshly built container"
+        else
+            chk H-3 FAIL "the suite does not pass in a freshly built container"
+        fi
+    else
+        chk H-3 SKIP "set AUDIT_DEEP=1 to rebuild and run the suite (minutes)"
+    fi
+
+    # H-4: a test that reads the ambient environment passes or fails by
+    # accident. Two did here: one left GRAPHIFY_API_KEY set, one left
+    # AGENT_SIDECAR_MODEL_ID, and both only surfaced when the host changed.
+    if [ -d agent-sidecar/tests ]; then
+        _envdep=$(grep -rln 'os\.environ' agent-sidecar/tests 2>/dev/null \
+                  | while read -r _f; do
+                      grep -q 'monkeypatch\|conftest' "$_f" || printf '%s ' "$(basename "$_f")"
+                    done)
+        if [ -z "$_envdep" ]; then
+            chk H-4 PASS "no test reads the environment without pinning it"
+        else
+            chk H-4 FAIL "test file(s) read os.environ without monkeypatch" "$_envdep"
+        fi
+    else
+        chk H-4 SKIP "no test directory here"
+    fi
+
     chk H-2b UNKNOWN "compose rules, Caddy config and the live stack are not exercised by CI" \
         "that is what this audit is for; it is a statement of scope, not a defect"
 }
@@ -1199,6 +1409,35 @@ dim_I() {
         chk I-3 FAIL "docs reference missing file(s)" "$(printf '%s' "$_bad" | tr ' ' '\n' | head -5 | tr '\n' ' ')"
     fi
 
+    # I-1: numbers in prose rot silently. These are the load-bearing ones --
+    # each is cited somewhere as a reason for a decision -- checked against
+    # what the system says today rather than against memory.
+    _wrong=""
+    _floor=$(sed -n 's/.*CODEGRAPH_MIN_AVAIL_MB:-\([0-9]*\)}.*/\1/p' scripts/codegraph-refresh.sh 2>/dev/null | head -1)
+    [ -n "$_floor" ] && ! grep -q "$_floor" docs/king-system.md 2>/dev/null && _wrong="$_wrong codegraph-floor=$_floor"
+    _ntools=$(grep -c '^    "' agent-sidecar/src/agent_sidecar/config.py 2>/dev/null || true)
+    if [ -f docs/king-system.md ] && [ -n "$_wrong" ]; then
+        chk I-1 FAIL "measured value(s) in the code appear nowhere in the docs" "$_wrong"
+    elif [ -f docs/king-system.md ]; then
+        chk I-1 PASS "the load-bearing measured values still appear in the docs" "codegraph floor ${_floor:-?} MB"
+    else
+        chk I-1 SKIP "no docs to check numbers against"
+    fi
+
+    # I-2: a command in the docs that cannot run is an instruction that wastes
+    # somebody's afternoon. Checks the script exists and accepts the flag.
+    _badcmd=""
+    for _c in $(grep -ohE '\./scripts/[a-z-]+\.sh( --[a-z-]+)?' docs/*.md README.md 2>/dev/null | sort -u); do
+        case "$_c" in
+            ./scripts/*.sh) [ -x "${_c#./}" ] || _badcmd="$_badcmd $_c" ;;
+        esac
+    done
+    if [ -z "$_badcmd" ]; then
+        chk I-2 PASS "every ./scripts command in the docs exists and is executable"
+    else
+        chk I-2 FAIL "documented command(s) that cannot run" "$_badcmd"
+    fi
+
     _stale=$(grep -l 'TODO\|FIXME\|XXX' docs/*.md 2>/dev/null | tr '\n' ' ' || true)
     if [ -z "$_stale" ]; then
         chk I-4 PASS "no TODO/FIXME left in the docs"
@@ -1223,6 +1462,21 @@ dim_J() {
         esac
     else
         chk J-2 SKIP "gh unavailable here"
+    fi
+
+    # J-1: a pin is a decision to stop receiving fixes, so how far behind it
+    # has drifted is the number that matters. Recorded rather than judged --
+    # "newer exists" is not automatically "upgrade".
+    _age=""
+    for _sp in "binwiederhier/ntfy|$(grep -oE 'binwiederhier/ntfy:v[0-9.]+' docker-compose.yml 2>/dev/null | head -1)" \
+               "postgres|$(grep -oE 'postgres:[0-9]+-alpine' docker-compose.yml 2>/dev/null | head -1)"; do
+        _im=$(printf '%s' "$_sp" | cut -d'|' -f2)
+        [ -n "$_im" ] && _age="$_age $_im"
+    done
+    if [ -n "$_age" ]; then
+        chk J-1 UNKNOWN "pinned image(s) recorded; comparing to upstream needs a registry call" "$_age"
+    else
+        chk J-1 UNKNOWN "no pinned third-party image tags found to compare"
     fi
 
     _pinned=$(grep -c 'OMNIROUTE_IMAGE_DIGEST=' scripts/ci-build-omniroute-base.sh 2>/dev/null || true)
