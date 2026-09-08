@@ -203,6 +203,35 @@ async def run(request: Request) -> JSONResponse:
             )
         settings = replace(settings, max_steps=min(max_steps, settings.max_steps))
 
+    # Per-call toolset, for the same reason `model` is per-call: otherwise the
+    # only way to change it is restarting the container.
+    #
+    # It earns its place because the default deliberately excludes one tool.
+    # `graph_stats` flips the gateway's intent classifier to `strategy=auto`
+    # and costs the caller the model they asked for (see DEFAULT_AGENT_TOOLS in
+    # config.py for the measurement), so it is out of the default — but a task
+    # that genuinely needs graph freshness and does not care which model answers
+    # should not need a redeploy to get it.
+    #
+    # `NEVER_REGISTER` is enforced downstream in `select_agent_tools`, not here,
+    # so a caller asking for `vps_exec` gets a toolset without it rather than a
+    # shell. That boundary must not depend on this validation being complete.
+    tools = payload.get("tools")
+    if tools is not None:
+        if not isinstance(tools, list) or not all(
+            isinstance(t, str) and t.strip() for t in tools
+        ):
+            return JSONResponse(
+                {
+                    "error": "'tools' must be a list of non-empty strings when given; "
+                    "use [] for no tools"
+                },
+                status_code=400,
+            )
+        settings = replace(
+            settings, agent_tools=tuple(t.strip() for t in tools)
+        )
+
     # Taken here, after validation, so a malformed request never occupies a
     # slot — and released in `finally` so a crashing run does not leak one.
     if not RUN_SLOTS.try_acquire():

@@ -503,43 +503,48 @@ boot, and four of these scripts were silently unable to log in for two days
 after the admin password was changed. See entry 24 in
 [`docs/king-mistakes.md`](docs/king-mistakes.md).
 
-## Two agent configurations, and how to choose
+## The agent's toolset, and what it costs to widen
 
-The gateway reroutes requests whose prompt looks like an agent's, so the sidecar
-normally does not get the model it asks for. Measured on 2026-09-06, that is
-avoidable — at a price. Both of these are defensible; the default is the first.
+The gateway runs an intent classifier over the prompt and reroutes what it
+judges to be summarising or coding work, so the sidecar used to get the model it
+asked for on 2 of 21 runs. Narrowed on 2026-09-08 to a single tool, and a single
+word inside that tool's description.
 
-**Default: keep the code graph, accept the reroute.**
-
-```
-AGENT_SIDECAR_AGENT_TOOLS   unset, or the full eleven
-```
-
-Eleven tools including `get_neighbors`, `get_node`, `query_graph` and
-`graph_stats`. Every run is served by whatever `auto/*` picks — measured 141 of
-204 calls over 24 hours. Answers arrive in ~10 s. `model_overridden` is true on
-essentially every run, and `served_by` tells you what actually answered.
-
-**Alternative: hold the model you asked for, lose the graph.**
+**Default: ten tools, and you get the model you asked for.**
 
 ```
-AGENT_SIDECAR_AGENT_TOOLS=omniroute_web_search,omniroute_web_fetch,omniroute_x_search,omniroute_list_models_catalog,omniroute_get_health,omniroute_memory_search,omniroute_memory_add
+AGENT_SIDECAR_AGENT_TOOLS   unset
 ```
 
-Seven tools. The code-graph descriptions are what trip the router — along with
-smolagents' `python_interpreter` example, which the sidecar already retargets —
-so without them the request is honoured:
+`graph_stats` is the one tool left out. Its description — the server's own
+wording — is *"Return summary statistics: ..."*, and `summary` is a word the
+classifier fires on. Everything else about it is fine, and it is the shortest of
+the four graph descriptions, so this is not about prompt size: **11 minus
+graph_stats is 2,005 characters and routes cleanly; 7 plus graph_stats is 1,640
+and does not.**
+
+The A/B control, same task and same requested model, run from the caller side:
 
 ```
-asked for   ollama/qwen2.5:1.5b-instruct-q4_K_M
-served_by   qwen2.5:1.5b-instruct-q4_K_M
-step_errors []
+10 tools              served_by big-pickle             overridden False
+10 tools + graph_stats served_by gemini-3.7-flash-high  overridden True
 ```
 
-This is the configuration to use when work genuinely must not leave the host,
-and it is the only one where that is a guarantee rather than a hope. It costs
-the code graph, and on this hardware ~241 s against ~10 s, because a 1.5B model
-on two vCPUs is doing the work instead of Gemini.
+**To get `graph_stats` anyway**, ask for it per call — `/run` takes a `tools`
+list the same way it takes `model`, so this needs no redeploy:
+
+```json
+{"task": "...", "tools": ["get_node", "query_graph", "graph_stats"]}
+```
+
+You are trading the model you asked for to get it. That is now a per-request
+decision instead of a container-wide one.
+
+**What this does not fix.** The trigger is vocabulary, not tools. A task phrased
+*"summarize the release notes"* reroutes with no tools at all, and so does
+*"fix this bug in my code"*, while *"shorten"* and *"condense"* do not. No
+toolset change reaches that, because there the words are the task. See
+[`docs/king-system.md`](docs/king-system.md) §4 for the full bisection.
 
 Neither is set-and-forget: `./scripts/gateway-report.sh` shows which one you are
 actually getting, and `served_by` on any single run shows it per call.

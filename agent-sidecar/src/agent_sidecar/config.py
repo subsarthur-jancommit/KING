@@ -122,18 +122,50 @@ DEFAULT_AGENT_TOOLS: tuple[str, ...] = (
     "omniroute_get_health",
     "omniroute_memory_search",
     "omniroute_memory_add",
-    # From the code graph, a second MCP server. Four of its ten, all read-only,
+    # From the code graph, a second MCP server. Three of its ten, all read-only,
     # chosen because they answer the questions that otherwise cost Claude a lot
-    # of context: what calls this, what is this, what is near it, and is the
-    # graph fresh enough to believe.
+    # of context: what calls this, what is this, and what is near it.
     #
     # Names taken from the server's own tools/list rather than the docs — the
     # last time a tool name was assumed here it cost a rebuild and a redeploy.
     "get_neighbors",
     "get_node",
     "query_graph",
-    "graph_stats",
 )
+
+# `graph_stats` is deliberately absent, and the reason is not about the tool.
+#
+# Measured 2026-09-07 against the gateway's own `x-omniroute-decision` header,
+# 3/3 repeats per case: adding this one tool to the other ten flips the gateway
+# from `strategy=single` to `strategy=auto`, and removing it from all eleven
+# flips it back. It is not prompt length — "11 minus graph_stats" is 2,005
+# characters and stays clean, while "7 + graph_stats" is 1,640 and reroutes.
+#
+# The carrier is one word in the server's own description, "Return summary
+# statistics: ...". Substituting the text and re-probing:
+#
+#     "Return a summary."                REROUTED
+#     "Summarize the graph."             REROUTED
+#     "Return statistics."               clean
+#     "Return counts."                   clean
+#     "Return graph size and freshness." clean
+#
+# So the gateway is classifying INTENT from vocabulary, and "summary" is one of
+# the words it classifies on. Confirmed with no tools and no system prompt at
+# all: a bare "Summarize this: the cat sat on the mat." is rerouted while
+# "Shorten this: ..." and "Condense this: ..." are not. See docs/king-system.md
+# §4 — this supersedes the earlier reading that tool descriptions were somehow
+# special. They were only one carrier.
+#
+# Dropping it costs the sidecar agent its "is the graph stale?" check and buys
+# back the model the caller asked for on every non-coding, non-summary task —
+# measured at 19 of 21 runs overridden with it, 0 of 2 without. Claude Code is
+# unaffected: it holds its own direct MCP connection to codegraph with all ten
+# tools (see CLAUDE.md), so this narrows one agent's toolbox, not Claude's.
+#
+# Re-add it deliberately with AGENT_SIDECAR_AGENT_TOOLS when a task genuinely
+# needs graph freshness and the reroute does not matter.
+REROUTE_TRIGGER_TOOLS: tuple[str, ...] = ("graph_stats",)
 
 
 # Mirrors smolagents.CodeAgent's own Literal for executor_type (verified

@@ -262,6 +262,83 @@ the operator's call, not a default, and the honest position is that both
 configurations are defensible: keep the graph and accept the reroute, or hold
 the guarantee and lose the graph. What changed is that it is now a choice.
 
+### It was never about tools. It is one word — 2026-09-08
+
+The bisection above is correct and stops one level too early. Region `111-135`
+is four tool descriptions, and the sentence *"the capability and the trigger are
+partly the same text"* assumed all four carried it. They do not.
+
+Bisecting inside the region, 3 repeats per case, reading
+`x-omniroute-decision` directly:
+
+```
+7 omniroute tools only        single
+7 + get_neighbors             single
+7 + get_node                  single
+7 + query_graph               single
+7 + graph_stats               AUTO   <--
+all 11                        AUTO
+11 minus graph_stats          single
+```
+
+**And it is not prompt length.** `11 minus graph_stats` is 2,005 characters and
+stays clean; `7 + graph_stats` is 1,640 and reroutes. The shortest of the four
+descriptions is the one that does it.
+
+Substituting the text of that one description narrows it to a word:
+
+```
+"Return summary statistics: ..."   AUTO     (the server's own wording)
+"Return a summary."                AUTO
+"Summarize the graph."             AUTO
+"Return statistics."               single
+"Return counts."                   single
+"Return graph size and freshness." single
+```
+
+So the gateway is running an **intent classifier over vocabulary**, and
+`summary`/`summarize` is one of the words it fires on. Confirmed with no tools
+and no system prompt at all — a bare user message, nothing else:
+
+```
+"Summarize this: the cat sat on the mat."      AUTO
+"Give me a summary of: the cat sat on the mat." AUTO
+"Shorten this: the cat sat on the mat."        single
+"Condense this: the cat sat on the mat."       single
+"Translate to French: the cat sat."            single
+"Write a python function to add two numbers."  AUTO
+"Fix this bug in my code."                     AUTO
+"What is the capital of France?"               single
+```
+
+That reframes the whole problem. Tool descriptions were never special; they were
+one carrier of trigger words. **Any** task phrased as summarising or coding gets
+its model overridden, and no toolset change can prevent that — the words are the
+task.
+
+**What was changed, and what it bought.** `graph_stats` is out of
+`DEFAULT_AGENT_TOOLS`; the other three graph tools stay. The A/B control, run
+from the caller side in production on the same task and the same requested
+model:
+
+```
+10 tools (new default)      served_by big-pickle             overridden False
+10 tools + graph_stats      served_by gemini-3.7-flash-high  overridden True
+```
+
+Four consecutive runs on the new default: `overridden False`, `degraded False`,
+against **19 of 21 overridden** on the old one. The trade the section above
+called "four tools for the guarantee" turns out to cost **one**, and the two
+positions it described as equally defensible are not — keeping `graph_stats` in
+the default was paying four tools' worth of price for one tool's problem.
+
+**What it does not fix.** A task that says "summarize" still reroutes, tools or
+no tools. `graph_stats` is also genuinely useful, so it stays available: `/run`
+now takes a per-call `tools` list, the same way it already takes `model`, and a
+caller who wants graph freshness more than model choice asks for it explicitly.
+Claude Code is unaffected either way — it holds its own direct MCP connection to
+codegraph with all ten tools.
+
 ### What the reroute lands on is less reliable than what it leaves
 
 Measured 2026-09-05 from `/api/usage/call-logs`, 500 completed calls spanning
@@ -884,7 +961,9 @@ curl -s -X POST http://127.0.0.1:8100/run \
 
 `tools` is what the agent was **handed**; `tools_used` is what it actually
 reached for. Those are different questions and only the second says whether
-eleven tool descriptions earn the context they cost on every single call.
+ten tool descriptions earn the context they cost on every single call.
+`graph_stats` was the eleventh until 2026-09-08; see 4 for why one word in
+its description was costing every run the model it asked for.
 Measured live: a code-graph question returns `["graph_stats"]`, and "what is 6
 times 7" returns `[]` — an empty list is a real answer, not a missing one.
 
@@ -978,7 +1057,7 @@ than inferred.
 |---|---|---|---|
 | `AGENT_SIDECAR_EXECUTOR` | `local` | root `.env` | Where a `CodeAgent` runs its Python. `local` is in-process; `e2b`/`modal` are off-host |
 | `AGENT_SIDECAR_AUTHORIZED_IMPORTS` | empty | root `.env` | **Means two opposite things.** Under `local` it restricts imports and is the whole boundary; under `e2b`/`modal` smolagents pip-installs it and restricts nothing |
-| `AGENT_SIDECAR_AGENT_TOOLS` | the seven | root `.env` | Tool allowlist by exact name. `none` for no tools |
+| `AGENT_SIDECAR_AGENT_TOOLS` | the ten | root `.env` | Tool allowlist by exact name. `none` for no tools. `/run` also takes a per-call `tools` list |
 | `AGENT_SIDECAR_MAX_STEPS` | `8` | root `.env` | Iteration ceiling. A caller may lower it per request, never raise it |
 | `AGENT_SIDECAR_MAX_TOKENS` | `250000` | root `.env` | Cost backstop. `0` disables |
 | `AGENT_SIDECAR_MAX_CONCURRENT` | `2` | root `.env` | Runs at once before `429`. `0` disables |
@@ -1972,7 +2051,7 @@ is worse than one that stops.
 | **OmniRoute admin password was reset** | Done 2026-09-04 | The old one was lost — `POST /api/auth/login` rejected both the 24-character `INITIAL_PASSWORD` in `omniroute/.env` and a value the operator supplied, and no OIDC is configured. Recovered through OmniRoute's own mechanism: the hash lives in `key_value`/`settings`/`password`, and `ensurePersistentManagementPasswordHash` re-hashes a non-bcrypt value there on next login, so writing a plaintext password into that row restores access with no restart. Database backed up first to `db_backups/manual_20260904T153154Z_*`. The new password is with the operator and is first on the rotation list |
 | Agent tools | **Live 2026-09-04** | `agent_tools_active: true`. Acceptance run: asked for the Caddy 2.11.4 release date, the agent searched and answered in 2 steps with no step errors and `degraded: false` |
 | **Key model restrictions are not a boundary** | Found 2026-09-05 | A key allowing only `ollama/…` was served `oc/big-pickle` when the prompt tripped the content reroute — a model it is explicitly forbidden from using, with no 403. The scoping in §8 is cost control, not a security boundary. Not fixable here — the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` on the VPS says whether it still reproduces, and exits non-zero while it does; run it after any `git subtree pull` |
-| **Local-only work can leave the host — now avoidable** | Found 2026-09-05, mitigated 2026-09-06 | A request naming `ollama/...` is served elsewhere when the prompt trips the gateway's content-based reroute — for the sidecar's own prompt that destination is `gemini-3.7-flash-high`, i.e. Google, measured 3 of 3 on 2026-09-05. **A configuration exists that holds the guarantee**: retarget the prompt's `python_interpreter` example (done in `smol_runner.py`) and drop the four code-graph tools from `AGENT_SIDECAR_AGENT_TOOLS`. Measured: asked `ollama/…`, served `qwen2.5:1.5b-instruct-q4_K_M`, no egress step error. It costs the graph tools and 241 s against ~10 s. Not the default — see §4. Without it the confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
+| **Local-only work can leave the host — now avoidable** | Found 2026-09-05, mitigated 2026-09-06 | A request naming `ollama/...` is served elsewhere when the prompt trips the gateway's content-based reroute — for the sidecar's own prompt that destination is `gemini-3.7-flash-high`, i.e. Google, measured 3 of 3 on 2026-09-05. **A configuration exists that holds the guarantee**: retarget the prompt's `python_interpreter` example (done in `smol_runner.py`) and drop `graph_stats` — narrowed 2026-09-08 from four graph tools to that one, which is now out of the default; the other three cost nothing. Measured: asked `ollama/…`, served `qwen2.5:1.5b-instruct-q4_K_M`, no egress step error. It costs the graph tools and 241 s against ~10 s. Not the default — see §4. Without it the confidentiality use case is conditional, not guaranteed — check `served_by` or `x-omniroute-provider`. Not fixable here: the routing lives in the vendored subtree. `./scripts/check-model-routing.sh` is the detector — it asks for the local model twice, once with an agent-shaped prompt, and prints which provider answered each. Still reproducing as of 2026-09-05 |
 | **`agy` needs its fallbacks most often** | Measured 2026-09-05, qualified 2026-09-06 | Over 500 calls since 2026-08-30 every 502 belongs to antigravity — `claude-opus-4-6-thinking-high` 20% of *attempts*, `gemini-3.7-flash-high` 21%, against `opencode/big-pickle` at 0 of 102. These are attempts, not outcomes: the gateway falls back within the model family on empty content, and the OpenAI SDK retries any 5xx twice on top, which is why eight consecutive sidecar runs succeeded against the 21% model. The cost is quality and latency, not visible failure. §4 has the table and all three caveats |
 | **`blockedProviders` cannot shape the reroute** | Checked 2026-09-06 | Worth writing down because it looks like it should. The reroute lands wherever `auto/*` chooses, and `blockedProviders` filters that candidate pool — so blocking `antigravity` looks like a way to stop rerouted work reaching Google. It is not: the list is consumed only by `getNoAuthCandidates`, which iterates `NOAUTH_PROVIDERS`, and `antigravity` is OAuth-registered rather than no-auth. There is no equivalent filter for authenticated providers. The reroute remains unfixable from here, and this is the third plausible mitigation to fail on inspection |
 | **The local router is not local** | Found 2026-09-06 | `local-router.sh` asks for `ollama/qwen2.5:1.5b-instruct-q4_K_M` and is served by `antigravity/gemini-pro-agent` — four runs, four matching call-log rows. Both premises of the design are gone: it is not free at the margin, and the task description leaves the machine. Latency went from ~0.95 s to 7.3–10.2 s. It still labels correctly, which is why it went unnoticed. Retired from the live path already, so nothing depends on it — but the same fault reaches anything that assumes naming a local model keeps work local |
