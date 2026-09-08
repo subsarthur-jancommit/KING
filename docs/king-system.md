@@ -1631,7 +1631,7 @@ reporting healthy. Each guard below exists because of a specific one.
 | `pool-prove.timer` | Weekly, Sun 04:17 | A registered provider that has gone silent. OmniRoute's own autopilot reported every provider "healthy, 0 issues" while three failed 100% of real requests; this sends a real completion to each and counts only answers |
 | `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Seven real calls, not presence tests; two of them assert that a *wrong* token is rejected, and one is a real admin login — the check whose absence let four scripts fail silently for two days |
 | `ntfy` | On every breach | Nothing new — it is the one guard that catches no fault. It exists because a guard nobody reads is theatre: it carries the other guards' findings to a phone |
-| `check-model-routing.sh` | After any `git subtree pull` | Whether the gateway still overrides the model you asked for. Exits non-zero while it does |
+| `check-model-routing.sh` | After any `git subtree pull` | Whether the gateway still overrides the model you asked for, and whether the **trigger vocabulary** has drifted — eight measured phrases, four that reroute and four that do not. The classifier lives in the subtree, so this list is the only record of it this repo controls; a drift here means the decision to drop `graph_stats` needs re-deriving |
 
 ### The alarm that now reaches somewhere — wired 2026-09-06
 

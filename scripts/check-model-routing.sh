@@ -92,6 +92,70 @@ if [ -n "$tok" ]; then
     fi
 fi
 
+# Has the trigger VOCABULARY drifted?
+#
+# Measured 2026-09-08 by bisecting a tool description down to a single word: the
+# gateway is not reacting to prompts that "look agent-shaped", it is running an
+# intent classifier over vocabulary. A bare user message is enough — no tools,
+# no system prompt:
+#
+#     "Summarize this: ..."      rerouted      "Shorten this: ..."   honoured
+#     "Write a python function"  rerouted      "Translate to French" honoured
+#
+# That is why `graph_stats` is out of the agent default: its description says
+# "Return summary statistics", and that one word cost every run the model it
+# asked for. See docs/king-system.md 4.
+#
+# The classifier lives in the vendored subtree, so this list is the only record
+# of it that this repo controls, and a `git subtree pull` can change it under
+# us silently. Each line below was measured; a disagreement here means upstream
+# moved and the decision to drop `graph_stats` needs re-deriving.
+#
+# Set CHECK_VOCAB=0 to skip (8 extra requests).
+vocab_drift=0
+vocab_probe() {
+    expected="$1"   # "rerouted" or "honoured"
+    phrase="$2"
+    payload=$(printf '{"model":"%s","max_tokens":8,"messages":[{"role":"user","content":"%s"}]}'         "$MODEL" "$phrase")
+    prov=$(curl -s -m 240 -D - -o /dev/null -X POST "$BASE/v1/chat/completions"         -H 'Content-Type: application/json' -H "Authorization: Bearer $key"         -d "$payload" 2>/dev/null         | awk 'tolower($1) == "x-omniroute-provider:" { gsub(//, "", $2); print $2 }')
+    [ -n "$prov" ] || prov="(no header)"
+    # Asking for the local model, so "still ollama" is the unambiguous signal —
+    # same reasoning as the probes above.
+    case "$prov" in
+        *ollama*|*qwen*) got="honoured" ;;
+        *)               got="rerouted" ;;
+    esac
+    if [ "$got" = "$expected" ]; then
+        printf '  %-9s %-46s %s
+' "$got" "$phrase" "ok" >&2
+    else
+        vocab_drift=$((vocab_drift + 1))
+        printf '  %-9s %-46s DRIFTED (expected %s, provider=%s)
+'             "$got" "$phrase" "$expected" "$prov" >&2
+    fi
+}
+
+if [ "${CHECK_VOCAB:-1}" != "0" ]; then
+    echo
+    echo "trigger vocabulary — measured 2026-09-08, asking for $MODEL"
+    vocab_probe rerouted "Summarize this: the cat sat on the mat."
+    vocab_probe rerouted "Give me a summary of: the cat sat on the mat."
+    vocab_probe rerouted "Write a python function to add two numbers."
+    vocab_probe rerouted "Fix this bug in my code."
+    vocab_probe honoured "Shorten this: the cat sat on the mat."
+    vocab_probe honoured "Condense this: the cat sat on the mat."
+    vocab_probe honoured "Translate to French: the cat sat."
+    vocab_probe honoured "What is the capital of France?"
+    echo
+    if [ "$vocab_drift" -gt 0 ]; then
+        red "$vocab_drift phrase(s) no longer route the way they were measured."
+        red "Upstream changed the classifier. Re-derive which tools are safe in"
+        red "DEFAULT_AGENT_TOOLS before trusting agent-sidecar/src/agent_sidecar/config.py."
+    else
+        green "Trigger vocabulary unchanged (8 of 8)."
+    fi
+fi
+
 echo
 # Substring test rather than equality: served_by carries the bare model name,
 # and what matters is only whether it is still the local one.
