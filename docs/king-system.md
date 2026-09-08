@@ -1631,6 +1631,7 @@ reporting healthy. Each guard below exists because of a specific one.
 | `pool-prove.timer` | Weekly, Sun 04:17 | A registered provider that has gone silent, **and** a model the router can select that has never once answered. OmniRoute's own autopilot reported every provider "healthy, 0 issues" while three failed 100% of real requests; this sends a real completion to each and counts only answers. The second check reads the call log instead, because a provider passes on one working model while other names it offers are dead — acknowledged pairs live in `scripts/pool-dead-models.txt` |
 | `verify-credentials.sh` | After any rotation | A key that was rotated and not updated here. Seven real calls, not presence tests; two of them assert that a *wrong* token is rejected, and one is a real admin login — the check whose absence let four scripts fail silently for two days |
 | `ntfy` | On every breach | Nothing new — it is the one guard that catches no fault. It exists because a guard nobody reads is theatre: it carries the other guards' findings to a phone |
+| `local-secret-scan.sh` | Before a rotation, or on any file you did not write | Credentials in local files, judged on this host and nowhere else. Patterns for known shapes, the local model for the rest; values are masked before printing. `--self-test` runs in CI, `--eval` scores the prompt |
 | `check-model-routing.sh` | After any `git subtree pull` | Whether the gateway still overrides the model you asked for, and whether the **trigger vocabulary** has drifted — eight measured phrases, four that reroute and four that do not. The classifier lives in the subtree, so this list is the only record of it this repo controls; a drift here means the decision to drop `graph_stats` needs re-deriving |
 
 ### The alarm that now reaches somewhere — wired 2026-09-06
@@ -1867,6 +1868,29 @@ severity rules lived in exactly one place, behind a web UI, with no history — 
 rule worth this much scrutiny should be reviewable in a diff. `flows/` mirrors
 it; Activepieces remains the source of truth, and the step's `input` block stays
 out because it holds the bearer token and the HMAC secret.
+
+**And something finally uses it — 2026-09-08.** Everything above proves the
+local-only path *can* be held. `./scripts/local-secret-scan.sh` is the first
+thing that holds it for real work: it asks the on-host model whether a file
+contains credentials, and the file never leaves the machine.
+
+The design decision that matters is what it does **not** do. Sending the content
+through the gateway with `model=ollama/…` and checking `served_by` afterwards
+would be worse than useless: the intent classifier reroutes *before* anything
+comes back, so by the time `served_by` reads `gemini` the secrets are already at
+Google. Work that must not leave the host cannot be routed through a component
+allowed to decide otherwise, so it talks to the Ollama container directly on the
+compose network — resolved via `docker compose ps`, never a hardcoded address —
+and there is no gateway code path in the file to misconfigure later.
+
+Patterns handle the known shapes; the model is asked only about what they miss,
+which is where it earned its place immediately: `GRAPHIFY_API_KEY` and
+`SEARXNG_SECRET` are bare hex with no prefix any regex would key on. Values are
+masked to a prefix and a length before printing, because a scanner that displays
+its findings has just moved them into the operator's scrollback.
+
+Its prompt is **scored rather than tuned**, and that mode exists because of a
+mistake made while writing it — see entry 27 in `docs/king-mistakes.md`.
 
 **The pool guard was green against the wrong question — fixed 2026-09-08.**
 `pool-register.sh --prove` sends one completion per **provider**, so a provider

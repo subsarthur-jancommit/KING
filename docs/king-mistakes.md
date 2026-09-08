@@ -806,9 +806,56 @@ provider.
 
 ---
 
+## 27. Fixing a prompt from one observation, and making it worse
+
+**What happened.** The local secret scanner's first real run produced one false
+positive: it called `ACTIVEPIECES_PUBLIC_DOMAIN` a secret. The cause looked
+obvious — the few-shot prompt had no example of a hostname — so I added one:
+
+```
+Line: PUBLIC_DOMAIN=app.example.com
+Answer: SAFE
+```
+
+Re-running the same eight lines, the model now answered **SECRET to all eight**,
+including a bare `http://` URL. One observation, one edit, strictly worse. The
+only reason I know is that I re-ran it; the change reads like an improvement and
+would have shipped as one.
+
+**What was actually wrong.** Scoring three variants against twelve labelled
+lines afterwards:
+
+```
+a  10/12   the original: 2 SAFE examples, 1 SECRET
+b   9/12   the "fix": 3 SAFE, 1 SECRET
+c  11/12   balanced: 2 SAFE, 2 SECRET   <- now the default
+```
+
+The tell is *which* lines a and b got wrong: `PORT=` and `LOG_LEVEL=` — examples
+sitting inside their own prompts. A 1.5B model given a majority-SAFE prompt
+drifts toward answering with the majority label, and adding a third SAFE example
+made that worse rather than teaching it about hostnames. The missing hostname was
+never the problem. The remedy was balance, which the original diagnosis did not
+even consider.
+
+**The shape of the error.** A single failing case suggests a cause, and the
+suggestion is persuasive precisely because it explains that case perfectly. It
+does not explain the cases that were already passing, and nothing checked
+whether they still did. This is `docs/king-mistakes.md` entry 8's *"improving a
+prompt without a score"* met one step earlier — not shipped, but only because
+the re-run happened to be cheap.
+
+**What to do instead.** A prompt change is a measurement or it is a hunch. The
+scanner now carries `--eval`: twelve labelled lines, all synthetic, temperature
+0, and the variants kept side by side so the default is the one that scored
+best rather than the one written last. It cost about ten minutes to build and it
+caught the regression on its first use.
+
+---
+
 ## The pattern underneath most of these
 
-Six shapes account for nearly every entry:
+Seven shapes account for nearly every entry:
 
 1. **A guard that does not cover the case it appears to cover** — runtime memory
    limits that do not bind builds, gitignore paths that do not match variants,
@@ -831,6 +878,10 @@ Six shapes account for nearly every entry:
    of a before/after split taken from memory, the fix time recalled rather than
    read off the container. Entry 26 inverted a conclusion on this alone, and the
    correcting command was `docker inspect`.
+7. **A cause that explains the failing case and nothing else** — the one false
+   positive suggested a missing example, and the fix made every other case
+   worse. A diagnosis drawn from a single failure is untested against the
+   successes it must not break. Entry 27, caught only by re-running.
 
 The standing rule that comes out of all three, and the one most worth keeping:
 **anything that cannot be measured is treated as a failure, not a pass.**

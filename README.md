@@ -354,6 +354,52 @@ while the workflow step still reports SUCCEEDED. See `docs/king-system.md` §7.
 The table stays the durable record; the push is a notification. A phone that was
 off does not lose a row, and `./scripts/alerts-report.sh` reads them back.
 
+## Work that provably never leaves the host
+
+`./scripts/local-secret-scan.sh` asks the on-host model whether a file contains
+credentials. It is the first thing here to actually *use* the local-only path
+rather than describe it.
+
+```bash
+./scripts/local-secret-scan.sh                 # this deployment's usual suspects
+./scripts/local-secret-scan.sh path [path...]
+./scripts/local-secret-scan.sh --eval          # score the prompt on labelled lines
+./scripts/local-secret-scan.sh --self-test     # fixtures; no host files, no model
+```
+
+**It does not go through the gateway, and that is the whole design.** The
+obvious build is to POST to OmniRoute with `model=ollama/…` and check
+`served_by` afterwards. That is exactly wrong here: the gateway classifies
+intent from the prompt and can reroute to Google, and the reroute happens
+*before* anything comes back. By the time `served_by` says `gemini`, the secrets
+are already at a third party. For work that must not leave the host you cannot
+route it through a component that is allowed to decide otherwise — so this talks
+to the Ollama container directly on the compose network, resolved through
+`docker compose ps`, with no gateway code path to misconfigure.
+
+**Patterns first, model second.** Known shapes — `sk-…`, `AKIA…`, a JWT, a
+connection string with a password in it — are found with regexes, because this
+repo's own rule is that a model earns its place only where the mapping cannot be
+written down in advance. The model is asked only about the lines the patterns
+did *not* match, which is where it pays: on this deployment it found
+`GRAPHIFY_API_KEY` and `SEARXNG_SECRET`, both bare hex with no distinctive
+prefix that no pattern would ever catch.
+
+**It never prints a secret.** Values are masked to a 3-character prefix and a
+length. A scanner that displays what it finds has moved the secret into your
+scrollback and any CI log that captured it.
+
+**The prompt is scored, not tuned.** `--eval` runs 12 labelled lines, all
+synthetic. That mode exists because of a mistake made while building this: the
+first run produced one false positive, the obvious fix was to add a hostname
+example, and it made the model answer SECRET to *everything* — including a bare
+URL. Measured afterwards: the original prompt scored 10/12, the "fix" 9/12, and
+a version with the examples balanced 2 SAFE / 2 SECRET scored 11/12 and is the
+default. The two weaker prompts were getting `PORT=` and `LOG_LEVEL=` wrong —
+examples inside their own text — so the problem was never the missing hostname;
+it was that a majority-SAFE prompt biases a 1.5B model toward the majority
+label.
+
 ### CI smoke test
 
 [`.github/workflows/omniroute-smoke.yml`](.github/workflows/omniroute-smoke.yml)
