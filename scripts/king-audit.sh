@@ -582,7 +582,7 @@ PYENV
 
     # B-10: a unit that only exists on the host is one `rm -rf` from gone, and
     # a schedule is only sane relative to the timezone people live in.
-    _units=$(ls scripts/*.timer 2>/dev/null | wc -l | tr -d ' ')
+    _units=$(find scripts -maxdepth 1 -name '*.timer' 2>/dev/null | wc -l | tr -d ' ')
     if have systemctl; then
         _live=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $NF}' \
                 | sed 's/\.service$//' | grep -v '^$' | sort -u || true)
@@ -1442,11 +1442,15 @@ dim_I() {
     # I-2: a command in the docs that cannot run is an instruction that wastes
     # somebody's afternoon. Checks the script exists and accepts the flag.
     _badcmd=""
-    for _c in $(grep -ohE '\./scripts/[a-z-]+\.sh( --[a-z-]+)?' docs/*.md README.md 2>/dev/null | sort -u); do
-        case "$_c" in
-            ./scripts/*.sh) [ -x "${_c#./}" ] || _badcmd="$_badcmd $_c" ;;
-        esac
-    done
+    # while-read, not `for x in $(...)`: word splitting tore
+    # `./scripts/foo.sh --flag` into two entries, so the flag was tested as
+    # if it were a filename and every documented command with an argument
+    # reported as missing.
+    grep -ohE '\./scripts/[a-z-]+\.sh' docs/*.md README.md 2>/dev/null \
+      | sort -u | while IFS= read -r _c; do
+        [ -x "${_c#./}" ] || printf '%s ' "$_c"
+      done > "$SEEN.cmd"
+    _badcmd=$(cat "$SEEN.cmd" 2>/dev/null || true); rm -f "$SEEN.cmd"
     if [ -z "$_badcmd" ]; then
         chk I-2 PASS "every ./scripts command in the docs exists and is executable"
     else
