@@ -1354,9 +1354,26 @@ dim_E() {
     systemctl --user list-timers --all --no-pager 2>/dev/null | grep -qi 'backup\|dump' && _bk="timer"
     crontab -l 2>/dev/null | grep -qi 'backup\|pg_dump' && _bk="${_bk:+$_bk,}cron"
     [ -d "$HOME/KING/backups" ] && _bk="${_bk:+$_bk,}directory"
-    if [ -n "$_bk" ]; then
-        chk E-1 PASS "$_vols docker volume(s); a backup mechanism exists ($_bk)" \
-            "that it RESTORES is a drill, not a check — nothing here has run one"
+    # "That it RESTORES is a drill, not a check — nothing here has run one" is
+    # what this line said for about an hour, during which a drill had in fact
+    # been run and had verified 6 flows and 29 flow_versions against the live
+    # names. An assertion about the world, written into a check, aged badly
+    # inside a single sitting. Whether a drill happened is a fact on disk.
+    _drill=$HOME/KING-backups/restore-drills.tsv
+    _drilld=""
+    [ -f "$_drill" ] && _drilld=$(awk -F'\t' 'NR>1 && $1 { d=$1 } END { print d }' "$_drill" 2>/dev/null)
+    if [ -n "$_bk" ] && [ -n "$_drilld" ]; then
+        _age=$(( ( $(date +%s) - $(date -d "$_drilld" +%s 2>/dev/null || echo 0) ) / 86400 ))
+        if [ "$_age" -le 90 ]; then
+            chk E-1 PASS "$_vols volume(s); backups exist ($_bk) and were restored ${_age}d ago" \
+                "a backup nobody has restored is a hope; $_drill records what the last drill proved"
+        else
+            chk E-1 FAIL "backups exist but the last restore drill was ${_age} days ago" \
+                "an untested archive degrades silently; re-run one against a throwaway target"
+        fi
+    elif [ -n "$_bk" ]; then
+        chk E-1 FAIL "$_vols volume(s); a backup mechanism exists ($_bk) but nothing records a restore" \
+            "no $_drill — an archive that has never been restored is a hope, not a backup"
     else
         chk E-1 FAIL "$_vols docker volume(s) and no backup mechanism of any kind" \
             "no timer, no cron entry, no backups directory; loss is silent until the day it is needed"

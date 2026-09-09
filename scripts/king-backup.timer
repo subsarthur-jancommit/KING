@@ -1,0 +1,20 @@
+[Unit]
+Description=Back up the KING state that cannot be regenerated
+Documentation=file:%h/KING/scripts/king-backup.sh
+
+[Timer]
+# 04:30 local (21:30 UTC). Chosen to sit clear of two things rather than by
+# taste: codegraph-refresh fires at 03:00 local with up to 20 minutes of
+# randomised delay, and its build is the one job on this host that can approach
+# the memory floor. Starting a pg_dump into that window would put two heavy
+# jobs on 2 vCPU at once.
+OnCalendar=*-*-* 04:30:00
+
+# A VPS reboots. A backup that quietly skips the day it was rebooted is the
+# backup you discover missing later.
+Persistent=true
+RandomizedDelaySec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

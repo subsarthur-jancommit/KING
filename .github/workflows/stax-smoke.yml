@@ -130,6 +130,14 @@ jobs:
       - name: Audit self-test
         run: ./scripts/king-audit.sh --self-test
 
+      # The retention arithmetic, which is the only pure logic in the backup
+      # script and the only part that can destroy something. A prune bug does
+      # not announce itself: it deletes quietly and is discovered on the day
+      # the archive is needed. The fixtures assert both the count marked for
+      # deletion and that the newest is never among them.
+      - name: Backup self-test
+        run: ./scripts/king-backup.sh --self-test
+
       - name: Shell lint
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck

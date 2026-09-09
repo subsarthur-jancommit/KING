@@ -1,0 +1,40 @@
+# Back up the state this deployment cannot regenerate. Paired with
+# king-backup.timer.
+#
+# A systemd *user* unit, matching codegraph-refresh: the operator account is
+# already in the docker group, so running as root would be privilege for its
+# own sake. It needs lingering, or it only runs while someone is logged in:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/king-backup.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now king-backup.timer
+#   sudo loginctl enable-linger "$USER"
+#
+#   systemctl --user list-timers king-backup.timer
+#   journalctl --user -u king-backup -n 50
+#
+# The unit files live in the repo because king-audit.sh B-10 fails on an active
+# timer with no unit file here — a timer nobody can review or restore is a
+# scheduled job that exists only in one machine's memory.
+
+[Unit]
+Description=Back up KING state
+Documentation=file:%h/KING/scripts/king-backup.sh
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/KING
+ExecStart=%h/KING/scripts/king-backup.sh
+
+# The pg_dump of the external database is the long pole and runs over the
+# public internet to Neon; 82 MB compressed took seconds, but a bad link should
+# fail rather than hang until the next run collides with it.
+TimeoutStartSec=30min
+
+# Same reasoning as codegraph-refresh: this competes for 2 vCPU with a gateway
+# and a workflow engine whose healthchecks time out in 5 seconds. Reading 92 MB
+# and gzipping it is IO-bound, so the IO class matters more than the nice value.
+Nice=10
+IOSchedulingClass=idle
