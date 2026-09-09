@@ -2402,3 +2402,42 @@ Two of these are ceilings on the same 7.9 GB of RAM, so they move together.
 Before adding a service, run `king-audit.sh -d D`: D-3 reports what a codegraph
 build would actually see, with Ollama's resident set added back because the
 build releases it first.
+
+## 14. What the run journal keeps, and for how long
+
+**Retention: `/audit/runs.jsonl` keeps its most recent 5000 lines, trimmed by
+`king-backup.sh` after each successful archive.** The file records every agent
+run — model, tool list, timings, token counts, and `task`, which is the prompt
+**verbatim** — so the rotation policy is a privacy decision, not housekeeping.
+
+`L-3` and `L-5` confirm no credential-shaped string appears there. That was the
+only question anyone had asked of it. The one nobody asked is how long it
+keeps what it does hold, and until 2026-09-10 the answer was *forever*: an
+append-only file that nothing rotated, in a directory where `D-7` had just
+established nothing rotates anything. A permanent transcript of everything ever
+asked of the system is a retention decision, and it had been defaulted into
+rather than made.
+
+**The decision: 5000 lines, trimmed by `king-backup.sh` immediately after the
+journal has been archived.** At the current rate — roughly a dozen runs a day —
+that is about a year in the live file, with everything older living in the
+daily archives under the same seven-archive retention as the rest.
+
+Two details that make it safe rather than merely convenient:
+
+- The trim only runs when **every** component of that backup succeeded. If the
+  archive failed, the journal is left alone; the alternative is deleting
+  history whose only copy just failed to be written.
+- It is a **copy-truncate** (`tail > tmp; cat tmp > runs.jsonl`), not a rename.
+  The sidecar opens the file per write rather than holding a handle, but a
+  rename would leave any open appender writing to an orphaned inode, and the
+  failure would be silent.
+
+`KING_JOURNAL_KEEP` overrides the line count. Set it to a very large number to
+disable trimming; do not delete the logic, because `L-6` then reports the
+journal as unbounded again, which is the accurate description of that state.
+
+`/audit/vps_exec.log` is deliberately **not** trimmed. It is 185 bytes, it
+records commands run as root on the host, and an audit log of privileged
+actions is the last thing that should have a rotation policy invented for it in
+passing.

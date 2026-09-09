@@ -225,6 +225,44 @@ fi
 
 # ---------------------------------------------------------------- manifest
 
+# ------------------------------------------------------- journal retention
+
+# The run journal records every task the agent was given, verbatim, in a `task`
+# field. Nothing rotated it, so the system was accumulating a permanent
+# transcript of everything ever asked of it — a data-retention decision that was
+# defaulted into rather than made. That is king-audit.sh L-6.
+#
+# This is the right place for the bound because the journal has JUST been
+# archived a few lines above. Trimming after a successful archive loses nothing:
+# the history lives in the tar, under the same retention as every other
+# archive, instead of in an append-only file that grows forever in a directory
+# D-7 has established nothing rotates.
+#
+# Copy-truncate, not rename. The sidecar opens the file per write rather than
+# holding a handle, but `cat tmp > file` truncates in place and keeps the inode
+# either way — a rename would leave any open appender writing to an orphan.
+JOURNAL_KEEP="${KING_JOURNAL_KEEP:-5000}"
+if [ "$fail" -eq 0 ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^king-agent-sidecar-http-1$'; then
+    _before=$(docker exec king-agent-sidecar-http-1 sh -c 'wc -l < /audit/runs.jsonl' 2>/dev/null | tr -d ' ')
+    case "$_before" in
+        ''|*[!0-9]*) note "$(c_dim 'skip')" "journal line count unreadable; not trimming" ;;
+        *)
+            if [ "$_before" -gt "$JOURNAL_KEEP" ]; then
+                if docker exec king-agent-sidecar-http-1 sh -c \
+                     "tail -n $JOURNAL_KEEP /audit/runs.jsonl > /audit/.runs.trim && cat /audit/.runs.trim > /audit/runs.jsonl && rm -f /audit/.runs.trim" \
+                     >/dev/null 2>&1
+                then
+                    note "$(c_green ' ok ')" "journal trimmed $_before → $JOURNAL_KEEP lines (archived first)"
+                else
+                    note "$(c_red 'FAIL')" "journal trim failed; it is still $_before lines"
+                    fail=$((fail + 1))
+                fi
+            else
+                note "$(c_dim ' -- ')" "journal at $_before lines, under the $JOURNAL_KEEP bound"
+            fi ;;
+    esac
+fi
+
 # Two passes, deliberately. An empty archive is not an archive: listing one
 # gives the manifest a row that reads as evidence and is its opposite. But the
 # sweep cannot live inside the manifest's redirection — `{ … } > manifest.tsv`

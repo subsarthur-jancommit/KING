@@ -23,9 +23,25 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 FLOW_ID="${MONITOR_FLOW_ID:-6Ko1wC7xxFxE7GjruoB5u}"
-# The schedule is every 15 minutes, but observed spacing has reached 22.5 minutes
-# under load. 35 leaves room for that without letting a real stall hide.
-MAX_AGE_MIN="${MONITOR_MAX_AGE_MIN:-35}"
+# The schedule is every 15 minutes. Two things stretch the real gap, and 35
+# accounted for only one of them:
+#
+#   observed spacing under load          22.5 min
+#   + one slot skipped by a republish    15.0 min   (publishing a flow
+#                                                    re-registers its schedule)
+#   ------------------------------------------------
+#   worst LEGITIMATE gap                 37.5 min
+#
+# At 35 this fires on an entirely normal day — publish a flow while the host is
+# busy and the deadman calls it a stall. An alarm that goes off when nothing is
+# wrong is one people learn to dismiss, which is the failure it exists to
+# prevent, arriving by a different road.
+#
+# 50 tolerates one skipped slot with 12.5 minutes of margin and still catches
+# two (52.5 min), which is a genuine outage rather than a busy afternoon.
+# king-audit.sh G-4 fails below 40 and carries the same arithmetic, so this
+# number and its justification cannot drift apart silently.
+MAX_AGE_MIN="${MONITOR_MAX_AGE_MIN:-50}"
 STATE_FILE="${MONITOR_STATE_FILE:-$HOME/.king-monitor-deadman}"
 PSQL_IMAGE="${MONITOR_PSQL_IMAGE:-postgres:16-alpine}"
 

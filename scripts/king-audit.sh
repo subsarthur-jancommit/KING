@@ -2790,8 +2790,15 @@ PYKEYS
         x|"") chk L-4 UNKNOWN "journal length unreadable" ;;
         *)    metric l4_journal_lines "$_jl"
               if [ "$_jl" -lt 50000 ]; then
+                  # "nothing rotates it" was true when written and stopped
+                  # being true the moment king-backup.sh gained a trim. An
+                  # evidence line that states a fact about the system has to be
+                  # derived from the system, or it becomes a confident lie on
+                  # the day someone fixes the thing it describes.
+                  _keep=$(sed -n 's/^JOURNAL_KEEP="\${KING_JOURNAL_KEEP:-\([0-9]*\)}"/\1/p' \
+                          scripts/king-backup.sh 2>/dev/null | head -1)
                   chk L-4 PASS "run journal at $_jl line(s)" \
-                      "nothing rotates it; the baseline diff is what will show growth"
+                      "${_keep:+bounded at $_keep lines by king-backup.sh; }${_keep:-nothing rotates it; }the baseline diff shows growth"
               else
                   chk L-4 FAIL "run journal at $_jl lines and nothing rotates it"
               fi ;;
