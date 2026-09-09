@@ -2343,7 +2343,7 @@ runs from `/app`. Those are different directories holding different copies of
 the same files.
 
 `/app` is baked at build time by `COPY src/ ./src/`. `/workspace` is the repo,
-mounted so `vps_exec` can act on it. Editing `agent-sidecar/src/...` — by
+mounted so `vps_exec` can act on it. Editing a file under `agent-sidecar/src` — by
 commit, by `scp`, by anything — changes `/workspace` and does not touch the
 process. **The sidecar only picks up source changes on a rebuild.**
 
@@ -2382,3 +2382,23 @@ from the reviewed file, and `A-8` compares every locally-built image against
 its build context **by digest**. Not by timestamp — `git log` cannot see an
 `scp`, and BuildKit's `.Created` is stamped from a cached layer, so a freshly
 built image can report an earlier time than files it demonstrably contains.
+
+## 13. The load-bearing numbers
+
+Four constants decide whether something runs, refuses, or alerts. Each is the
+reason for a decision somewhere else, so a document that disagrees with the
+code is a document that will be believed and is wrong. `king-audit.sh` I-1
+reads them out of the source and fails when one appears in no document —
+which is how two of them came to be here.
+
+| Number | Where | Why it is that number |
+|---|---|---|
+| **3584 MB** | `CODEGRAPH_MIN_AVAIL_MB`, `scripts/codegraph-refresh.sh` | The floor below which the daily graph build refuses to start, read from `MemAvailable` immediately before the build rather than trusted from earlier in the script. It is the **measured peak**, not the 4096 MB ceiling: `MemAvailable` is a conservative kernel estimate, so a floor set at the ceiling would refuse builds that would have succeeded. The build unloads Ollama first, but that unload can be skipped, can fail, or can race a request that reloads the model — so this second, independent check is the one that decides. |
+| **4096 tokens** | `OLLAMA_CONTEXT_LENGTH`, `docker-compose.yml:728` | The local model's context window. It bounds what `local-secret-scan.sh` can judge in one pass, and it is the number to raise first if the local model starts truncating rather than answering. Raising it costs resident RAM, which comes out of the 3584 MB above. |
+| **35 minutes** | `MONITOR_MAX_AGE_MIN`, `scripts/monitor-deadman.sh` | How stale the gateway monitor's last run may be before the deadman fires. **This is currently too tight**, and `king-audit.sh` G-4 says so: 22.5 minutes observed under load plus one 15-minute slot skipped by a republish is 37.5 minutes of entirely legitimate silence. An alarm that fires on a normal day is one that gets ignored on an abnormal one. |
+| **unset** | `AGENT_SIDECAR_MAX_STEPS`, `docker-compose.yml` | Deliberately not pinned in compose; the sidecar's own default applies and `/healthz` reports it. Pinning it here would put the same number in two places, and the one people read would be the wrong one. |
+
+Two of these are ceilings on the same 7.9 GB of RAM, so they move together.
+Before adding a service, run `king-audit.sh -d D`: D-3 reports what a codegraph
+build would actually see, with Ollama's resident set added back because the
+build releases it first.
