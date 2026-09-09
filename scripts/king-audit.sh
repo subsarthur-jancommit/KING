@@ -33,7 +33,7 @@
 # Exit: 0 all PASS, 1 any FAIL, 2 any UNKNOWN, 3 any planned check not implemented.
 set -eu
 
-DIMENSIONS="A B C D E F G H I J"
+DIMENSIONS="A B C D E F G H I J K"
 WANT=""
 MODE="run"
 WRITE_BASELINE=0
@@ -137,6 +137,14 @@ I-4
 J-1
 J-2
 J-3
+K-1
+K-2
+K-3
+K-4
+K-5
+K-6
+K-7
+K-8
 IMPL
 }
 
@@ -205,6 +213,14 @@ I-4|every concrete CLAUDE.md rule is enforced by a check
 J-1|pinned versions vs latest, and known CVEs
 J-2|active upstream breakage
 J-3|image age, origin, and whether it is still published
+K-1|listening sockets bound to 0.0.0.0 beyond the intended three
+K-2|whether the host firewall actually covers Docker-published ports
+K-3|what answers from outside the host, tested from outside the host
+K-4|system clock synchronised
+K-5|SSH exposure: password auth, root login
+K-6|pending security updates and unattended upgrades
+K-7|TLS certificate expiry
+K-8|cron entries that come from nowhere in the repo
 MANIFEST
 }
 
@@ -1672,6 +1688,176 @@ for t in d.get('results') or []:
     fi
 }
 
+# ------------------------------------------------------------- dimension K
+#
+# The aspect the first 63 checks missed entirely.
+#
+# B-2 reads the ROOT compose and passes. But `omniroute/` is a vendored subtree
+# with its own compose, and it publishes on 0.0.0.0 -- so the gateway's admin
+# API listens on every interface while the audit reported every port correctly
+# bound. Reading declarations is not the same as looking at the machine.
+
+dim_K() {
+    echo; echo "K  host and network surface"
+    if ! on_host; then
+        skip_rest K "not on the host; nothing here is observable remotely"
+        return
+    fi
+
+    # K-1: what is actually listening, which is a different question from what
+    # the compose files declare.
+    if have ss; then
+        _wide=$(ss -tlnH 2>/dev/null | awk '{print $4}' \
+                | grep -E '^(0\.0\.0\.0|\*):' | sed 's/.*://' | sort -un | tr '\n' ' ' || true)
+        _unexpected=""
+        for _pt in $_wide; do
+            case "$_pt" in 22|80|443) : ;; *) _unexpected="$_unexpected $_pt" ;; esac
+        done
+        metric k1_wide_ports "$(printf '%s' "$_wide" | wc -w | tr -d ' ')"
+        if [ -z "$_unexpected" ]; then
+            chk K-1 PASS "only 22, 80 and 443 listen on all interfaces"
+        else
+            chk K-1 FAIL "port(s) listening on 0.0.0.0 beyond the intended three" \
+                "$_unexpected — declared in omniroute/, which the compose checks never read"
+        fi
+    else
+        chk K-1 UNKNOWN "ss unavailable; listening sockets unmeasurable"
+    fi
+
+    # K-2: the one that matters. ufw reporting "active" says nothing about
+    # Docker-published ports: Docker inserts its own ACCEPT rules and bypasses
+    # ufw's INPUT chain entirely unless DOCKER-USER is populated. An empty
+    # DOCKER-USER means the firewall people trust is not the control keeping
+    # those ports closed.
+    if sudo -n iptables -S DOCKER-USER >/dev/null 2>&1; then
+        _du=$(sudo -n iptables -S DOCKER-USER 2>/dev/null | grep -c '^-A' || true)
+        metric k2_docker_user_rules "${_du:-0}"
+        if [ "${_du:-0}" -gt 0 ]; then
+            chk K-2 PASS "DOCKER-USER carries ${_du} rule(s); the host firewall covers published ports"
+        else
+            chk K-2 FAIL "DOCKER-USER is empty: the host firewall does NOT cover Docker ports" \
+                "ufw may report active while something upstream is the only real control"
+        fi
+    else
+        chk K-2 UNKNOWN "cannot read iptables without root; firewall coverage unknown"
+    fi
+
+    # K-3: the only answer that counts. Asked from the host to its own PUBLIC
+    # address, so it traverses whatever sits in front of the machine.
+    if have curl; then
+        _ip=$(curl -s -m 8 -H 'Metadata-Flavor: Google' \
+              'http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip' 2>/dev/null || true)
+        if [ -z "$_ip" ]; then
+            chk K-3 UNKNOWN "could not determine this host's public address"
+        else
+            _reach=""
+            for _pt in 20128 8100 8130 8140; do
+                # No `|| echo 000` here. curl -w already prints 000 on a
+                # connection failure, so the fallback CONCATENATES and yields
+                # "000000", which is not equal to "000" -- and every filtered
+                # port reported as reachable. Fourth appearance of this shape
+                # in this script; G-6 counts them for a reason.
+                #
+                # `|| true` and not `|| echo 000`: both stop set -e from killing
+                # the run on a refused connection, but only one of them adds
+                # output. That distinction is the entire bug.
+                _rc=$(curl -s -o /dev/null -w '%{http_code}' -m 8 "http://$_ip:$_pt/" 2>/dev/null || true)
+                case "${_rc:-000}" in
+                    000|"") : ;;
+                    *) _reach="$_reach $_pt=$_rc" ;;
+                esac
+            done
+            if [ -z "$_reach" ]; then
+                chk K-3 PASS "no internal port answers on the public address" \
+                    "verified through whatever sits in front of the host, not from its config"
+            else
+                chk K-3 FAIL "internal port(s) answering on the public address" "$_reach"
+            fi
+        fi
+    else
+        chk K-3 UNKNOWN "curl unavailable; external reachability untested"
+    fi
+
+    # K-4: HMAC signatures, TLS validity and the monitor's 15-minute window all
+    # assume the clock. A drifting clock breaks all three in ways that look
+    # like unrelated bugs.
+    if have timedatectl; then
+        if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q '^yes$'; then
+            chk K-4 PASS "system clock is NTP-synchronised"
+        else
+            chk K-4 FAIL "system clock is not synchronised" \
+                "HMAC, TLS and the alert window all depend on it"
+        fi
+    else
+        chk K-4 UNKNOWN "timedatectl unavailable; clock sync unknown"
+    fi
+
+    # K-5: port 22 is genuinely open to the internet, so how it is configured
+    # is part of the public surface whether or not anyone thinks of it that way.
+    if sudo -n sshd -T >/dev/null 2>&1; then
+        _sshbad=""
+        sudo -n sshd -T 2>/dev/null | grep -q '^passwordauthentication no' || _sshbad="$_sshbad password-auth-on"
+        sudo -n sshd -T 2>/dev/null | grep -q '^permitrootlogin \(no\|without-password\|prohibit-password\)' \
+            || _sshbad="$_sshbad root-login-permissive"
+        sudo -n sshd -T 2>/dev/null | grep -q '^permitemptypasswords no' || _sshbad="$_sshbad empty-passwords"
+        if [ -z "$_sshbad" ]; then
+            chk K-5 PASS "SSH takes keys only; no password auth, no bare root login"
+        else
+            chk K-5 FAIL "SSH configuration weakens the one port open to everyone" "$_sshbad"
+        fi
+    else
+        chk K-5 UNKNOWN "cannot read the effective sshd config without root"
+    fi
+
+    # K-6: an unpatched host behind a good firewall is still an unpatched host.
+    if have apt-get; then
+        _sec=$(apt-get -s upgrade 2>/dev/null | grep -ciE '^Inst.*security' || true)
+        _unatt=$(systemctl is-enabled unattended-upgrades 2>/dev/null || echo disabled)
+        metric k6_security_updates "${_sec:-0}"
+        if [ "${_sec:-0}" -eq 0 ] && [ "$_unatt" = "enabled" ]; then
+            chk K-6 PASS "no pending security updates, and unattended-upgrades is enabled"
+        elif [ "${_sec:-0}" -gt 0 ]; then
+            chk K-6 FAIL "${_sec} security update(s) pending" "unattended-upgrades: $_unatt"
+        else
+            chk K-6 FAIL "unattended-upgrades is $_unatt" "nothing will apply the next one"
+        fi
+    else
+        chk K-6 SKIP "not an apt host"
+    fi
+
+    # K-7: Caddy renews on its own, so this is a check that the renewal is
+    # working rather than a reminder to renew.
+    _dom=$(sed -n 's/^OMNIROUTE_PUBLIC_DOMAIN=//p' .env 2>/dev/null | tail -1)
+    if [ -n "$_dom" ] && have openssl; then
+        _end=$(echo | openssl s_client -servername "$_dom" -connect "$_dom:443" 2>/dev/null \
+               | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || true)
+        if [ -z "$_end" ]; then
+            chk K-7 UNKNOWN "could not read the certificate for $_dom"
+        else
+            _left=$(( ( $(date -d "$_end" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+            metric k7_cert_days "$_left"
+            if [ "$_left" -gt 20 ]; then
+                chk K-7 PASS "certificate valid for ${_left} more day(s)" "$_end"
+            else
+                chk K-7 FAIL "certificate expires in ${_left} day(s)" "renewal is not keeping up"
+            fi
+        fi
+    else
+        chk K-7 UNKNOWN "no public domain configured, or openssl missing"
+    fi
+
+    # K-8: scheduled work this repo does not know about. The systemd side is
+    # B-10; cron is a second scheduler nobody has looked at.
+    _cron=$(crontab -l 2>/dev/null | grep -vcE '^\s*(#|$)' || true)
+    _crond=$(ls /etc/cron.d 2>/dev/null | grep -vcE '^(e2scrub_all|sysstat)$' || true)
+    if [ "${_cron:-0}" -eq 0 ] && [ "${_crond:-0}" -eq 0 ]; then
+        chk K-8 PASS "no cron entry outside the distribution defaults"
+    else
+        chk K-8 FAIL "cron entries this repo does not describe" \
+            "user crontab: ${_cron:-0}, /etc/cron.d: ${_crond:-0}"
+    fi
+}
+
 # ----------------------------------------------------------------- self-test
 
 self_test() {
@@ -1771,6 +1957,7 @@ for _d in $WANT; do
         H) dim_H ;;
         I) dim_I ;;
         J) dim_J ;;
+        K) dim_K ;;
         *) echo "unknown dimension: $_d" >&2; exit 2 ;;
     esac
 done
