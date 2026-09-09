@@ -1,0 +1,54 @@
+# Tools the agent can be given that reach the network.
+#
+# F-8 asks which of the offered tools can DESTROY something. This file answers
+# a different question that nothing was asking: which of them can send data
+# OUT. The two risks are not the same shape. Destruction is loud, local, and
+# recoverable from a backup; exfiltration is quiet, permanent, and leaves the
+# system looking exactly as it did before.
+#
+# Twelve of the 120 tools the gateway and codegraph offer match the egress
+# pattern, and all twelve are deliberate — search and fetch are the entire
+# point of a research agent, and removing them would leave an agent that can
+# only reason about what is already in its context. So this file is not a
+# blocklist. It is a record that each name below was looked at once, so that a
+# thirteenth appearing after an upstream release turns `king-audit.sh -d F`
+# red instead of arriving silently.
+#
+# Format: one tool name per line. Blank lines and #-comments ignored.
+# Matching is exact.
+#
+# Measured 2026-09-09 against the live tools/list at /api/mcp/stream.
+
+# --- the gateway's own research surface ---------------------------------
+# The agent's whole purpose. Each takes a query or a URL and returns text.
+# The exposure is the query itself: whatever the agent puts in it leaves this
+# host. That is bounded by AGENT_SIDECAR_MCP_ALLOWED_HOSTS (audited as C-8),
+# not by this file.
+omniroute_web_search
+omniroute_web_fetch
+omniroute_x_search
+omniroute_oneproxy_fetch
+
+# --- gateway introspection that happens to match the pattern -------------
+# These search the gateway's OWN state, not the internet. They match because
+# the pattern keys on the verb, which is the correct trade: a pattern narrow
+# enough to exclude these would also miss a genuinely new fetch tool. Better a
+# name here with a note than a gap in the sweep.
+omniroute_tool_search              # searches the gateway's tool catalogue
+omniroute_memory_search            # searches the local memory store
+omniroute_github_skills_search     # searches an indexed skills catalogue
+omniroute_browser_pool_status      # reports pool state; sends nothing
+
+# --- connectors to accounts, which is the sharper edge -------------------
+# These reach a THIRD PARTY holding the user's own data, so a compromised or
+# mis-prompted agent reads private notes rather than public pages. They are
+# read-only searches — no create, update, or delete variant appears in the
+# offered surface, which F-8 independently confirms. Should a write-side
+# counterpart ever appear, F-8 turns red on the destructive ones and F-9 turns
+# red on the rest.
+notion_search
+obsidian_search_simple
+obsidian_search_structured
+
+# --- local, and named for symmetry ---------------------------------------
+local_corpus_search                # reads the on-host corpus; no egress

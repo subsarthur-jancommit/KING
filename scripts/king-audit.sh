@@ -101,18 +101,22 @@ C-6
 C-7
 C-8
 C-9
+C-10
 D-1
 D-2
 D-3
 D-4
 D-5
 D-6
+D-7
 E-1
 E-2
 E-3
 E-4
 E-5
 E-6
+E-7
+E-8
 F-1
 F-2
 F-3
@@ -121,6 +125,7 @@ F-5
 F-6
 F-7
 F-8
+F-9
 G-1
 G-2
 G-3
@@ -182,18 +187,22 @@ C-6|every MCP: no token 401, wrong token 401, right token 200
 C-7|secret file permissions are not world-readable
 C-8|the agent egress allowlist is actually in force
 C-9|the rotation list matches the secrets that exist
+C-10|datastores are segmented, or at least authenticated
 D-1|per container: memory, swap, restarts
 D-2|healthcheck status
 D-3|host memory against the codegraph floor, as the build will see it
 D-4|OOM events in the kernel ring buffer
 D-5|container log sizes, with disk as context
 D-6|reclaimable build cache, idle images, orphan volumes
+D-7|container logs are bounded by a rotation policy
 E-1|every volume: size, contents, and whether anything backs it up
 E-2|external Postgres reachable, and its size
 E-3|journals exist, grow, and are readable
 E-4|code graph freshness: BUILD_INFO commit vs HEAD vs origin
 E-5|code graph correctness: it finds a file only the newest commit has
 E-6|no test rows left in production tables
+E-7|the queue backend answers, and says whether it wants a password
+E-8|spend is observable: what fraction of calls report their tokens
 F-1|every MCP server: tools/list and one real call
 F-2|offered tools vs allowlist vs NEVER_REGISTER
 F-3|reroute status: the eight measured trigger phrases
@@ -202,6 +211,7 @@ F-5|per-provider failure rate, and what reached the caller
 F-6|the local model answers, and answers from this host
 F-7|flow mirror parses and exports what its tests import
 F-8|every destructive tool the servers offer is blocked from the agent
+F-9|every tool that can reach the network is acknowledged
 G-1|every guard with a self-test still passes it
 G-2|every instrument measures what it claims
 G-3|timers: last run, and whether any unit failed
@@ -280,6 +290,19 @@ skip_rest() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 on_host() { [ -S /var/run/docker.sock ] && have docker; }
+
+# Two checks reported UNKNOWN "needs root" for a day while `sudo -n` worked on
+# this host the whole time -- the same script was already using it for iptables
+# and sshd. "I cannot read this" and "I did not try the way I try elsewhere"
+# are different answers, and only one of them is honest.
+#
+# `sudo -n` never prompts: it fails immediately when a password is required, so
+# this is safe to call unconditionally and UNKNOWN still means unreadable.
+priv() {
+    if sudo -n true 2>/dev/null; then sudo -n "$@" 2>/dev/null
+    else "$@" 2>/dev/null
+    fi
+}
 
 # Resolve a python that actually RUNS, not one that merely appears on PATH.
 #
@@ -893,6 +916,44 @@ dim_C() {
         chk C-8 FAIL "no egress allowlist set for the agent's MCP hosts" \
             "the agent reads web pages; this is the boundary that bounds it"
     fi
+
+    # C-10. C-5 asks what the internet can reach. Nothing asked what a
+    # container that is ALREADY inside can reach -- the question that decides
+    # what one compromise costs. The agent sidecar runs model-authored code,
+    # so "already inside" is its normal operating state, not a hypothetical.
+    #
+    # Found by asking it for the first time: both Redis instances sit on one
+    # flat `king_default` network with every other container, and both answer
+    # `CONFIG GET requirepass` with an empty value.
+    if ! on_host; then
+        chk C-10 SKIP "not on the host"
+    else
+        _stores=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \
+                  | grep -Ei 'redis|valkey|postgres|mysql|mongo' | awk '{print $1}' || true)
+        if [ -z "$_stores" ]; then
+            chk C-10 PASS "no datastore container runs here to segment"
+        else
+            _open=""; _n=0
+            for _st in $_stores; do
+                _n=$((_n + 1))
+                case "$(docker inspect -f '{{.Config.Image}}' "$_st" 2>/dev/null)" in
+                    *redis*|*valkey*)
+                        _rp=$(docker exec "$_st" redis-cli --no-auth-warning CONFIG GET requirepass 2>/dev/null \
+                              | tr -d '\r' | sed -n '2p')
+                        [ -n "$_rp" ] || _open="$_open $_st" ;;
+                esac
+            done
+            metric c10_datastores "$_n"
+            if [ -z "$_open" ]; then
+                chk C-10 PASS "$_n datastore(s), none reachable without a credential"
+            else
+                _peers=$(docker network inspect king_default \
+                         -f '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | wc -w || true)
+                chk C-10 FAIL "unauthenticated datastore(s):$_open" \
+                    "shared with ${_peers:-?} containers on one flat network; any of them can issue any command"
+            fi
+        fi
+    fi
 }
 
 # ------------------------------------------------------------- dimension D
@@ -969,7 +1030,7 @@ dim_D() {
     # Readability and count are separate questions. Folding them together with
     # `|| echo UNKNOWN` reported "unknown" whenever the count was legitimately
     # zero, because grep -c exits 1 on no match.
-    if _dm=$(dmesg 2>/dev/null); then
+    if _dm=$(priv dmesg); then
         _oom=$(printf '%s' "$_dm" | grep -ci 'out of memory\|oom-kill' || true)
         if [ "${_oom:-0}" -eq 0 ]; then
             chk D-4 PASS "no OOM kill in the kernel ring buffer"
@@ -977,7 +1038,7 @@ dim_D() {
             chk D-4 FAIL "$_oom OOM event(s) in dmesg" "the kernel has been choosing victims by RSS"
         fi
     else
-        chk D-4 UNKNOWN "dmesg unreadable (needs privileges); OOM history unknown"
+        chk D-4 UNKNOWN "dmesg unreadable even with sudo -n; OOM history unknown"
     fi
 
     # This claimed "log sizes and rotation" and measured root filesystem
@@ -990,13 +1051,17 @@ dim_D() {
     _logbytes=0; _readable=0
     for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
         _lp=$(docker inspect -f '{{.LogPath}}' "$_c" 2>/dev/null || true)
-        if [ -z "$_lp" ] || [ ! -r "$_lp" ]; then continue; fi
+        [ -n "$_lp" ] || continue
+        # The log path is root-owned; reading it as the invoking user was the
+        # reason this check spent a day reporting UNKNOWN. `stat -c %s` under
+        # priv answers, and an empty answer still means genuinely unreadable.
+        _sz=$(priv stat -c %s "$_lp")
+        case "$_sz" in ''|*[!0-9]*) continue ;; esac
         _readable=$((_readable + 1))
-        _sz=$(wc -c < "$_lp" 2>/dev/null || echo 0)
         _logbytes=$((_logbytes + _sz))
     done
     if [ "$_readable" -eq 0 ]; then
-        chk D-5 UNKNOWN "container log files are not readable without root; sizes unmeasured" \
+        chk D-5 UNKNOWN "container log sizes unreadable even with sudo -n" \
             "root filesystem ${_pct:-?}% used, which is context and not the claim"
     else
         metric d5_log_mb "$((_logbytes / 1048576))"
@@ -1005,6 +1070,50 @@ dim_D() {
                 "root filesystem ${_pct:-?}% used"
         else
             chk D-5 FAIL "container logs total $((_logbytes / 1048576)) MB" "rotation is not keeping up"
+        fi
+    fi
+
+    # D-5 measures how big the logs ARE. Nothing measured whether anything
+    # stops them growing -- and the answer, found only when D-5 was finally
+    # made to work, is that nothing does. With no /etc/docker/daemon.json the
+    # daemon's json-file driver defaults to unlimited size and zero rotation.
+    # 8 MB today is not a policy, it is a young deployment.
+    if ! on_host; then
+        chk D-7 SKIP "not on the host"
+    elif [ -f /etc/docker/daemon.json ] && grep -q 'max-size' /etc/docker/daemon.json 2>/dev/null; then
+        _pol=$(grep -o '"max-[a-z]*"[^,}]*' /etc/docker/daemon.json 2>/dev/null | tr '\n' ' ')
+        chk D-7 PASS "a daemon-wide log rotation policy is set" "$_pol"
+    else
+        # A per-service logging block is the other legitimate answer, so look
+        # before concluding. But "SOME services set it" is not that answer.
+        #
+        # The first version of this check passed on one service out of eleven
+        # -- the same "partial accounting reads as a total" error it sits a few
+        # lines away from calling out in E-8. Per-service rotation only counts
+        # when every RUNNING container has it; the ones that omit it are just
+        # as unbounded as they would be under no policy at all. So the question
+        # is asked of the containers, not of the compose file: compose declares
+        # intent, `docker inspect` reports what the daemon actually applied.
+        _svc_rot=$(grep -c 'max-size' docker-compose.yml 2>/dev/null || true)
+        _running=$(docker ps -q 2>/dev/null | wc -l || true)
+        _unbounded=0; _names=""
+        for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
+            _lo=$(docker inspect -f '{{.HostConfig.LogConfig.Config}}' "$_c" 2>/dev/null || true)
+            case "$_lo" in
+                *max-size*) : ;;
+                *) _unbounded=$((_unbounded + 1)); _names="$_names $_c" ;;
+            esac
+        done
+        metric d7_unbounded_containers "$_unbounded"
+        if [ "$_unbounded" -eq 0 ] && [ "${_running:-0}" -gt 0 ]; then
+            chk D-7 PASS "no daemon-wide default, but all $_running running container(s) cap their logs" \
+                "$_svc_rot service(s) declare it in compose"
+        elif [ "${_svc_rot:-0}" -gt 0 ]; then
+            chk D-7 FAIL "$_unbounded of ${_running:-?} running container(s) have unbounded logs" \
+                "compose caps $_svc_rot service(s); the rest inherit the unlimited json-file default:$(printf '%s' "$_names" | cut -c1-80)"
+        else
+            chk D-7 FAIL "no log rotation anywhere: no /etc/docker/daemon.json, none in compose" \
+                "the json-file driver defaults to unlimited size; nothing caps growth"
         fi
     fi
 
@@ -1138,6 +1247,90 @@ dim_E() {
             0)   chk E-6 PASS "no test-shaped row left in the alert table" ;;
             *)   chk E-6 FAIL "$_tests test-shaped row(s) in the alert table" \
                      "fabricated rows are worse than an empty log; nobody can tell them from real ones" ;;
+        esac
+    fi
+
+    # E-7. The queue is state nobody had looked at. It was also mis-labelled in
+    # my own working notes as "Upstash", a hosted service; grepping the tree
+    # for it finds nothing, because both instances are local containers. A note
+    # about state that names the wrong system is worse than no note.
+    if ! on_host; then
+        chk E-7 SKIP "not on the host"
+    else
+        _rs=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \
+              | grep -Ei 'redis|valkey' | awk '{print $1}' || true)
+        if [ -z "$_rs" ]; then
+            chk E-7 PASS "no queue backend runs here"
+        else
+            _bad=""; _tot=0
+            for _r in $_rs; do
+                _keys=$(docker exec "$_r" redis-cli --no-auth-warning DBSIZE 2>/dev/null | tr -d '\r')
+                _save=$(docker exec "$_r" redis-cli --no-auth-warning INFO persistence 2>/dev/null \
+                        | tr -d '\r' | sed -n 's/^rdb_last_bgsave_status://p')
+                case "$_keys" in ''|*[!0-9]*) _bad="$_bad $_r(unreachable)"; continue ;; esac
+                _tot=$((_tot + _keys))
+                [ "$_save" = "ok" ] || _bad="$_bad $_r(bgsave=${_save:-unknown})"
+            done
+            metric e7_queue_keys "$_tot"
+            if [ -z "$_bad" ]; then
+                chk E-7 PASS "queue backend(s) answer; $_tot key(s), last save ok" \
+                    "whether they ASK for a credential is C-10, not this"
+            else
+                chk E-7 FAIL "queue backend problem:$_bad"
+            fi
+        fi
+    fi
+
+    # E-8. Spend was written off as unmeasurable after three guessed paths
+    # 404'd. `/api/usage/call-logs` answers 200 and carries a `tokens` object
+    # on every row -- the endpoint was never the problem, my guessing was.
+    #
+    # The real problem is what it reports. Measured over 500 calls: 405 report
+    # zero tokens, including all 185 openrouter calls, which are the ones that
+    # cost money. Cost is not derivable from a log that reports zero for every
+    # paid provider, so the check is the coverage FRACTION -- a total would
+    # read as authoritative while being mostly missing rows.
+    _k=$(sed -n 's/^OMNIROUTE_MCP_API_KEY=//p' agent-sidecar/.env 2>/dev/null | tail -1)
+    if ! on_host; then
+        chk E-8 SKIP "not on the host"
+    elif [ -z "$_k" ] || [ -z "$PY" ]; then
+        chk E-8 UNKNOWN "no gateway key or no interpreter; token coverage unmeasurable"
+    else
+        _e8=$(mktemp)
+        cat > "$_e8" <<'PYE8'
+import sys, json
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print("ERR"); raise SystemExit(0)
+if not isinstance(rows, list) or not rows:
+    print("ERR"); raise SystemExit(0)
+def has(r):
+    t = r.get("tokens") or {}
+    return bool((t.get("in") or 0) or (t.get("out") or 0))
+paid = [r for r in rows if (r.get("provider") or "") not in ("ollama", "ollama-local")]
+print("%d\t%d\t%d\t%d" % (len(rows), sum(1 for r in rows if has(r)),
+                          len(paid), sum(1 for r in paid if has(r))))
+PYE8
+        _cov=$(curl -s -m 45 "http://localhost:20128/api/usage/call-logs?limit=500" \
+               -H "Authorization: Bearer $_k" 2>/dev/null | "$PY" "$_e8" 2>/dev/null || true)
+        rm -f "$_e8"
+        case "$_cov" in
+            ''|ERR*) chk E-8 UNKNOWN "the call log did not return a readable list" ;;
+            *)
+                _all=$(printf '%s' "$_cov" | cut -f1);  _allt=$(printf '%s' "$_cov" | cut -f2)
+                _pd=$(printf '%s' "$_cov" | cut -f3);   _pdt=$(printf '%s' "$_cov" | cut -f4)
+                metric e8_token_coverage_pct "$(( _allt * 100 / _all ))"
+                if [ "${_pd:-0}" -gt 0 ] && [ "$_pdt" -eq 0 ]; then
+                    chk E-8 FAIL "no paid call reports its tokens ($_pd of $_all calls)" \
+                        "spend cannot be derived, so no budget guard can be built on this log"
+                elif [ "$(( _allt * 100 / _all ))" -lt 50 ]; then
+                    chk E-8 FAIL "only $_allt of $_all calls report tokens" \
+                        "$_pdt of $_pd paid calls; partial accounting reads as a total and is not one"
+                else
+                    chk E-8 PASS "$_allt of $_all calls report tokens" \
+                        "$_pdt of $_pd paid calls carry usage"
+                fi ;;
         esac
     fi
 }
@@ -1334,8 +1527,106 @@ print('%d %d' % (ov,tot))" 2>/dev/null || true)
     # every run. A tool added upstream next month is caught without anyone
     # remembering to add it here, which is the difference between a check and
     # a list.
+    # The offered surface, fetched rather than assumed.
+    #
+    # F-8 used to read /tmp/king-audit-tools.json and report UNKNOWN when it
+    # was absent -- a check whose input no part of this script could produce,
+    # which meant it passed or abstained depending on whether someone had run
+    # a manual probe recently. Worse, it had no freshness rule: the cache found
+    # on the host was a day old, so F-8 would have been comparing yesterday's
+    # tool list against today's NEVER_REGISTER and calling that a guarantee.
+    #
+    # The gateway serves MCP at /api/mcp/stream, NOT /mcp -- the latter 404s.
+    # That is the kind of detail worth writing down, because guessing three
+    # paths and concluding "no endpoint exists" is exactly how the cost
+    # question stayed open for a day (see E-8).
+    _tj=/tmp/king-audit-tools.json
+    _tj_max_age=3600
+    if [ -n "$PY" ]; then
+        _fetch=$(mktemp)
+        cat > "$_fetch" <<'PYFETCH'
+import json, sys, urllib.request as u
+out = sys.argv[3]
+def rpc(m, p, sid=None):
+    b = {"jsonrpc": "2.0", "id": 1, "method": m}
+    if p is not None: b["params"] = p
+    h = {"Content-Type": "application/json",
+         "Accept": "application/json, text/event-stream",
+         "Authorization": "Bearer " + sys.argv[2]}
+    if sid: h["Mcp-Session-Id"] = sid
+    r = u.urlopen(u.Request(sys.argv[1], data=json.dumps(b).encode(), headers=h,
+                            method="POST"), timeout=90)
+    raw = r.read().decode("utf-8", "replace"); s2 = r.headers.get("Mcp-Session-Id")
+    if raw.lstrip().startswith("event:") or "\ndata:" in raw:
+        for ln in raw.splitlines():
+            if ln.startswith("data:"): raw = ln[5:].strip(); break
+    return json.loads(raw), (s2 or sid)
+try:
+    _, sid = rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
+                                "clientInfo": {"name": "king-audit", "version": "1"}})
+    try: rpc("notifications/initialized", {}, sid)
+    except Exception: pass
+    res, _ = rpc("tools/list", {}, sid)
+    names = sorted(t["name"] for t in ((res.get("result") or {}).get("tools") or []))
+    if not names:
+        print("ERR\tserver offered no tools"); raise SystemExit(0)
+    json.dump(names, open(out, "w"), indent=0)
+    print("OK\t%d" % len(names))
+except Exception as e:
+    print("ERR\t%s: %s" % (type(e).__name__, e))
+PYFETCH
+        # Both servers, unioned. Fetching only the gateway silently narrowed
+        # the audited surface from 120 tools to 110: the ten codegraph tools
+        # stopped being compared against NEVER_REGISTER the moment this fetch
+        # replaced the stale cache, and F-8 reported PASS right through the
+        # regression. Trading a stale-but-complete input for a fresh-but-
+        # partial one is not an improvement.
+        #
+        # A partial union is refused rather than used. If either server fails
+        # to answer there is no honest way to say "every destructive tool is
+        # blocked", so the cache is left alone and the age guard below turns
+        # F-8/F-9 UNKNOWN.
+        _gwk=$(sed -n 's/^OMNIROUTE_MCP_API_KEY=//p' agent-sidecar/.env 2>/dev/null | tail -1)
+        _cgk=$(sed -n 's/^GRAPHIFY_API_KEY=//p' .env 2>/dev/null | tail -1)
+        _pa=$(mktemp); _pb=$(mktemp)
+        _ok_a=0; _ok_b=0
+        if [ -n "$_gwk" ] && "$PY" "$_fetch" "http://localhost:20128/api/mcp/stream" "$_gwk" "$_pa" >/dev/null 2>&1; then
+            _ok_a=1
+        fi
+        if [ -n "$_cgk" ] && "$PY" "$_fetch" "http://127.0.0.1:8130/mcp" "$_cgk" "$_pb" >/dev/null 2>&1; then
+            _ok_b=1
+        fi
+        if [ "$_ok_a" = 1 ] && [ "$_ok_b" = 1 ]; then
+            _union=$(mktemp)
+            cat > "$_union" <<'PYUNION'
+import json, sys
+names = set()
+for f in sys.argv[1:-1]:
+    names |= set(json.load(open(f)))
+json.dump(sorted(names), open(sys.argv[-1], "w"), indent=0)
+PYUNION
+            "$PY" "$_union" "$_pa" "$_pb" "$_tj" >/dev/null 2>&1 || true
+            rm -f "$_union"
+        fi
+        rm -f "$_fetch" "$_pa" "$_pb"
+    fi
+
+    # Age is checked whether the fetch above succeeded or not: a stale cache
+    # left by a previous run must not be mistaken for a current answer.
+    _tj_age=""
+    if [ -f "$_tj" ]; then
+        _mt=$(stat -c %Y "$_tj" 2>/dev/null || true)
+        _now=$(date +%s 2>/dev/null || true)
+        case "$_mt$_now" in ''|*[!0-9]*) : ;; *) _tj_age=$((_now - _mt)) ;; esac
+    fi
+
     if [ -z "$PY" ]; then
         chk F-8 UNKNOWN "no interpreter; the offered tool surface cannot be enumerated"
+    elif [ ! -f "$_tj" ]; then
+        chk F-8 UNKNOWN "the gateway MCP would not list its tools; surface unknown"
+    elif [ -n "$_tj_age" ] && [ "$_tj_age" -gt "$_tj_max_age" ]; then
+        chk F-8 UNKNOWN "tool list is ${_tj_age}s old and could not be refreshed" \
+            "a guarantee derived from a stale surface is not a guarantee"
     else
         _dest=$(mktemp)
         cat > "$_dest" <<'PYDEST'
@@ -1350,20 +1641,57 @@ danger = re.compile(r'delete|remove|clear|drop|reset|purge|revoke|destroy|wipe',
 loose = sorted(n for n in tools if danger.search(n) and n not in never)
 print("\t".join(["OK" if not loose else "LOOSE", ",".join(loose), str(len(tools))]))
 PYDEST
-        _tj=/tmp/king-audit-tools.json
-        if [ ! -f "$_tj" ]; then
-            chk F-8 UNKNOWN "no cached tool list at $_tj; run the MCP probe first"
-        else
-            _r=$("$PY" "$_dest" "$_tj" agent-sidecar/src/agent_sidecar/mcp_tools.py 2>/dev/null || true)
-            case "$_r" in
-                OK*)    chk F-8 PASS "every destructive tool in the offered surface is in NEVER_REGISTER" \
-                            "$(printf '%s' "$_r" | cut -f3) tool(s) scanned" ;;
-                LOOSE*) chk F-8 FAIL "destructive tool(s) the agent could be given" \
-                            "$(printf '%s' "$_r" | cut -f2)" ;;
-                *)      chk F-8 UNKNOWN "could not compare the offered tools against NEVER_REGISTER" ;;
-            esac
-        fi
+        _r=$("$PY" "$_dest" "$_tj" agent-sidecar/src/agent_sidecar/mcp_tools.py 2>/dev/null || true)
+        case "$_r" in
+            OK*)    chk F-8 PASS "every destructive tool in the offered surface is in NEVER_REGISTER" \
+                        "$(printf '%s' "$_r" | cut -f3) tool(s) from both servers, list ${_tj_age:-?}s old" ;;
+            LOOSE*) chk F-8 FAIL "destructive tool(s) the agent could be given" \
+                        "$(printf '%s' "$_r" | cut -f2)" ;;
+            *)      chk F-8 UNKNOWN "could not compare the offered tools against NEVER_REGISTER" ;;
+        esac
         rm -f "$_dest"
+    fi
+
+    # F-9. F-8 asks which tools can DESTROY something. Nothing asked which can
+    # send something out -- a different risk with a different blast radius:
+    # destruction is loud and local, exfiltration is quiet and permanent.
+    #
+    # Twelve of the 120 offered tools reach the network. All twelve are there
+    # on purpose (search and fetch are the point of a research agent), so the
+    # check is drift, not presence: the acknowledged set is a committed file,
+    # and a thirteenth name appearing without review turns this red.
+    _ackf=scripts/network-tools.txt
+    if [ -z "$PY" ] || [ ! -f "$_tj" ]; then
+        chk F-9 UNKNOWN "no tool surface to classify"
+    elif [ -n "$_tj_age" ] && [ "$_tj_age" -gt "$_tj_max_age" ]; then
+        chk F-9 UNKNOWN "tool list is ${_tj_age}s old; egress classification would be stale"
+    elif [ ! -f "$_ackf" ]; then
+        chk F-9 FAIL "no $_ackf; network-capable tools have never been reviewed"
+    else
+        _net=$(mktemp)
+        cat > "$_net" <<'PYNET'
+import json, re, sys
+tools = json.load(open(sys.argv[1]))
+ack = set()
+for line in open(sys.argv[2], encoding="utf-8"):
+    line = line.split("#", 1)[0].strip()
+    if line: ack.add(line)
+egress = re.compile(r"fetch|search|http|webhook|post|upload|send|browse|crawl|url|scrape|notify|email", re.I)
+hits = sorted(n for n in tools if egress.search(n))
+new = sorted(set(hits) - ack)
+gone = sorted(ack - set(hits))
+print("\t".join(["NEW" if new else "OK", ",".join(new), ",".join(gone), str(len(hits)), str(len(tools))]))
+PYNET
+        _nr=$("$PY" "$_net" "$_tj" "$_ackf" 2>/dev/null || true)
+        rm -f "$_net"
+        case "$_nr" in
+            OK*)  _g=$(printf '%s' "$_nr" | cut -f3)
+                  chk F-9 PASS "$(printf '%s' "$_nr" | cut -f4) network-capable tool(s), all acknowledged" \
+                      "of $(printf '%s' "$_nr" | cut -f5) offered${_g:+; no longer offered: $_g}" ;;
+            NEW*) chk F-9 FAIL "network-capable tool(s) nobody has reviewed" \
+                      "$(printf '%s' "$_nr" | cut -f2)" ;;
+            *)    chk F-9 UNKNOWN "could not classify the offered tools by egress capability" ;;
+        esac
     fi
 
     # F-7: mirror vs live. A mirror that has drifted invites review of code
@@ -2095,6 +2423,84 @@ PYFIX
     _expect_miss "B1 good" "a compliant service is not flagged for memswap"
     _expect_miss "B4 good" "a compliant service is not flagged for profiles"
     _expect_miss "B2 good" "a loopback-bound port is not flagged"
+
+    # ---- D-7: the rotation predicate, both ways ------------------------
+    # D-5 spent a day reporting log sizes it could not read while nothing at
+    # all asked whether rotation existed. Having finally asked, the predicate
+    # itself gets a control in both directions, because a rotation check that
+    # cannot go red is the same defect one layer up.
+    printf '{"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"}}\n' > "$_t/rot-yes.json"
+    printf '{"live-restore":true}\n' > "$_t/rot-no.json"
+    if grep -q 'max-size' "$_t/rot-yes.json" 2>/dev/null
+    then printf '  ok    a daemon.json with max-size reads as rotated\n'
+    else printf '  FAIL  a daemon.json with max-size reads as rotated\n'; _f=$((_f+1)); fi
+    if grep -q 'max-size' "$_t/rot-no.json" 2>/dev/null
+    then printf '  FAIL  a daemon.json without max-size must not read as rotated\n'; _f=$((_f+1))
+    else printf '  ok    a daemon.json without max-size must not read as rotated\n'; fi
+
+    # ---- F-9: the acknowledgement comparison ---------------------------
+    # The failure mode worth controlling for is the quiet one: a new
+    # network-capable tool appearing and the comparison shrugging. So the
+    # fixture offers a name the acknowledgement file does not carry.
+    printf '["omniroute_web_fetch","notion_search","evil_new_upload"]\n' > "$_t/tools.json"
+    printf '# comment\nomniroute_web_fetch\nnotion_search   # trailing note\n\n' > "$_t/ack.txt"
+    _f9=$(mktemp)
+    cat > "$_f9" <<'PYF9T'
+import json, re, sys
+tools = json.load(open(sys.argv[1]))
+ack = set()
+for line in open(sys.argv[2], encoding="utf-8"):
+    line = line.split("#", 1)[0].strip()
+    if line: ack.add(line)
+egress = re.compile(r"fetch|search|http|webhook|post|upload|send|browse|crawl|url|scrape|notify|email", re.I)
+hits = sorted(n for n in tools if egress.search(n))
+print(",".join(sorted(set(hits) - ack)))
+PYF9T
+    _f9out=$("$PY" "$_f9" "$_t/tools.json" "$_t/ack.txt" 2>/dev/null || echo PYFAIL)
+    rm -f "$_f9"
+    if [ "$_f9out" = "evil_new_upload" ]
+    then printf '  ok    an unacknowledged network tool is caught\n'
+    else printf '  FAIL  an unacknowledged network tool is caught (got %s)\n' "${_f9out:-<empty>}"; _f=$((_f+1)); fi
+
+    # And the other direction: a comment-only difference must not turn red.
+    # `notion_search   # trailing note` is acknowledged, and a parser that
+    # kept the comment would report it as new every single run -- a guard
+    # nobody can leave green, which decays into a guard nobody reads.
+    printf '["notion_search"]\n' > "$_t/tools2.json"
+    _f9b=$(mktemp)
+    cat > "$_f9b" <<'PYF9B'
+import json, re, sys
+tools = json.load(open(sys.argv[1]))
+ack = set()
+for line in open(sys.argv[2], encoding="utf-8"):
+    line = line.split("#", 1)[0].strip()
+    if line: ack.add(line)
+egress = re.compile(r"fetch|search|http|webhook|post|upload|send|browse|crawl|url|scrape|notify|email", re.I)
+print(",".join(sorted(set(n for n in tools if egress.search(n)) - ack)))
+PYF9B
+    _f9bout=$("$PY" "$_f9b" "$_t/tools2.json" "$_t/ack.txt" 2>/dev/null || echo PYFAIL)
+    rm -f "$_f9b"
+    if [ -z "$_f9bout" ]
+    then printf '  ok    a tool acknowledged with a trailing comment is not new\n'
+    else printf '  FAIL  a tool acknowledged with a trailing comment is not new (got %s)\n' "$_f9bout"; _f=$((_f+1)); fi
+
+    # ---- E-8: token coverage, which must not read a paid zero as fine ---
+    printf '%s\n' '[{"provider":"ollama","tokens":{"in":10,"out":5}},{"provider":"openrouter","tokens":{"in":0,"out":0}}]' > "$_t/logs.json"
+    _e8t=$(mktemp)
+    cat > "$_e8t" <<'PYE8T'
+import sys, json
+rows = json.load(open(sys.argv[1]))
+def has(r):
+    t = r.get("tokens") or {}
+    return bool((t.get("in") or 0) or (t.get("out") or 0))
+paid = [r for r in rows if (r.get("provider") or "") not in ("ollama", "ollama-local")]
+print("%d\t%d" % (len(paid), sum(1 for r in paid if has(r))))
+PYE8T
+    _e8out=$("$PY" "$_e8t" "$_t/logs.json" 2>/dev/null || echo PYFAIL)
+    rm -f "$_e8t"
+    if [ "$_e8out" = "$(printf '1\t0')" ]
+    then printf '  ok    a paid call reporting zero tokens is counted as unaccounted\n'
+    else printf '  FAIL  a paid call reporting zero tokens is counted as unaccounted (got %s)\n' "$_e8out"; _f=$((_f+1)); fi
 
     rm -rf "$_t"
     echo
