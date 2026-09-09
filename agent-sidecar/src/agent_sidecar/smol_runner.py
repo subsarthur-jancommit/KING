@@ -25,6 +25,7 @@ from .mcp_tools import (
     mcp_tools_enabled,
     select_agent_tools,
     smolagents_mcp_server_parameters,
+    withheld_servers,
 )
 from .omniroute_model import smolagents_model
 
@@ -354,6 +355,10 @@ def _load_tools(settings: Settings):
 
     tools, report = select_agent_tools(offered, settings)
     report["enabled"] = True
+    # What was skipped ON PURPOSE, separate from what failed. `missing` cannot
+    # tell those apart — it only knows a requested name was not offered — and
+    # the difference is the entire meaning of `degraded`.
+    report["withheld"] = withheld_servers(settings)
     if errors:
         report["error"] = "; ".join(errors)
     return tools, clients, report

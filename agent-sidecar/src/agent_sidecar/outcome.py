@@ -86,10 +86,29 @@ def summarise(outcome: dict, *, runner: str, model: str) -> dict:
         step_errors.append(
             f"local-only work left the host: asked for {model}, served by {served}"
         )
+    # `missing` degrades only when nothing was withheld on purpose.
+    #
+    # On the local path the code graph is skipped by design — its tool
+    # descriptions flip the gateway to strategy=auto and cost the caller the
+    # model they asked for. Its three tools were therefore reported missing on
+    # EVERY local run, and `degraded` went true on every one of them.
+    #
+    # That is the same failure this file already documents for
+    # `model_overridden` twenty lines below: "a flag that is always on is worse
+    # than no flag: it trains the caller to ignore the one signal that means
+    # the answer itself may be wrong." It recurred through a different door,
+    # and the tool description tells Claude to read this field before trusting
+    # any result — so an always-on value costs every correct answer its
+    # credibility.
+    #
+    # The trade is stated rather than hidden: when a server is deliberately
+    # skipped, `missing` cannot distinguish its tools from a typo in the
+    # allowlist, so it stops degrading and stays visible in the report. A
+    # server that FAILS still lands in `error`, which always degrades.
+    withheld = list(tool_report.get("withheld") or [])
+    missing_matters = bool(tool_report.get("missing")) and not withheld
     tools_wanting = bool(
-        tool_report.get("error")
-        or tool_report.get("missing")
-        or tool_report.get("misdirected")
+        tool_report.get("error") or missing_matters or tool_report.get("misdirected")
     )
     return {
         "result": str(outcome.get("result")),

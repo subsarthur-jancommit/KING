@@ -67,9 +67,12 @@ mcp = FastMCP(
     description=(
         "Run a multi-step agent on the KING VPS. The agent writes and executes "
         "Python inside an off-host sandbox, loops until done, and returns its "
-        "answer. ALWAYS read `degraded` before trusting `result`: true means at "
-        "least one step failed and the answer was produced despite it — the "
-        "agent fabricates when the sandbox blocks it."
+        "answer. ALWAYS read `degraded` before trusting `result`: true means a "
+        "step failed, or a configured tool did not load, and the answer was "
+        "produced anyway — the agent answers from training data when a tool is "
+        "absent and from imagination when the sandbox blocks it, and both "
+        "sound exactly like a real answer. `step_errors` and `tools.missing` "
+        "say which."
     )
 )
 def run_agent(

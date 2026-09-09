@@ -108,7 +108,12 @@ def test_recursion_and_shell_tools_are_all_blocked(monkeypatch):
     )
 
     assert tools == []
-    assert report["misdirected"] == sorted(NEVER_REGISTER)
+    # `blocked`, not `misdirected`. The first means "refused, and said so",
+    # which is correct behaviour; the second means OMNIROUTE_MCP_URL points
+    # at this service instead of the gateway. They were one field until
+    # NEVER_REGISTER grew to include gateway tools, at which point
+    # `misdirected` — and through it `degraded` — fired on every run.
+    assert report["blocked"] == sorted(NEVER_REGISTER)
 
 
 def test_a_tool_that_was_asked_for_but_not_offered_is_reported(monkeypatch):

@@ -79,6 +79,27 @@ def smolagents_mcp_server_parameters(settings: Settings) -> list[dict]:
     return servers
 
 
+def withheld_servers(settings: Settings) -> list[str]:
+    """Servers deliberately not offered for THIS run, with the reason.
+
+    Exists because `missing` could not tell "a server failed" from "a server
+    was skipped on purpose", and the difference is the whole meaning of
+    `degraded`. On the local path the code graph is skipped by design, so its
+    three tools were reported missing on every single local run — turning the
+    one flag a caller is told to always read permanently on.
+
+    Kept next to the skip it describes, so the two cannot drift apart.
+    """
+    out: list[str] = []
+    if settings.codegraph_mcp_api_key and runs_on_this_host(settings.model_id):
+        out.append(
+            f"{settings.codegraph_mcp_url}: skipped for a local model — its tool "
+            "descriptions flip the gateway to strategy=auto and the caller loses "
+            "the model they asked for"
+        )
+    return out
+
+
 # Never handed to an agent. Not a policy default — an invariant.
 #
 # These three are the sidecar's OWN MCP tools (see mcp_server.py), not
@@ -88,6 +109,12 @@ def smolagents_mcp_server_parameters(settings: Settings) -> list[dict]:
 # agent is suddenly holding a shell on the VPS, plus run_agent to recurse into
 # itself. An agent that reads web pages must never hold either, and "the URL is
 # probably right" is not a boundary.
+# The sidecar's OWN three, kept as a separate name because `misdirected` means
+# exactly "these appeared, so OMNIROUTE_MCP_URL points at us". NEVER_REGISTER is
+# the wider blocklist and includes gateway tools the agent must not hold; those
+# appearing is normal and correct, not a misconfiguration.
+SELF_TOOLS = frozenset({"vps_exec", "run_agent", "ask_model"})
+
 NEVER_REGISTER = frozenset(
     {
         # This service's own tools. Under correct configuration they are not in
@@ -134,11 +161,29 @@ def select_agent_tools(offered, settings: Settings):
     # A hit here means OMNIROUTE_MCP_URL is pointed at this service rather than
     # the gateway, and the caller needs to know that, not just be protected
     # from it.
-    misdirected = sorted(n for n in by_name if n in NEVER_REGISTER)
+    # SELF_TOOLS, not NEVER_REGISTER.
+    #
+    # This field means one specific thing: OMNIROUTE_MCP_URL is pointed at this
+    # service instead of the gateway, which is why the sidecar's own tools would
+    # appear in a set that should hold the gateway's. When NEVER_REGISTER grew
+    # to include four DESTRUCTIVE GATEWAY tools, this started firing on every
+    # run — the gateway legitimately offers them, and being blocked is the
+    # correct outcome, not a misconfiguration. It fed `degraded`, so the flag a
+    # caller is told to always read went permanently true.
+    misdirected = sorted(n for n in by_name if n in SELF_TOOLS)
 
-    selected, missing = [], []
+    selected, missing, blocked = [], [], []
     for name in settings.agent_tools:
         if name in NEVER_REGISTER:
+            # Refused, and SAID so. Dropping it silently would let a caller
+            # believe the agent holds a tool it does not, and read an answer
+            # from training data as an answer from the tool.
+            #
+            # Its own field, separate from `misdirected`: being blocked is the
+            # correct outcome and means nothing is wrong, while `misdirected`
+            # means OMNIROUTE_MCP_URL is pointed at the wrong service. Folding
+            # the two together is what made `degraded` fire on every run.
+            blocked.append(name)
             continue
         tool = by_name.get(name)
         if tool is None:
@@ -150,5 +195,6 @@ def select_agent_tools(offered, settings: Settings):
         "offered": len(by_name),
         "selected": [getattr(t, "name", "?") for t in selected],
         "missing": missing,
+        "blocked": sorted(blocked),
         "misdirected": misdirected,
     }

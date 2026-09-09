@@ -103,8 +103,12 @@ def test_a_caller_cannot_reach_a_never_register_tool_through_the_override():
     selected, report = select_agent_tools(offered, _S())
     names = {getattr(t, "name", None) for t in selected}
     assert names == {"get_node"}, f"leaked: {sorted(names - {'get_node'})}"
-    # And it must say so rather than quietly dropping them.
-    assert report["misdirected"] == sorted(NEVER_REGISTER)
+    # And it must say so rather than quietly dropping them. `blocked`, not
+    # `misdirected`: being refused is the correct outcome, while `misdirected`
+    # means OMNIROUTE_MCP_URL is pointed at this service instead of the
+    # gateway. They were one field, and folding them together is what made
+    # `degraded` fire on every single run.
+    assert report["blocked"] == sorted(NEVER_REGISTER)
 
 
 # --- the category, not the example ---------------------------------------
@@ -150,7 +154,7 @@ def test_a_caller_asking_for_a_destructive_tool_does_not_get_it(name):
 
     selected, report = select_agent_tools([_Tool(name), _Tool("get_node")], _S())
     assert {getattr(t, "name", None) for t in selected} == {"get_node"}
-    assert name in report["misdirected"], "the report must say it was blocked, not drop it silently"
+    assert name in report["blocked"], "the report must say it was blocked, not drop it silently"
 
 
 def test_the_config_comment_is_not_aspirational():
@@ -165,3 +169,85 @@ def test_the_config_comment_is_not_aspirational():
     text = cfg.read_text(encoding="utf-8")
     if "omniroute_memory_clear" in text and "cannot be reached" in text:
         assert "omniroute_memory_clear" in NEVER_REGISTER
+
+
+# --- `degraded` must not be permanently on -------------------------------
+#
+# It was, for two independent reasons, both of them correct behaviour being
+# misread as failure: the code graph is skipped by design on the local path, so
+# its three tools were "missing" on every local run; and NEVER_REGISTER grew to
+# include four destructive GATEWAY tools, so `misdirected` — which means
+# "OMNIROUTE_MCP_URL points at us" — fired on every run too.
+#
+# outcome.py already warns about exactly this shape for `model_overridden`:
+# a flag that is always on trains the caller to ignore the one signal that
+# means the answer may be wrong. These tests exist so it cannot recur a third
+# time.
+
+def _summary(**tool_report):
+    from agent_sidecar.outcome import summarise
+
+    base = {"offered": 110, "selected": [], "missing": [], "misdirected": []}
+    base.update(tool_report)
+    return summarise(
+        {"result": "x", "step_errors": [], "tools": base, "tools_used": []},
+        runner="smolagents",
+        model="ollama/qwen2.5:1.5b-instruct-q4_K_M",
+    )
+
+
+def test_deliberate_skip_does_not_degrade():
+    out = _summary(
+        missing=["get_neighbors", "get_node", "query_graph"],
+        withheld=["http://codegraph-serve:8130/mcp: skipped for a local model"],
+    )
+    assert out["degraded"] is False
+
+
+def test_missing_without_a_reason_still_degrades():
+    out = _summary(missing=["get_neighbors"], withheld=[])
+    assert out["degraded"] is True
+
+
+def test_a_server_that_failed_always_degrades():
+    # Even alongside a deliberate skip: `error` means something broke.
+    out = _summary(
+        error="http://codegraph-serve:8130/mcp: TimeoutError",
+        missing=["get_node"],
+        withheld=["http://codegraph-serve:8130/mcp: skipped for a local model"],
+    )
+    assert out["degraded"] is True
+
+
+def test_blocked_gateway_tools_are_not_misdirection():
+    from agent_sidecar.mcp_tools import NEVER_REGISTER, SELF_TOOLS, select_agent_tools
+    from agent_sidecar.config import load_settings
+
+    class _T:
+        def __init__(self, n):
+            self.name = n
+
+    gateway_destructive = sorted(NEVER_REGISTER - SELF_TOOLS)
+    assert gateway_destructive, "the wider blocklist must hold more than the self tools"
+
+    settings = load_settings()
+    offered = [_T(n) for n in gateway_destructive] + [_T("omniroute_web_search")]
+    _, report = select_agent_tools(offered, settings)
+    # Blocked, yes — but the gateway offering them is normal, not a sign that
+    # OMNIROUTE_MCP_URL is pointed at this service.
+    assert report["misdirected"] == []
+    for name in gateway_destructive:
+        assert name not in report["selected"]
+
+
+def test_the_self_tools_still_signal_misdirection():
+    from agent_sidecar.mcp_tools import SELF_TOOLS, select_agent_tools
+    from agent_sidecar.config import load_settings
+
+    class _T:
+        def __init__(self, n):
+            self.name = n
+
+    offered = [_T(n) for n in sorted(SELF_TOOLS)]
+    _, report = select_agent_tools(offered, load_settings())
+    assert report["misdirected"] == sorted(SELF_TOOLS)
