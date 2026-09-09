@@ -2797,8 +2797,19 @@ PYKEYS
                   # the day someone fixes the thing it describes.
                   _keep=$(sed -n 's/^JOURNAL_KEEP="\${KING_JOURNAL_KEEP:-\([0-9]*\)}"/\1/p' \
                           scripts/king-backup.sh 2>/dev/null | head -1)
+                  # `${_keep:-else}` substitutes the VALUE when set, not the
+                  # alternative — so the first attempt printed
+                  # "bounded at 5000 lines; 5000the baseline diff". It is a
+                  # default, not a ternary, and this file has now made that
+                  # mistake once in the check that exists to catch confident
+                  # wrong statements.
+                  if [ -n "$_keep" ]; then
+                      _l4="bounded at $_keep lines by king-backup.sh"
+                  else
+                      _l4="nothing rotates it"
+                  fi
                   chk L-4 PASS "run journal at $_jl line(s)" \
-                      "${_keep:+bounded at $_keep lines by king-backup.sh; }${_keep:-nothing rotates it; }the baseline diff shows growth"
+                      "$_l4; the baseline diff shows growth"
               else
                   chk L-4 FAIL "run journal at $_jl lines and nothing rotates it"
               fi ;;
