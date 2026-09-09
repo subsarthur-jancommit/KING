@@ -903,18 +903,36 @@ dim_C() {
             git check-ignore -q "$v" 2>/dev/null || _leaky="$_leaky $v"
         done
     done
+    # These are CANDIDATE paths, and most of them do not exist. Asking whether
+    # the ignore rule WOULD cover them is the only useful time to ask, because
+    # providers.env.bak.20260906 was unignored for a day before anyone looked.
+    #
+    # But the old wording — "one `git add -A` from a commit" — reads as a claim
+    # that the named files are sitting in the tree right now. Three of the four
+    # it listed on 2026-09-10 did not exist on the host at all. A check that is
+    # right about the rule and misleading about the world still costs someone
+    # an hour.
     if [ -z "$_leaky" ]; then
-        chk C-1 PASS "every secret file and its backup variants are gitignored"
+        chk C-1 PASS "the ignore rules cover every secret file and its backup variants" \
+            "42 candidate paths, existing or not; the rule has to be right before the file appears"
     else
-        chk C-1 FAIL "secret path(s) not ignored — one \`git add -A\` from a commit" \
+        chk C-1 FAIL "ignore rules would not cover these secret paths if they appeared" \
             "$(printf '%s' "$_leaky" | tr ' ' '\n' | grep -v '^$' | head -4 | tr '\n' ' ')"
     fi
 
     # Untracked AND unignored files that look secret-bearing. This is the check
     # that would have caught providers.env.bak.20260906 the day it appeared.
+    #
+    # The second grep is a subtraction, not a softening. The pattern matches on
+    # NAME, and `scripts/local-secret-scan.sh` — the scanner itself — matched
+    # the word "secret" and was reported as a stray credential. Source files,
+    # documentation and templates are excluded by extension; a credential does
+    # not arrive named `.sh`, and a check crying wolf about the tooling is one
+    # people learn to scroll past.
     _stray=$(git status --porcelain --untracked-files=all 2>/dev/null \
              | awk '/^\?\?/ {print $2}' \
-             | grep -iE '(^|/)\.env|secret|token|credential|\.bak(\.|$)|\.pem$|\.key$' || true)
+             | grep -iE '(^|/)\.env|secret|token|credential|\.bak(\.|$)|\.pem$|\.key$' \
+             | grep -vE '\.(sh|py|js|mjs|ts|md|yml|yaml|example)$' || true)
     if [ -z "$_stray" ]; then
         chk C-1b PASS "no untracked, unignored file looks secret-bearing"
     else

@@ -76,6 +76,13 @@ omniroute/plugins/*
 # would vanish silently.
 !**/*.env*.example
 
+# Same treatment for the other file that has held a live credential in
+# plaintext. Claude Code appends permissions.allow entries to
+# settings.local.json verbatim, which is how a database connection string once
+# landed in it — and the exact-path rule above protects the file while leaving
+# every copy of it exposed.
+.claude/settings.local.json*
+
 # Alert webhook URL + HMAC secret for the pool-prove timer, read via
 # EnvironmentFile so the secret never lands in a systemd unit.
 /.pool-prove.env
