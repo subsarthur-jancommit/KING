@@ -112,8 +112,15 @@ def runs_on_this_host(model_id: str | None) -> bool:
 #
 # omniroute_memory_add writes, and is included deliberately: the write is
 # confined to the memory store, which exists to be written to. Its destructive
-# sibling omniroute_memory_clear is not here, and would not be reachable even
-# if it were added by hand — see NEVER_REGISTER in mcp_tools.py.
+# sibling omniroute_memory_clear is not here, and — since 2026-09-09 — genuinely
+# cannot be reached even if it were added by hand.
+#
+# That sentence used to be written in the present tense and was not true.
+# NEVER_REGISTER held only this service's own three tools, so an allowlist
+# naming omniroute_memory_clear would have been honoured, and the per-call
+# `tools` override made that one request rather than a redeploy. The audit
+# check that found it now derives destructive tools from the live MCP surface
+# instead of trusting this comment.
 DEFAULT_AGENT_TOOLS: tuple[str, ...] = (
     "omniroute_web_search",
     "omniroute_web_fetch",

@@ -120,6 +120,7 @@ F-4
 F-5
 F-6
 F-7
+F-8
 G-1
 G-2
 G-3
@@ -200,6 +201,7 @@ F-4|model_overridden in the recent run journal
 F-5|per-provider failure rate, and what reached the caller
 F-6|the local model answers, and answers from this host
 F-7|flow mirror parses and exports what its tests import
+F-8|every destructive tool the servers offer is blocked from the agent
 G-1|every guard with a self-test still passes it
 G-2|every instrument measures what it claims
 G-3|timers: last run, and whether any unit failed
@@ -1320,6 +1322,48 @@ print('%d %d' % (ov,tot))" 2>/dev/null || true)
         fi
     else
         chk F-5 SKIP "gateway-report.sh not present"
+    fi
+
+
+    # F-8: derived, not listed. NEVER_REGISTER protected this service's own
+    # three tools while config.py claimed it also covered
+    # omniroute_memory_clear -- a gateway tool that wipes the memory store.
+    # It did not, and the per-call `tools` override made that one request.
+    #
+    # So the destructive set is read from what the servers ACTUALLY offer,
+    # every run. A tool added upstream next month is caught without anyone
+    # remembering to add it here, which is the difference between a check and
+    # a list.
+    if [ -z "$PY" ]; then
+        chk F-8 UNKNOWN "no interpreter; the offered tool surface cannot be enumerated"
+    else
+        _dest=$(mktemp)
+        cat > "$_dest" <<'PYDEST'
+import json, re, sys
+try:
+    tools = json.load(open(sys.argv[1]))
+except Exception:
+    print("ERR"); raise SystemExit(0)
+never = set(re.findall(r'"([a-z0-9_]+)"', open(sys.argv[2], encoding="utf-8").read()
+                       .split("NEVER_REGISTER = frozenset(")[-1].split(")")[0]))
+danger = re.compile(r'delete|remove|clear|drop|reset|purge|revoke|destroy|wipe', re.I)
+loose = sorted(n for n in tools if danger.search(n) and n not in never)
+print("\t".join(["OK" if not loose else "LOOSE", ",".join(loose), str(len(tools))]))
+PYDEST
+        _tj=/tmp/king-audit-tools.json
+        if [ ! -f "$_tj" ]; then
+            chk F-8 UNKNOWN "no cached tool list at $_tj; run the MCP probe first"
+        else
+            _r=$("$PY" "$_dest" "$_tj" agent-sidecar/src/agent_sidecar/mcp_tools.py 2>/dev/null || true)
+            case "$_r" in
+                OK*)    chk F-8 PASS "every destructive tool in the offered surface is in NEVER_REGISTER" \
+                            "$(printf '%s' "$_r" | cut -f3) tool(s) scanned" ;;
+                LOOSE*) chk F-8 FAIL "destructive tool(s) the agent could be given" \
+                            "$(printf '%s' "$_r" | cut -f2)" ;;
+                *)      chk F-8 UNKNOWN "could not compare the offered tools against NEVER_REGISTER" ;;
+            esac
+        fi
+        rm -f "$_dest"
     fi
 
     # F-7: mirror vs live. A mirror that has drifted invites review of code

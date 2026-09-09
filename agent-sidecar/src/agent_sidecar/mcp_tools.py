@@ -88,7 +88,32 @@ def smolagents_mcp_server_parameters(settings: Settings) -> list[dict]:
 # agent is suddenly holding a shell on the VPS, plus run_agent to recurse into
 # itself. An agent that reads web pages must never hold either, and "the URL is
 # probably right" is not a boundary.
-NEVER_REGISTER = frozenset({"vps_exec", "run_agent", "ask_model"})
+NEVER_REGISTER = frozenset(
+    {
+        # This service's own tools. Under correct configuration they are not in
+        # the offered set at all; they are listed because the misconfiguration
+        # that would put them there is quiet.
+        "vps_exec",
+        "run_agent",
+        "ask_model",
+        # Destructive tools the GATEWAY offers, added 2026-09-09.
+        #
+        # config.py claimed omniroute_memory_clear "would not be reachable even
+        # if it were added by hand -- see NEVER_REGISTER". It was not in this
+        # set, so the claim was false: an allowlist naming it would have been
+        # honoured. The per-call `tools` override added on 2026-09-08 made that
+        # a single request rather than a redeploy.
+        #
+        # A test asserted a caller could not reach vps_exec through the
+        # override. It passed, and the destructive tool that actually WAS
+        # reachable is a different one -- which is what a test proves when it
+        # is written against the example rather than the category.
+        "omniroute_memory_clear",
+        "omniroute_ccr_delete",
+        "omniroute_pool_reset",
+        "obsidian_delete_note",
+    }
+)
 
 
 def select_agent_tools(offered, settings: Settings):

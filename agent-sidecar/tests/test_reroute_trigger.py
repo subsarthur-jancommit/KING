@@ -105,3 +105,63 @@ def test_a_caller_cannot_reach_a_never_register_tool_through_the_override():
     assert names == {"get_node"}, f"leaked: {sorted(names - {'get_node'})}"
     # And it must say so rather than quietly dropping them.
     assert report["misdirected"] == sorted(NEVER_REGISTER)
+
+
+# --- the category, not the example ---------------------------------------
+#
+# The test above proves a caller cannot reach `vps_exec` through the per-call
+# override. It passed while `omniroute_memory_clear` — a gateway tool that
+# wipes the memory store — was reachable by exactly that route, because
+# NEVER_REGISTER held only this service's own three tools while config.py
+# claimed otherwise.
+#
+# A test written against one example proves one example. These assert the
+# category: every destructive tool the gateway offers is blocked, and the
+# comment in config.py is true rather than aspirational.
+
+DESTRUCTIVE_GATEWAY_TOOLS = (
+    "omniroute_memory_clear",
+    "omniroute_ccr_delete",
+    "omniroute_pool_reset",
+    "obsidian_delete_note",
+)
+
+
+@pytest.mark.parametrize("name", DESTRUCTIVE_GATEWAY_TOOLS)
+def test_destructive_gateway_tools_can_never_be_registered(name):
+    from agent_sidecar.mcp_tools import NEVER_REGISTER
+
+    assert name in NEVER_REGISTER, (
+        f"{name} is destructive and is not in NEVER_REGISTER, so an allowlist "
+        "naming it — including the per-call `tools` override — would be honoured."
+    )
+
+
+@pytest.mark.parametrize("name", DESTRUCTIVE_GATEWAY_TOOLS)
+def test_a_caller_asking_for_a_destructive_tool_does_not_get_it(name):
+    from agent_sidecar.mcp_tools import select_agent_tools
+
+    class _Tool:
+        def __init__(self, n):
+            self.name = n
+
+    class _S:
+        agent_tools = (name, "get_node")
+
+    selected, report = select_agent_tools([_Tool(name), _Tool("get_node")], _S())
+    assert {getattr(t, "name", None) for t in selected} == {"get_node"}
+    assert name in report["misdirected"], "the report must say it was blocked, not drop it silently"
+
+
+def test_the_config_comment_is_not_aspirational():
+    # config.py states a guarantee about omniroute_memory_clear. If that
+    # sentence survives while the guarantee does not, the comment becomes the
+    # reason nobody checks.
+    import pathlib
+
+    from agent_sidecar.mcp_tools import NEVER_REGISTER
+
+    cfg = pathlib.Path(__file__).resolve().parents[1] / "src" / "agent_sidecar" / "config.py"
+    text = cfg.read_text(encoding="utf-8")
+    if "omniroute_memory_clear" in text and "cannot be reached" in text:
+        assert "omniroute_memory_clear" in NEVER_REGISTER
