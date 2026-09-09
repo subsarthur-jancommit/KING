@@ -66,6 +66,7 @@ services:
     security_opt:
       - no-new-privileges:true
     mem_limit: ${OTEL_COLLECTOR_MEM_LIMIT:-256m}
+    memswap_limit: ${OTEL_COLLECTOR_MEM_LIMIT:-256m}
     cpus: ${OTEL_COLLECTOR_CPUS:-0.5}
     logging: *default-logging
     profiles:
@@ -152,6 +153,7 @@ services:
     # A VPS has far less headroom than a CI runner, and this session already
     # hit real OOM behaviour building this same stack. Bound it explicitly.
     mem_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
+    memswap_limit: ${AGENT_SIDECAR_MEM_LIMIT:-1g}
     cpus: ${AGENT_SIDECAR_CPUS:-1.0}
     logging: *default-logging
     profiles:
@@ -247,6 +249,7 @@ services:
     # HTTP — not that a hardened run stays healthy under real agent work.
     # Untested hardening that breaks at runtime is worse than none.
     mem_limit: ${OPENHANDS_CANVAS_MEM_LIMIT:-2g}
+    memswap_limit: ${OPENHANDS_CANVAS_MEM_LIMIT:-2g}
     cpus: ${OPENHANDS_CANVAS_CPUS:-2.0}
     logging: *default-logging
     profiles:
@@ -460,6 +463,10 @@ services:
     # hardened run survives that. Untested hardening that breaks at runtime is
     # worse than none.
     mem_limit: ${AP_MEM_LIMIT:-1536m}
+    # Equal to mem_limit, per CLAUDE.md. Without it Docker grants swap of
+    # the same size again, and D-1 measured this container holding 245 MB
+    # of it while every compliant service held zero.
+    memswap_limit: ${AP_MEM_LIMIT:-1536m}
     cpus: ${AP_CPUS:-1.0}
     volumes:
       - activepieces-cache:/usr/src/app/cache
@@ -518,6 +525,28 @@ services:
     security_opt:
       - no-new-privileges:true
     logging: *default-logging
+    # Caddy had no mem_limit, no memswap_limit and no cpus — the only service
+    # binding 0.0.0.0, unbounded on a 7.9 GB host. 192m is generous for a
+    # reverse proxy holding four routes; the equal memswap_limit is the
+    # CLAUDE.md rule that makes it OOM inside its own cgroup instead of
+    # dragging the host into swap, which D-1 shows two other containers doing.
+    mem_limit: ${CADDY_MEM_LIMIT:-192m}
+    memswap_limit: ${CADDY_MEM_LIMIT:-192m}
+    cpus: ${CADDY_CPUS:-0.5}
+    # D-2 greps `docker ps` for "unhealthy". A container with no healthcheck
+    # never produces that word, so its silence read as health — and this was
+    # the container it read that way about: the single public entrypoint.
+    #
+    # The admin API is the right probe because it proves both halves. A
+    # `caddy version` would prove the binary runs; asking for the loaded
+    # config proves it runs AND has one, which is the failure mode that
+    # matters after a reload.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "--timeout=3", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     profiles:
       - proxy
 
@@ -799,6 +828,14 @@ services:
       - ollama
     restart: "no"
     logging: *default-logging
+    # A one-shot pull, and it had no bounds at all. The download streams to
+    # disk so the memory need is small, but "small" is not a limit: this runs
+    # concurrently with a gateway and a workflow engine on 2 vCPU, and an
+    # unbounded job is exactly what the equal-limits rule exists to stop from
+    # dragging the host into swap. cpus matters more than the ceiling here.
+    mem_limit: ${OLLAMA_PULL_MEM_LIMIT:-256m}
+    memswap_limit: ${OLLAMA_PULL_MEM_LIMIT:-256m}
+    cpus: ${OLLAMA_PULL_CPUS:-0.5}
     profiles:
       - localmodel
 

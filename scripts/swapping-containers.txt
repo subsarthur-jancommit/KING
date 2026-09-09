@@ -1,0 +1,26 @@
+# Containers allowed to hold swap, with a ceiling each.
+#
+# CLAUDE.md requires mem_limit == memswap_limit so a container OOMs inside its
+# own cgroup instead of dragging a 7.9 GB host into swap thrash. Every service
+# this repo declares now obeys it, and the correlation held exactly: the four
+# that were non-compliant were the ones holding swap, and they dropped to 0 MB
+# the moment equal limits were applied.
+#
+# What is left is `omniroute`, declared inside the vendored subtree. CLAUDE.md
+# forbids editing it, and forbids a root-compose override of a service it
+# defines — a partial `omniroute-base:` override turned every Docker CI job red
+# once with "conflicts with imported resource". Fixing this means fixing it
+# upstream, which is outside this repo.
+#
+# A BARE acknowledgement would be the wrong shape. "omniroute swaps" stays true
+# whether it holds 362 MB or 3 GB, so a check that only asked the name would
+# stop noticing the thing that actually matters. Each line therefore carries a
+# ceiling in megabytes, and crossing it turns D-1 red again.
+#
+# Format:  <container name> <ceiling MB>   # reason
+# Blank lines and #-comments ignored. Any container not listed fails at 50 MB.
+
+# Measured 2026-09-10 at 362 MB, having been 266 MB and 308 MB across the day.
+# 512 leaves room for that drift and still catches a real leak. If it trips,
+# the question is not "raise the ceiling" — it is what changed upstream.
+omniroute 512

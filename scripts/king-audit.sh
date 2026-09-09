@@ -1280,15 +1280,31 @@ dim_D() {
                 [ -r "$b/memory.swap.current" ] || continue
                 v=$(cat "$b/memory.swap.current" 2>/dev/null)
                 case "$v" in ''|*[!0-9]*) continue ;; esac
-                [ "$v" -gt 52428800 ] && printf '%s=%sMB ' "$c" "$((v/1048576))"
+                # A per-container ceiling, not a flat 50 MB for everything.
+                #
+                # `omniroute` is declared inside the vendored subtree, and
+                # CLAUDE.md forbids both editing it and overriding it from the
+                # root compose — a partial override there turned every Docker
+                # CI job red once. So this one cannot be fixed from this repo,
+                # and a check that stays red over it is one nobody reads.
+                #
+                # But a bare acknowledgement would be the wrong shape: "it
+                # swaps" is equally true at 362 MB and at 3 GB. The ceiling in
+                # the file keeps the guard live for the thing that matters,
+                # which is growth.
+                _cap=$(grep -v '^[[:space:]]*#' scripts/swapping-containers.txt 2>/dev/null \
+                       | awk -v n="$c" '$1 == n { print $2; exit }')
+                case "$_cap" in ''|*[!0-9]*) _cap=50 ;; esac
+                [ "$v" -gt $((_cap * 1048576)) ] && printf '%s=%sMB/cap%sMB ' "$c" "$((v/1048576))" "$_cap"
                 break
             done
           done; true)
     metric d1_swapping "$(printf '%s' "$_sw" | wc -w | tr -d ' ')"
     if [ -z "$_sw" ]; then
-        chk D-1 PASS "no container holds more than 50 MB of swap"
+        chk D-1 PASS "no container holds more swap than its ceiling allows" \
+            "50 MB by default; scripts/swapping-containers.txt raises it only where the fix is upstream"
     else
-        chk D-1 FAIL "container(s) swapping" "$_sw"
+        chk D-1 FAIL "container(s) over their swap ceiling" "$_sw"
     fi
 
     _unhealthy=$(docker ps --format '{{.Names}} {{.Status}}' | grep -i 'unhealthy' || true)
@@ -1307,11 +1323,28 @@ dim_D() {
         [ "$(docker inspect -f '{{if .Config.Healthcheck}}y{{else}}n{{end}}' "$_c" 2>/dev/null)" = "n" ] \
             && _nohc="$_nohc $_c"
     done
+    # Drift, not presence. One of these is genuinely unable to have a probe:
+    # a distroless image has no shell and no wget, and a Docker healthcheck
+    # runs its command INSIDE the container. A check that can never be green
+    # over that stops being read, so the impossible case is acknowledged by
+    # name and a NEW one turns this red.
+    _hcack=scripts/no-healthcheck.txt
     if [ -z "$_nohc" ]; then
         chk D-2b PASS "every running container declares a healthcheck"
+    elif [ ! -f "$_hcack" ]; then
+        chk D-2b FAIL "container(s) with no healthcheck, and no $_hcack" "$_nohc"
     else
-        chk D-2b FAIL "container(s) with no healthcheck at all" \
-            "$_nohc — D-2 cannot see these; its silence about them is not a pass"
+        _hcnew=""
+        for _c in $_nohc; do
+            grep -v '^[[:space:]]*#' "$_hcack" | grep -qx "$_c" || _hcnew="$_hcnew $_c"
+        done
+        if [ -z "$_hcnew" ]; then
+            chk D-2b PASS "every running container without a healthcheck is acknowledged" \
+                "$_nohc — reasons in $_hcack; D-2's silence about them is not a pass"
+        else
+            chk D-2b FAIL "container(s) with no healthcheck that nobody has reviewed" \
+                "$_hcnew — D-2 cannot see these; its silence about them is not a pass"
+        fi
     fi
 
     if [ -z "$_unhealthy" ] && [ -z "$_restarts" ]; then

@@ -1,0 +1,31 @@
+# Running containers that declare no healthcheck, acknowledged one by one.
+#
+# D-2 greps `docker ps` for the word "unhealthy". A container with no
+# healthcheck never produces that word, so D-2's silence about it reads as
+# health — the exact failure that dimension is named for. D-2b asks the
+# question D-2 cannot, and this file is what keeps it answerable.
+#
+# It is drift, not presence: every name below was looked at once and found to
+# have a reason. A container appearing here without review turns
+# `king-audit.sh -d D` red, which is the only outcome that changes anyone's
+# behaviour. Same reasoning as pool-dead-models.txt, network-tools.txt and
+# root-containers.txt.
+#
+# Format: one container name per line. Blank lines and #-comments ignored.
+# Measured 2026-09-10 against the running stack.
+
+# --- distroless, so there is nothing to run a probe WITH ------------------
+# otel/opentelemetry-collector-contrib ships no shell and no wget or curl.
+# A Docker healthcheck executes its command INSIDE the container, so the
+# collector's own health_check extension on :13133 cannot be reached by
+# anything the image contains. `["CMD", "/otelcol-contrib", "--help"]` would
+# satisfy the check and prove only that a binary starts — the "healthy that
+# was never checked" shape, with a green badge on it. Better to say the
+# probe is impossible than to fake one.
+#
+# What this costs: if the collector stops exporting, traces stop arriving at
+# Langfuse and nothing here notices. That is acceptable because tracing is
+# observability, not service — no request path depends on it. If it ever
+# becomes load-bearing, the fix is a sidecar that probes :13133 from outside,
+# not a healthcheck inside a container that cannot run one.
+king-otel-collector-1
