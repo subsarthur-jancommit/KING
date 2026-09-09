@@ -112,15 +112,27 @@ def runs_on_this_host(model_id: str | None) -> bool:
 #
 # omniroute_memory_add writes, and is included deliberately: the write is
 # confined to the memory store, which exists to be written to. Its destructive
-# sibling omniroute_memory_clear is not here, and — since 2026-09-09 — genuinely
-# cannot be reached even if it were added by hand.
+# sibling omniroute_memory_clear is not here, and cannot be reached even if it
+# were added by hand — in the image built on 2026-09-10 and later.
 #
-# That sentence used to be written in the present tense and was not true.
-# NEVER_REGISTER held only this service's own three tools, so an allowlist
-# naming omniroute_memory_clear would have been honoured, and the per-call
-# `tools` override made that one request rather than a redeploy. The audit
-# check that found it now derives destructive tools from the live MCP surface
-# instead of trusting this comment.
+# That sentence has now been wrong twice, in two different ways, and the second
+# way is the subtler one.
+#
+# First it was written in the present tense while NEVER_REGISTER held only this
+# service's own three tools, so an allowlist naming omniroute_memory_clear
+# would have been honoured, and the per-call `tools` override made that one
+# request rather than a redeploy.
+#
+# Then it was dated 2026-09-09 — the day the SOURCE changed. The running
+# container kept the three-name set until it was rebuilt on 09-10, because the
+# repo is bind-mounted at /workspace while the image bakes its source at /app.
+# For two days the guarantee was true in the tree and false in the process, and
+# the audit check verifying it was reading the tree.
+#
+# So the date names the IMAGE, not the commit. F-8 now parses NEVER_REGISTER
+# out of the running container, F-8b reports when that differs from this file,
+# and A-8 compares every locally-built image against its source by digest.
+# None of the three trusts this comment.
 DEFAULT_AGENT_TOOLS: tuple[str, ...] = (
     "omniroute_web_search",
     "omniroute_web_fetch",

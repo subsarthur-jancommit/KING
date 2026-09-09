@@ -2335,3 +2335,50 @@ Collected because each was learned by being wrong first.
   from a web-capable model to one answering from memory produces output of
   identical shape and no way to tell.
 - **Unmeasurable is a failure, not a pass.**
+
+## 12. Where the running code lives, which is not where you edit it
+
+`agent-sidecar` is bind-mounted into its own container at `/workspace`, and
+runs from `/app`. Those are different directories holding different copies of
+the same files.
+
+`/app` is baked at build time by `COPY src/ ./src/`. `/workspace` is the repo,
+mounted so `vps_exec` can act on it. Editing `agent-sidecar/src/...` — by
+commit, by `scp`, by anything — changes `/workspace` and does not touch the
+process. **The sidecar only picks up source changes on a rebuild.**
+
+This cost two days once. `NEVER_REGISTER` was extended from three names to
+seven on 2026-09-09 to block four destructive gateway tools. The source said
+seven, the running container said three, and `F-8` — the check whose entire job
+is that guarantee — parsed the source. It reported PASS across the whole
+window.
+
+```
+# what the process enforces, which is the only thing that counts
+docker exec king-agent-sidecar-http-1 \
+  sed -n '/NEVER_REGISTER = frozenset/,/^)/p' /app/src/agent_sidecar/mcp_tools.py
+```
+
+Rebuilding needs both profiles, because the service `depends_on`
+`omniroute-base`, which lives in the included vendored file under the `base`
+profile. With only its own profile, Compose refuses:
+`service "agent-sidecar-http" depends on undefined service "omniroute-base"`.
+
+```
+docker tag king-agent-sidecar:local king-agent-sidecar:rollback-$(date +%Y%m%d)
+docker compose --profile base --profile agent-sidecar-http build agent-sidecar-http
+docker compose --profile base --profile agent-sidecar-http up -d --no-deps \
+  --force-recreate agent-sidecar-http
+```
+
+Tag the rollback first and verify the new image before recreating anything —
+`docker run --rm --entrypoint sh king-agent-sidecar:local -c '…'` reads the new
+layer without touching what is serving. `--no-deps` keeps the gateway out of
+it.
+
+Three checks now cover this so nobody has to remember it: `F-8` parses
+`NEVER_REGISTER` from the running container, `F-8b` reports when that differs
+from the reviewed file, and `A-8` compares every locally-built image against
+its build context **by digest**. Not by timestamp — `git log` cannot see an
+`scp`, and BuildKit's `.Created` is stamped from a cached layer, so a freshly
+built image can report an earlier time than files it demonstrably contains.
