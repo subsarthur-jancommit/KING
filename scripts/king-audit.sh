@@ -33,7 +33,7 @@
 # Exit: 0 all PASS, 1 any FAIL, 2 any UNKNOWN, 3 any planned check not implemented.
 set -eu
 
-DIMENSIONS="A B C D E F G H I J K"
+DIMENSIONS="A B C D E F G H I J K L"
 WANT=""
 MODE="run"
 WRITE_BASELINE=0
@@ -145,6 +145,10 @@ K-5
 K-6
 K-7
 K-8
+L-1
+L-2
+L-3
+L-4
 IMPL
 }
 
@@ -221,6 +225,10 @@ K-5|SSH exposure: password auth, root login
 K-6|pending security updates and unattended upgrades
 K-7|TLS certificate expiry
 K-8|cron entries that come from nowhere in the repo
+L-1|gateway API keys: how many, how scoped, how long unused
+L-2|Activepieces registration is closed, re-tested rather than recalled
+L-3|journals hold no credential-shaped string
+L-4|journal growth is bounded by something
 MANIFEST
 }
 
@@ -1864,6 +1872,121 @@ dim_K() {
     fi
 }
 
+# ------------------------------------------------------------- dimension L
+#
+# The state INSIDE the applications, as opposed to the files that configure
+# them. A gateway with seven API keys, two of them holding `manage`, is a fact
+# about this deployment that no file in this repo records -- it lives in the
+# gateway's own database, and nothing was looking at it.
+
+dim_L() {
+    echo; echo "L  application state behind the gateway"
+    if ! on_host; then
+        skip_rest L "not on the host; application state unreachable"
+        return
+    fi
+
+    _k=$(sed -n 's/^OMNIROUTE_MCP_API_KEY=//p' agent-sidecar/.env 2>/dev/null | tail -1)
+
+    # L-1: keys accumulate. Each one is a credential that works until someone
+    # removes it, and `manage` is the scope the sidecar's own module docstring
+    # calls materially more privileged than what it normally needs.
+    if [ -z "$_k" ] || [ -z "$PY" ]; then
+        chk L-1 UNKNOWN "no gateway key or interpreter; key inventory unreadable"
+    else
+        _kp=$(mktemp)
+        cat > "$_kp" <<'PYKEYS'
+import datetime, json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("ERR"); raise SystemExit(0)
+ks = d if isinstance(d, list) else (d.get("keys") or d.get("data") or [])
+now = datetime.datetime.now(datetime.timezone.utc)
+stale, manage = [], []
+for x in ks:
+    name = str(x.get("name") or "?")
+    if "manage" in (x.get("scopes") or []) or "admin" in (x.get("scopes") or []):
+        manage.append(name)
+    last = x.get("lastUsedAt") or x.get("last_used_at")
+    if not last:
+        stale.append(name + "(never)"); continue
+    try:
+        t = datetime.datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+        if (now - t).days > 14:
+            stale.append("%s(%dd)" % (name, (now - t).days))
+    except Exception:
+        pass
+print("%d\t%s\t%s" % (len(ks), ",".join(manage), ",".join(stale)))
+PYKEYS
+        _out=$(curl -s -m 25 "http://localhost:20128/api/keys" \
+               -H "Authorization: Bearer $_k" 2>/dev/null | "$PY" "$_kp" 2>/dev/null || true)
+        rm -f "$_kp"
+        _tot=$(printf '%s' "$_out" | cut -f1)
+        _mg=$(printf '%s' "$_out" | cut -f2)
+        _st=$(printf '%s' "$_out" | cut -f3)
+        if [ -z "$_out" ] || [ "$_tot" = "ERR" ]; then
+            chk L-1 UNKNOWN "could not read the gateway key list"
+        else
+            metric l1_keys "$_tot"
+            if [ -n "$_st" ]; then
+                chk L-1 FAIL "$_tot key(s); unused for over a fortnight: $_st" \
+                    "manage-scoped: ${_mg:-none} — a key nobody uses still opens the door"
+            else
+                chk L-1 PASS "$_tot key(s), all used within the fortnight" \
+                    "manage-scoped: ${_mg:-none}"
+            fi
+        fi
+    fi
+
+    # L-2: documented closed on 2026-08-28 and never re-tested. Activepieces
+    # closes registration by itself after the first account, which is a
+    # behaviour that could change on any upgrade -- so it is tested, not
+    # remembered. The probe uses an .invalid address so a success would create
+    # nothing usable.
+    if have curl; then
+        _su=$(curl -s -o /dev/null -w '%{http_code}' -m 25 -X POST \
+              "https://flows.arject.co/api/v1/authentication/sign-up" \
+              -H 'Content-Type: application/json' \
+              -d '{"email":"audit-probe@example.invalid","password":"Nx8s2Kd91mQz","firstName":"a","lastName":"b","trackEvents":false,"newsLetter":false}' \
+              2>/dev/null || true)
+        case "${_su:-000}" in
+            403|401) chk L-2 PASS "Activepieces still refuses a second sign-up" "HTTP $_su" ;;
+            2*)      chk L-2 FAIL "Activepieces ACCEPTED a sign-up" "HTTP $_su — this name is public" ;;
+            *)       chk L-2 UNKNOWN "sign-up probe returned $_su" ;;
+        esac
+    else
+        chk L-2 UNKNOWN "curl unavailable; registration state untested"
+    fi
+
+    # L-3: the run journal records prompts and errors, and errors quote what
+    # failed. A journal that has started capturing credentials is a second
+    # copy of them in a file nobody treats as secret.
+    _leak=$(docker exec king-agent-sidecar-http-1 sh -c \
+            "grep -chE 'sk-[A-Za-z0-9]{20,}|oma_live_|tk_[A-Za-z0-9]{20,}|Bearer [A-Za-z0-9._-]{20,}' /audit/runs.jsonl /audit/vps_exec.log 2>/dev/null | awk '{t+=\$1} END {print t+0}'" \
+            2>/dev/null || true)
+    case "${_leak:-x}" in
+        x|"") chk L-3 UNKNOWN "could not scan the journals" ;;
+        0)    chk L-3 PASS "no credential-shaped string in the journals" ;;
+        *)    chk L-3 FAIL "$_leak credential-shaped string(s) in the journals" \
+                  "a second copy of a secret, in a file nobody treats as one" ;;
+    esac
+
+    # L-4: nothing rotates these. Recorded as a number so growth is visible in
+    # the baseline diff rather than discovered when a disk fills.
+    _jl=$(docker exec king-agent-sidecar-http-1 sh -c 'wc -l < /audit/runs.jsonl' 2>/dev/null | tr -d ' ' || true)
+    case "${_jl:-x}" in
+        x|"") chk L-4 UNKNOWN "journal length unreadable" ;;
+        *)    metric l4_journal_lines "$_jl"
+              if [ "$_jl" -lt 50000 ]; then
+                  chk L-4 PASS "run journal at $_jl line(s)" \
+                      "nothing rotates it; the baseline diff is what will show growth"
+              else
+                  chk L-4 FAIL "run journal at $_jl lines and nothing rotates it"
+              fi ;;
+    esac
+}
+
 # ----------------------------------------------------------------- self-test
 
 self_test() {
@@ -1964,6 +2087,7 @@ for _d in $WANT; do
         I) dim_I ;;
         J) dim_J ;;
         K) dim_K ;;
+        L) dim_L ;;
         *) echo "unknown dimension: $_d" >&2; exit 2 ;;
     esac
 done
