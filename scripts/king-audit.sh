@@ -81,6 +81,7 @@ A-4
 A-5
 A-6
 A-7
+A-8
 B-1
 B-2
 B-3
@@ -172,6 +173,7 @@ A-4|omniroute/ subtree unmodified
 A-5|running image vs what its declared tag resolves to now
 A-6|local worktree vs origin
 A-7|leftover .orig/.rej merge artefacts
+A-8|locally-built images vs the source they were built from
 B-1|every service pairs mem_limit with an equal memswap_limit, plus cpus
 B-2|every published port binds loopback, Caddy excepted
 B-3|every image pinned to an exact tag or digest
@@ -465,6 +467,99 @@ dim_A() {
         chk A-7 PASS "no leftover merge artefacts"
     else
         chk A-7 FAIL "unfinished merge artefacts present" "$(printf '%s' "$_stray" | tr '\n' ' ')"
+    fi
+
+    # A-8: locally-built images against the source they were built from.
+    #
+    # A-1 compares git refs. That is not the same question as "is the running
+    # binary made of this code", and on 2026-09-10 the two answers differed in
+    # the way that matters: `king-agent-sidecar:local` was built on 09-08 and
+    # baked its source at /app, while the repo is bind-mounted at /workspace.
+    # Editing agent-sidecar/src changed the reviewed file and not the running
+    # one, so a security guarantee added on 09-09 — four destructive gateway
+    # tools blocked — was true in the tree and false in the process for two
+    # days. F-8 read the tree copy and reported PASS the whole time.
+    #
+    # F-8b now catches that one guarantee. This catches the class: any image
+    # built here whose source has commits newer than the image itself.
+    if ! on_host; then
+        chk A-8 SKIP "not on the host; no built images to compare"
+    else
+        _stale=""; _unknown=""; _nosrc=""; _built=0
+        for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
+            _img=$(docker inspect -f '{{.Config.Image}}' "$_c" 2>/dev/null || true)
+            case "$_img" in king-*) : ;; *) continue ;; esac
+            _svc=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$_c" 2>/dev/null || true)
+            [ -n "$_svc" ] || continue
+            _ctx=$("$PY" -c '
+import sys, yaml
+d = yaml.safe_load(open("docker-compose.yml", encoding="utf-8")) or {}
+s = (d.get("services") or {}).get(sys.argv[1]) or {}
+b = s.get("build")
+print(b if isinstance(b, str) else (b or {}).get("context", "") if isinstance(b, dict) else "")
+' "$_svc" 2>/dev/null || true)
+            [ -n "$_ctx" ] && [ -d "$_ctx" ] || continue
+            _built=$((_built + 1))
+            # Compare CONTENT, not timestamps. Two earlier versions of this
+            # check used a clock and both were wrong for different reasons:
+            #
+            #   git commit time — blind to the exact mechanism that caused
+            #     this check to exist. The sidecar's source reached this host
+            #     by scp, uncommitted, so git saw nothing newer while the
+            #     files plainly were.
+            #   image .Created  — not the build time. BuildKit stamps it from
+            #     a cached layer: this image reported 04:40:48 while carrying
+            #     a file whose mtime is 04:45. It would have called a freshly
+            #     built image stale, forever.
+            #
+            # A digest cannot be wrong about this. Files that cannot be mapped
+            # into the image are counted and reported rather than assumed
+            # equal — a service whose layout defeats the mapping gets UNKNOWN,
+            # not a pass.
+            _wd=$(docker inspect -f '{{.Config.WorkingDir}}' "$_img" 2>/dev/null || true)
+            [ -n "$_wd" ] || _wd=/app
+            _same=0; _diff=0; _unmapped=0; _found=0
+            for _f in $(cd "$_ctx" && find . -type f \
+                          \( -name '*.py' -o -name '*.js' -o -name '*.mjs' -o -name '*.ts' \) \
+                          -not -path './.venv/*' -not -path './__pycache__/*' \
+                          -not -path './node_modules/*' 2>/dev/null | head -60); do
+                _found=$((_found + 1))
+                _local=$("$PY" -c '
+import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$_ctx/${_f#./}" 2>/dev/null || true)
+                _inimg=$(docker exec "$_c" sha256sum "$_wd/${_f#./}" 2>/dev/null | cut -d' ' -f1 || true)
+                if [ -z "$_inimg" ]; then _unmapped=$((_unmapped + 1))
+                elif [ "$_local" = "$_inimg" ]; then _same=$((_same + 1))
+                else _diff=$((_diff + 1))
+                fi
+            done
+            # "No first-party source in the context" and "source exists but
+            # could not be located in the image" are different answers. The
+            # first is a clean nothing-to-drift — codegraph's context holds a
+            # Dockerfile and two systemd units, and its server runs a
+            # pip-installed package. Reporting that as UNKNOWN would leave a
+            # check permanently amber over a service that cannot drift, which
+            # is how a guard stops being read.
+            if [ "$_found" -eq 0 ]; then
+                _nosrc="$_nosrc ${_svc}"
+            elif [ "$((_same + _diff))" -eq 0 ]; then
+                _unknown="$_unknown ${_svc}(source exists but none of it is in the image)"
+            elif [ "$_diff" -gt 0 ]; then
+                _stale="$_stale ${_svc}(${_diff} of $((_same + _diff)) source file(s) differ)"
+            fi
+        done
+        if [ "$_built" -eq 0 ]; then
+            chk A-8 UNKNOWN "no locally-built running image could be matched to a build context"
+        elif [ -n "$_stale" ]; then
+            chk A-8 FAIL "the source baked into a running image differs from the tree" \
+                "$_stale — what runs is not what was reviewed; a rebuild is owed${_unknown:+ (unmapped:$_unknown)}"
+        elif [ -n "$_unknown" ]; then
+            chk A-8 UNKNOWN "image layout defeated the source comparison for:$_unknown" \
+                "$_built context(s) examined; a service whose files cannot be located is not a pass"
+        else
+            chk A-8 PASS "every running image carries byte-identical source to the tree" \
+                "$_built context(s) compared by digest, not by timestamp${_nosrc:+; no first-party source to compare in:$_nosrc}"
+        fi
     fi
 }
 
