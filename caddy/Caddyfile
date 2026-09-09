@@ -8,7 +8,14 @@
 # traffic never leaves the compose network between Caddy and OmniRoute, so
 # DASHBOARD_PORT does not need to be reachable from outside the VPS at all.
 
-{$OMNIROUTE_PUBLIC_DOMAIN} {
+# `:gateway.localhost` covers the variable being UNSET. It does NOT cover it
+# being EMPTY -- Caddy substitutes the default only for an unset variable,
+# and an empty site address fails the whole config, every site with it.
+# Guaranteeing non-empty is docker-compose.yml's job, via `${VAR:-default}`,
+# which does substitute for empty. Two layers, each covering what the other
+# cannot; king-audit.sh B-7b tests the compose one because it is the one
+# that can actually hold.
+{$OMNIROUTE_PUBLIC_DOMAIN:gateway.localhost} {
 	# The agent bridge, served under a path rather than its own subdomain.
 	#
 	# A name like agent.arject.co would be cleaner, but it needs a DNS A

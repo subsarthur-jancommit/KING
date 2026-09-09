@@ -667,12 +667,46 @@ PYAUDIT
         else
             chk B-7 FAIL "caddy config does not validate as deployed"
         fi
-        _envblank=$(docker exec -e OMNIROUTE_PUBLIC_DOMAIN= -e ACTIVEPIECES_PUBLIC_DOMAIN= \
-            king-caddy-1 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 || true)
-        if printf '%s' "$_envblank" | grep -q "Valid configuration"; then
-            chk B-7b PASS "caddy still loads with every domain variable empty"
+        # B-7b tested the wrong layer, and could never have gone green.
+        #
+        # It injected `-e OMNIROUTE_PUBLIC_DOMAIN=` straight into the container
+        # and asked Caddy to validate. Caddy CANNOT survive that: a site
+        # address is static in the adapter, and `{$VAR:default}` substitutes
+        # only for an UNSET variable, never an empty one. So the check demanded
+        # something structurally impossible and sat red forever — a guard
+        # nobody can leave green, which decays into a guard nobody reads.
+        #
+        # The realistic path to an empty domain is a blank line in .env, and
+        # the layer that stops it is compose's `${VAR:-default}`, which DOES
+        # substitute for empty. That is testable, and it is the thing whose
+        # breakage would actually take every public route down together. So the
+        # check renders the compose model with both domains empty and asserts
+        # the caddy service still receives non-empty values.
+        # `VAR= cmd` is what shellcheck SC1007 warns about, and it is right to:
+        # the empty-looking assignment is easy to read as a typo for a value.
+        # `VAR=''` says empty on purpose.
+        _blank=$(OMNIROUTE_PUBLIC_DOMAIN='' ACTIVEPIECES_PUBLIC_DOMAIN='' \
+                 docker compose --profile base --profile proxy config 2>/dev/null \
+                 | grep -E '(OMNIROUTE|ACTIVEPIECES)_PUBLIC_DOMAIN:' \
+                 | sed 's/^ *//' || true)
+        # Compose renders an empty value as `NAME: ""`, with quotes — so a
+        # pattern looking for a line that ENDS after the colon never matches
+        # the case it was written for. The first version did exactly that and
+        # stayed green through its own positive control, which is the one
+        # moment a check gets to prove it can fail. Strip quotes and whitespace
+        # from the value, then test what is left.
+        _empty=$(printf '%s\n' "$_blank" | while IFS= read -r _line; do
+                     [ -n "$_line" ] || continue
+                     _val=$(printf '%s' "$_line" | cut -d: -f2- | tr -d ' "'"'")
+                     [ -n "$_val" ] || printf 'x'
+                 done | wc -c | tr -d ' ')
+        if [ -z "$_blank" ]; then
+            chk B-7b UNKNOWN "could not render the compose model to test empty domains"
+        elif [ "${_empty:-0}" -eq 0 ]; then
+            chk B-7b PASS "compose substitutes a domain even when .env leaves it blank" \
+                "$(printf '%s' "$_blank" | tr '\n' ' ') — Caddy's own {\$VAR:default} covers UNSET, compose covers EMPTY"
         else
-            chk B-7b FAIL "empty domain variable breaks the whole config" \
+            chk B-7b FAIL "an empty .env value reaches Caddy as an empty site address" \
                 "an unset site address takes the gateway down, not just one site"
         fi
     else

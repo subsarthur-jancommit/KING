@@ -491,7 +491,15 @@ services:
       # the DNS record exists; publishing Activepieces relies on it closing
       # its own registration after the first account (verified, see the
       # Caddyfile comment).
-      - ACTIVEPIECES_PUBLIC_DOMAIN=${ACTIVEPIECES_PUBLIC_DOMAIN:-}
+      # `:-` substitutes for EMPTY as well as unset, which is the whole
+      # defence here. Caddy's own `{$VAR:default}` only fires when the
+      # variable is UNSET, so an empty value reaches the site address as
+      # an empty string and the entire config fails to load -- taking
+      # every public route down, not just this one. A blank line in .env
+      # is enough to do it. Compose is therefore the layer that has to
+      # guarantee a non-empty value, and it must never be weakened to
+      # the `-` form.
+      - ACTIVEPIECES_PUBLIC_DOMAIN=${ACTIVEPIECES_PUBLIC_DOMAIN:-activepieces.localhost}
     volumes:
       # Bind-mounted as a FILE, so the container holds the inode it was
       # started with. Editing this file in place is picked up by
