@@ -1051,7 +1051,8 @@ dim_D() {
             id=$(docker inspect -f '{{.Id}}' "$c" 2>/dev/null) || continue
             for b in "/sys/fs/cgroup/system.slice/docker-$id.scope" "/sys/fs/cgroup/docker/$id"; do
                 [ -r "$b/memory.swap.current" ] || continue
-                v=$(cat "$b/memory.swap.current" 2>/dev/null || echo 0)
+                v=$(cat "$b/memory.swap.current" 2>/dev/null)
+                case "$v" in ''|*[!0-9]*) continue ;; esac
                 [ "$v" -gt 52428800 ] && printf '%s=%sMB ' "$c" "$((v/1048576))"
                 break
             done
@@ -1065,7 +1066,8 @@ dim_D() {
 
     _unhealthy=$(docker ps --format '{{.Names}} {{.Status}}' | grep -i 'unhealthy' || true)
     _restarts=$(for c in $(docker ps --format '{{.Names}}'); do
-                  r=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo 0)
+                  r=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null)
+                  case "$r" in ''|*[!0-9]*) continue ;; esac
                   [ "$r" -gt 3 ] && printf '%s=%s ' "$c" "$r"
                 done; true)
     # A container that declares NO healthcheck never reports "unhealthy", so
@@ -1962,14 +1964,72 @@ dim_G() {
     # into a value -- which is how a 4 GB build came to believe nothing was
     # resident, and how this very script twice reported a missing file as a
     # configured one. So the dangerous shape is counted separately.
+    #
+    # And "each needs a human" was the third version of this dodge. Counting
+    # 80 constructs and handing them back is not classification; it is the
+    # inventory again, with an apology attached. The distinction this repo
+    # already established IS mechanical:
+    #
+    #   x=$(cmd || true)      -> failure becomes the empty string, which the
+    #                            usual `[ -z "$x" ]` guard catches.
+    #   x=$(cmd || echo 0)    -> failure becomes a PLAUSIBLE VALUE. Nothing
+    #                            downstream can tell it from a real zero.
+    #
+    # So the check reads each site, takes the fallback literal, and looks at
+    # the next few lines for a guard on that variable. `|| echo` with a
+    # numeric or boolean literal and no emptiness test is the shape that made
+    # a 4 GB build believe nothing was resident, and made this script twice
+    # report a missing file as a configured one.
     _sil=$(grep -c -- '2>/dev/null' scripts/*.sh 2>/dev/null | awk -F: '{t+=$2} END {print t+0}')
-    _risky=$(grep -nE '^[^#]*[A-Za-z_]+=\$\(.*\|\| (true|echo)' scripts/*.sh 2>/dev/null | grep -c . || true)
-    metric g6_silenced "$_sil"; metric g6_risky "${_risky:-0}"
-    if [ "${_risky:-0}" -eq 0 ]; then
-        chk G-6 PASS "no assignment swallows a failure into a value" "$_sil other silencing constructs, reviewed as legitimate"
+    metric g6_silenced "$_sil"
+    if [ -z "$PY" ]; then
+        chk G-6 UNKNOWN "no interpreter to classify the silenced failures with"
     else
-        chk G-6 UNKNOWN "${_risky} assignment(s) turn a failed command into a value" \
-            "each needs a human: grep -nE '=\\\$\\(.*\\|\\| (true|echo)' scripts/*.sh"
+        _g6=$(mktemp)
+        cat > "$_g6" <<'PYG6'
+import glob, re, sys
+assign = re.compile(r'^[^#]*?([A-Za-z_][A-Za-z_0-9]*)=\$\((.*)\|\|\s*(true|echo\s+\S+)\s*\)')
+plausible = re.compile(r'^echo\s+["\']?(0|00+|\d+|false|true|none|unknown|yes|no)["\']?$', re.I)
+benign = risky = 0
+worst = []
+for path in sorted(glob.glob("scripts/*.sh")):
+    lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
+    for i, line in enumerate(lines):
+        m = assign.match(line)
+        if not m:
+            continue
+        var, fallback = m.group(1), m.group(3).strip()
+        if not plausible.match(fallback):
+            benign += 1
+            continue
+        # A guard within the next five lines that tests the variable for
+        # emptiness or non-numeric content makes the fallback recoverable.
+        window = "\n".join(lines[i + 1:i + 6])
+        # A `case` counts as a guard even when it switches on an EXPRESSION
+        # containing the variable rather than the bare variable. The first
+        # version required `case "$var`, and so reported the two-code check
+        # `case "$_none/$_wrong" in 401/401|...` as unguarded — a false
+        # positive in the check whose entire subject is false confidence.
+        guarded = re.search(
+            r'-z\s+"?\$\{?%s\b|\[\!0-9\]|case\s+[^\n]*\$\{?%s\b' % (var, var), window)
+        if guarded:
+            benign += 1
+        else:
+            risky += 1
+            if len(worst) < 4:
+                worst.append("%s:%d %s=$(... || %s)" % (path, i + 1, var, fallback))
+print("%d\t%d\t%s" % (benign, risky, "; ".join(worst)))
+PYG6
+        _r=$("$PY" "$_g6" 2>/dev/null || true)
+        rm -f "$_g6"
+        _ben=$(printf '%s' "$_r" | cut -f1); _rsk=$(printf '%s' "$_r" | cut -f2)
+        case "$_rsk" in
+            ''|*[!0-9]*) chk G-6 UNKNOWN "could not classify the silenced failures" ;;
+            0) chk G-6 PASS "no assignment turns a failed command into a plausible value" \
+                   "$_ben classified benign (empty fallback, or guarded within five lines); $_sil other silencing constructs" ;;
+            *) chk G-6 FAIL "$_rsk assignment(s) substitute a plausible value for a failure" \
+                   "$(printf '%s' "$_r" | cut -f3)" ;;
+        esac
     fi
 }
 
@@ -2342,9 +2402,17 @@ dim_K() {
         if [ -z "$_end" ]; then
             chk K-7 UNKNOWN "could not read the certificate for $_dom"
         else
-            _left=$(( ( $(date -d "$_end" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
-            metric k7_cert_days "$_left"
-            if [ "$_left" -gt 20 ]; then
+            _endepoch=$(date -d "$_end" +%s 2>/dev/null)
+            case "$_endepoch" in
+                ''|*[!0-9]*)
+                    chk K-7 UNKNOWN "certificate end date is unparseable" "$_end"
+                    _left="" ;;
+                *)  _left=$(( ( _endepoch - $(date +%s) ) / 86400 ))
+                    metric k7_cert_days "$_left" ;;
+            esac
+            if [ -z "$_left" ]; then
+                :   # K-7 already reported UNKNOWN above; do not report twice
+            elif [ "$_left" -gt 20 ]; then
                 chk K-7 PASS "certificate valid for ${_left} more day(s)" "$_end"
             else
                 chk K-7 FAIL "certificate expires in ${_left} day(s)" "renewal is not keeping up"
