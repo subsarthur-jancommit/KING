@@ -2296,16 +2296,47 @@ dim_H() {
     # H-4: a test that reads the ambient environment passes or fails by
     # accident. Two did here: one left GRAPHIFY_API_KEY set, one left
     # AGENT_SIDECAR_MODEL_ID, and both only surfaced when the host changed.
-    if [ -d agent-sidecar/tests ]; then
-        _envdep=$(grep -rln 'os\.environ' agent-sidecar/tests 2>/dev/null \
-                  | while read -r _f; do
-                      grep -q 'monkeypatch\|conftest' "$_f" || printf '%s ' "$(basename "$_f")"
-                    done)
+    #
+    # But a `skipif` marker is not that hazard, and the first version could not
+    # tell the difference. `@pytest.mark.skipif(not os.environ.get(...))` is
+    # evaluated at COLLECTION time to decide whether an opt-in integration test
+    # runs at all — monkeypatch cannot reach it, by construction, and depending
+    # on the environment is the entire purpose. Flagging it asked a whole file
+    # to abandon the standard idiom to satisfy a check, which is the wrong way
+    # round.
+    #
+    # So the marker lines are subtracted and what remains — an environment read
+    # inside a test body, where a value from the host decides an assertion — is
+    # the thing worth failing on.
+    if [ -d agent-sidecar/tests ] && [ -n "$PY" ]; then
+        _h4=$(mktemp)
+        cat > "$_h4" <<'PYH4'
+import glob, os, re, sys
+bad = []
+for path in sorted(glob.glob("agent-sidecar/tests/*.py")):
+    lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
+    if any("monkeypatch" in l for l in lines):
+        continue
+    for i, line in enumerate(lines):
+        if "os.environ" not in line:
+            continue
+        # A skipif marker can span lines; look back a few for the decorator.
+        window = "\n".join(lines[max(0, i - 4):i + 1])
+        if re.search(r"@pytest\.mark\.skip(if|unless)|pytest\.skip\(", window):
+            continue
+        bad.append("%s:%d" % (os.path.basename(path), i + 1))
+print(" ".join(bad))
+PYH4
+        _envdep=$("$PY" "$_h4" 2>/dev/null || true)
+        rm -f "$_h4"
         if [ -z "$_envdep" ]; then
-            chk H-4 PASS "no test reads the environment without pinning it"
+            chk H-4 PASS "no test lets the ambient environment decide an assertion" \
+                "skipif markers are excluded: they gate opt-in integration tests and cannot use monkeypatch"
         else
-            chk H-4 FAIL "test file(s) read os.environ without monkeypatch" "$_envdep"
+            chk H-4 FAIL "test(s) read os.environ outside a skip marker" "$_envdep"
         fi
+    elif [ -d agent-sidecar/tests ]; then
+        chk H-4 UNKNOWN "no interpreter to classify the tests' environment reads"
     else
         chk H-4 SKIP "no test directory here"
     fi
