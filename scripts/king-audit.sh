@@ -808,21 +808,35 @@ PYENV
 
     # B-10: a unit that only exists on the host is one `rm -rf` from gone, and
     # a schedule is only sane relative to the timezone people live in.
-    _units=$(find scripts -maxdepth 1 -name '*.timer' 2>/dev/null | wc -l | tr -d ' ')
+    #
+    # It searched `scripts/` alone, and reported codegraph-refresh as
+    # unversioned for as long as it has existed. That unit lives in
+    # `codegraph/`, beside the Dockerfile it drives — a reasonable layout, and
+    # the check was enforcing a directory rather than asking its own question.
+    # "Is the unit in the repo" is the thing that matters; where is a matter of
+    # taste, and a check should not have one.
+    _units=$(find . -maxdepth 2 -name '*.timer' -not -path './omniroute/*' 2>/dev/null | wc -l | tr -d ' ')
     if have systemctl; then
         _live=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $NF}' \
                 | sed 's/\.service$//' | grep -v '^$' | sort -u || true)
-        _unversioned=""
+        _unversioned=""; _where=""
         for _t in $_live; do
             case "$_t" in
                 launchpadlib*|systemd-*) continue ;;
             esac
-            [ -f "scripts/$_t.timer" ] || _unversioned="$_unversioned $_t"
+            _found=$(find . -maxdepth 2 -name "$_t.timer" -not -path './omniroute/*' 2>/dev/null | head -1)
+            if [ -n "$_found" ]; then
+                _where="$_where ${_found#./}"
+            else
+                _unversioned="$_unversioned $_t"
+            fi
         done
         if [ -z "$_unversioned" ]; then
-            chk B-10 PASS "every active user timer has its unit in the repo" "$_units in scripts/"
+            chk B-10 PASS "every active user timer has its unit in the repo" \
+                "$_units unit file(s):$_where"
         else
-            chk B-10 FAIL "active timer(s) with no unit file in the repo" "$_unversioned"
+            chk B-10 FAIL "active timer(s) with no unit file anywhere in the repo" \
+                "$_unversioned — one \`rm -rf\` from gone, and unreviewable meanwhile"
         fi
     else
         chk B-10 SKIP "systemctl unavailable; installed units unmeasurable" "$_units unit(s) in scripts/"
@@ -2723,10 +2737,18 @@ dim_K() {
     # Five distinct internet addresses have probed this host for /.git/config,
     # /.git/HEAD and /appsettings.json — routine background scanning, and the
     # scan is not the finding. The response is: every unmatched path falls
-    # through to the ntfy web UI, which returns a 404 status attached to a
-    # 719 KB single-page app. A scanner walking a wordlist pulls three quarters
-    # of a megabyte per guess out of a 2-vCPU host. Correct status code,
-    # thousandfold amplification.
+    # through to the catch-all, and the catch-all proxies the GATEWAY's own
+    # Next.js dashboard — not ntfy, which is what this comment said until the
+    # body was actually read and turned out to carry `_next/static`. Guessing
+    # which upstream answers is the same habit as guessing an endpoint path.
+    #
+    # It returns a correct 404 status attached to a 719 KB single-page app, so
+    # a scanner walking a wordlist pulls three quarters of a megabyte per guess
+    # out of a 2-vCPU host. Correct status code, thousandfold amplification.
+    #
+    # The 404 page belongs to the vendored subtree, which CLAUDE.md forbids
+    # editing — so the fix is outside it, at Caddy, which is exactly what that
+    # rule prescribes.
     _dom=$(sed -n 's/^OMNIROUTE_PUBLIC_DOMAIN=//p' .env 2>/dev/null | tail -1)
     if [ -z "$_dom" ]; then
         chk K-9 UNKNOWN "no public domain configured in .env; nothing to probe"

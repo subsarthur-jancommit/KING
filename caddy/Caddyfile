@@ -84,6 +84,36 @@
 		}
 	}
 
+	# Scanner bait, answered before it reaches an upstream.
+	#
+	# Five distinct internet addresses have probed this host for /.git/config,
+	# /.git/HEAD and /appsettings.json. The scanning is not the finding — that
+	# is simply what an open port attracts. The response was: every unmatched
+	# path fell through to the catch-all below, which proxies the gateway's
+	# Next.js dashboard, and that returns a correct 404 status attached to a
+	# 719 KB single-page app. A wordlist walk pulled three quarters of a
+	# megabyte per guess out of a 2-vCPU host.
+	#
+	# The 404 page belongs to omniroute/, a vendored subtree CLAUDE.md forbids
+	# editing, so this is the outside fix that rule asks for.
+	#
+	# Deliberately narrow. Only paths that cannot belong to this application
+	# are matched: any dotfile path, minus /.well-known which ACME needs, plus
+	# three probe names for stacks that do not run here. Everything else still
+	# reaches the dashboard, because a catch-all that guesses would break
+	# client-side routes and the breakage would look like a 404 to the user.
+	@scanner {
+		path /.*
+		not path /.well-known/*
+	}
+	@foreign_stack path /wp-login.php /wp-admin/* /appsettings.json /server-status /phpinfo.php
+	handle @scanner {
+		respond 404
+	}
+	handle @foreign_stack {
+		respond 404
+	}
+
 	handle {
 		reverse_proxy omniroute-base:{$DASHBOARD_PORT:20128} {
 		# OmniRoute streams SSE for /v1/chat/completions and /v1/messages.
