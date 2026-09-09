@@ -111,6 +111,26 @@ the provider, then update through the gateway UI.
 The Tavily and OpenRouter keys **passed through chat** and should be treated as
 disclosed. They live in the gateway, not in a file here.
 
+### Disclosed, and therefore first in the queue
+
+| Credential | How | Date |
+|---|---|---|
+| Tavily API key | passed through chat | earlier session |
+| OpenRouter API key | passed through chat | earlier session |
+| `GRAPHIFY_API_KEY` | **printed in full to a session transcript** by a `docker inspect ... \| grep` whose masking pattern did not match what it printed | 2026-09-10 |
+
+The third one is mine. The command intended to print variable names and mask
+values, and the `sed` that was supposed to redact it matched nothing — so the
+key reached the transcript in plaintext. It authenticates the codegraph MCP
+server, which serves the code graph read-only, so the blast radius is reading
+this repository's own structure. That is the smallest radius on this page and
+it still needs rotating, because "small" is not "none" and a credential in a
+transcript is a credential in an unknown number of places.
+
+Rotating it means the value in the root `.env`, the sidecar's environment
+(which reads it from there through compose), and the `claude mcp add`
+registration that carries it as a bearer header.
+
 ## Tier 6 — admin access
 
 | Variable | Where | Notes |
