@@ -1007,3 +1007,85 @@ weeks, and the end-to-end step failed on
 The wrapper had required a bearer for weeks while CI posted without one. It was
 invisible because the job died at the build long before reaching that step —
 a second fault hiding behind the first, which is the usual arrangement.
+
+## 28. Reporting a limit instead of trying, three times in one instrument
+
+`king-audit.sh` carried two checks that reported `UNKNOWN` with the words
+*"needs root"*. D-4 could not read `dmesg`; D-5 could not read the container
+log files. Both had said so for a day, and the previous session's summary
+recorded them as an honest limitation of running as `subsa`.
+
+The same script was already calling `sudo -n` two dimensions away, for
+`iptables` and `sshd_config`. Passwordless sudo works on this host. With it,
+both checks answer immediately: zero OOM kills, nine megabytes of container
+logs.
+
+**"I cannot read this" and "I did not try the way I try elsewhere" are
+different claims, and only one of them was true.** The first is a finding. The
+second is a gap wearing a finding's clothes, and it is more dangerous than a
+plain failure because it closes the question. Nobody re-opens a limitation.
+
+Three variants of the same move appeared in a single sitting once the habit was
+being looked for:
+
+**Cost.** Recorded as unmeasurable after `/api/usage/costs`, `/api/usage/tokens`
+and `/api/stats` all returned 404. Three guesses at a path is not an
+enumeration. `/api/usage/call-logs` answers 200 and carries a `tokens` object on
+every row. The endpoint was never the problem; the guessing was. What the
+endpoint reports is a real finding — 146 of 500 calls carry token counts, and
+the paid providers report zeroes — but it took asking properly to find it.
+
+**Queue state.** Listed as an unaudited aspect under the name "Upstash Redis".
+Grepping the tree for `upstash` returns nothing. Both instances are local
+containers, and a `sed` of two files had produced *"no redis url found"*, which
+was recorded as the answer. A note about state that names the wrong system is
+worse than no note: it makes the gap look surveyed.
+
+**`|| true` inventory.** G-6 counted eighty silenced failures and reported
+`UNKNOWN`, *"each needs a human"*. The distinction that separates a harmless
+`|| true` from a dangerous `|| echo 0` was already written down in this
+document. It is mechanical. Classifying it took twenty lines and found four
+sites in `king-audit.sh` itself, three of them real.
+
+### The instrument's own failures during the fix
+
+Worth recording separately, because they are the same shape one layer up.
+
+`D-7` was added to check that container logs are bounded. Its first version
+passed when *one service out of eleven* set `max-size` — the same "partial
+accounting reads as a total" error it sits four lines away from calling out in
+E-8. It now asks the containers, not the compose file.
+
+`F-8` read a tool-list cache that no part of the script could produce, with no
+freshness rule; the copy on the host was a day old, so a guarantee about
+today's `NEVER_REGISTER` was being derived from yesterday's surface. Making it
+fetch its own fixed the staleness and *silently narrowed the surface from 120
+tools to 110*, because the gateway endpoint does not carry codegraph's ten.
+The check reported PASS throughout. Trading a stale-but-complete input for a
+fresh-but-partial one is not an improvement, and the union now refuses to be
+partial.
+
+`L-6` passed on a coincidence twice. It grepped `docs/` for "retention" and
+matched `CALL_LOG_RETENTION_DAYS` and `AP_EXECUTION_DATA_RETENTION_DAYS` — two
+real settings, for two other stores. Tightened to require the same *file* to
+contain both `runs.jsonl` and a retention word, it matched this document, where
+the word is "rotated key" four hundred lines from any mention of the journal.
+File-level co-occurrence cannot establish that a sentence is about a subject.
+
+`D-6` printed the reclaimable-cache figure and passed unconditionally. A check
+with no failing branch is a log line wearing a green badge — exactly what G-1
+exists to catch in other people's guards.
+
+`D-2` greps `docker ps` for "unhealthy". A container that declares **no**
+healthcheck never produces that word, so the grep is silent and D-2 read that
+silence as health. `king-caddy-1`, the only container binding `0.0.0.0` and the
+single public entrypoint, has no healthcheck at all. D-2 had been passing over
+it since it was written: the failure the dimension is named for, committed by
+the check named after it.
+
+### What to do about it
+
+Before writing `UNKNOWN`, ask what the rest of this script does when it needs
+the same thing. If any other check reaches further — a different privilege, a
+different endpoint, a different parse — the honest report is not "unknown", it
+is "not attempted", and the fix is to attempt it.
