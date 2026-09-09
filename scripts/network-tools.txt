@@ -14,6 +14,26 @@
 # thirteenth appearing after an upstream release turns `king-audit.sh -d F`
 # red instead of arriving silently.
 #
+# WHAT BOUNDS WHERE THESE REACH: nothing, and that needs saying plainly.
+#
+# C-8 used to claim AGENT_SIDECAR_MCP_ALLOWED_HOSTS was the egress boundary.
+# It is not — it is MCP's DNS-rebinding protection, an INBOUND allowlist of
+# Host headers the endpoint will accept. Opposite direction, different threat,
+# and believing otherwise meant this question went unasked for as long as the
+# check existed.
+#
+# Asked properly: every tool below except local_corpus_search is a GATEWAY
+# tool, so the outbound request leaves the `omniroute` container, not the
+# sidecar. Bounding it would take an egress proxy or a network policy on that
+# container, and neither exists. Any host the model names in a query is a host
+# this deployment will fetch.
+#
+# That is accepted for now rather than hidden: the agent's purpose is reading
+# the open web, the destination is chosen per query by design, and the gateway
+# already holds credentials far more valuable than anything a fetch could
+# exfiltrate. What is NOT accepted is the set growing without review, which is
+# what the list below is for.
+#
 # Format: one tool name per line. Blank lines and #-comments ignored.
 # Matching is exact.
 #

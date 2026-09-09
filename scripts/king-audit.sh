@@ -194,7 +194,7 @@ C-4|token to blast-radius map
 C-5|public surface inventory: every reachable path and its anonymous status
 C-6|every MCP: no token 401, wrong token 401, right token 200
 C-7|secret file permissions are not world-readable
-C-8|the agent egress allowlist is actually in force
+C-8|MCP DNS-rebinding protection names the hosts it accepts
 C-9|the rotation list matches the secrets that exist
 C-10|datastores are segmented, or at least authenticated
 D-1|per container: memory, swap, restarts
@@ -1188,13 +1188,39 @@ dim_C() {
     # file that does not exist reported the allowlist as configured. That is
     # the `|| echo 0` shape this script's own header warns about, committed
     # by the script itself for the second time.
-    if [ ! -f agent-sidecar/.env ]; then
-        chk C-8 UNKNOWN "no agent-sidecar/.env here; egress allowlist unmeasurable"
-    elif grep -qE '^AGENT_SIDECAR_MCP_ALLOWED_HOSTS=.+' agent-sidecar/.env 2>/dev/null; then
-        chk C-8 PASS "agent MCP egress allowlist is set"
+    # C-8 was wrong twice over, and confidently.
+    #
+    # It called AGENT_SIDECAR_MCP_ALLOWED_HOSTS an EGRESS allowlist and said
+    # "the agent reads web pages; this is the boundary that bounds it". It is
+    # not an egress control at all. mcp_server.py uses it for MCP's
+    # DNS-rebinding protection: an INBOUND allowlist of Host headers the
+    # endpoint will accept, which is what stops a page in a browser from
+    # driving this MCP server through a victim's own network. Opposite
+    # direction, different threat.
+    #
+    # And it read agent-sidecar/.env, where the variable has never lived.
+    # Compose reads it from the ROOT .env, and the container has had it set to
+    # the public name the whole time — so the check reported a missing control
+    # that was present, for a purpose it does not serve. Reading a file rather
+    # than the process is the same fault as F-8, one dimension over.
+    #
+    # The effective environment is the only thing that settles it.
+    _dnsr=""
+    if on_host && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^king-agent-sidecar-http-1$'; then
+        _dnsr=$(docker inspect king-agent-sidecar-http-1 \
+                -f '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+                | sed -n 's/^AGENT_SIDECAR_MCP_ALLOWED_HOSTS=//p' | head -1)
+        _src="the running container"
     else
-        chk C-8 FAIL "no egress allowlist set for the agent's MCP hosts" \
-            "the agent reads web pages; this is the boundary that bounds it"
+        _dnsr=$(sed -n 's/^AGENT_SIDECAR_MCP_ALLOWED_HOSTS=//p' .env 2>/dev/null | tail -1)
+        _src="the root .env (off-host)"
+    fi
+    if [ -n "$_dnsr" ]; then
+        chk C-8 PASS "MCP DNS-rebinding protection accepts only named hosts" \
+            "$_dnsr, per $_src — this is an INBOUND Host allowlist, not an egress control; egress is F-9"
+    else
+        chk C-8 FAIL "MCP DNS-rebinding protection has no host beyond loopback" \
+            "reached through Caddy the Host header is the public name, so the endpoint answers every call with \"Invalid Host header\" and a 200 — a broken tool wearing a success status"
     fi
 
     # C-10. C-5 asks what the internet can reach. Nothing asked what a
