@@ -980,7 +980,7 @@ dim_D() {
     _logbytes=0; _readable=0
     for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
         _lp=$(docker inspect -f '{{.LogPath}}' "$_c" 2>/dev/null || true)
-        [ -n "$_lp" ] && [ -r "$_lp" ] || continue
+        if [ -z "$_lp" ] || [ ! -r "$_lp" ]; then continue; fi
         _readable=$((_readable + 1))
         _sz=$(wc -c < "$_lp" 2>/dev/null || echo 0)
         _logbytes=$((_logbytes + _sz))
@@ -1849,7 +1849,13 @@ dim_K() {
     # K-8: scheduled work this repo does not know about. The systemd side is
     # B-10; cron is a second scheduler nobody has looked at.
     _cron=$(crontab -l 2>/dev/null | grep -vcE '^\s*(#|$)' || true)
-    _crond=$(ls /etc/cron.d 2>/dev/null | grep -vcE '^(e2scrub_all|sysstat)$' || true)
+    # find, not `ls | grep`. Two exclusions, for different reasons: the two
+    # distribution jobs by name, and anything containing a dot because CRON
+    # ITSELF ignores those. Counting `.placeholder` as a scheduled job was a
+    # false positive that would have sent someone hunting for a job which
+    # can never run.
+    _crond=$(find /etc/cron.d -maxdepth 1 -type f ! -name '*.*' \
+             ! -name e2scrub_all ! -name sysstat 2>/dev/null | grep -c . || true)
     if [ "${_cron:-0}" -eq 0 ] && [ "${_crond:-0}" -eq 0 ]; then
         chk K-8 PASS "no cron entry outside the distribution defaults"
     else
