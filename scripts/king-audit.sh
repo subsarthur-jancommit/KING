@@ -153,11 +153,13 @@ K-5
 K-6
 K-7
 K-8
+K-9
 L-1
 L-2
 L-3
 L-4
 L-5
+L-6
 IMPL
 }
 
@@ -242,11 +244,13 @@ K-5|SSH exposure: password auth, root login
 K-6|pending security updates and unattended upgrades
 K-7|TLS certificate expiry
 K-8|cron entries that come from nowhere in the repo
+K-9|an unmatched public path returns a small response, not the whole app
 L-1|gateway API keys: how many, how scoped, how long unused
 L-2|Activepieces registration is closed, re-tested rather than recalled
 L-3|journals hold no credential-shaped string
 L-4|journal growth is bounded by something
 L-5|container logs carry no credential-shaped string
+L-6|what the run journal retains, and what bounds that retention
 MANIFEST
 }
 
@@ -1210,9 +1214,26 @@ dim_D() {
         fi
     fi
 
+    # D-6 used to print the reclaimable figure and PASS unconditionally. A
+    # check with no failing branch is not a check -- it is a log line wearing a
+    # green badge, and G-1 exists to catch exactly that in other people's
+    # guards. It now grades the thing that actually matters: whether the disk
+    # has room for the next build, with the reclaimable figure as the lever
+    # rather than the verdict.
     _recl=$(docker system df 2>/dev/null | awk '/Build Cache/ {print $NF}' | tr -dc '0-9.' || true)
     [ -n "$_recl" ] && metric d6_reclaimable_gb "$_recl"
-    chk D-6 PASS "reclaimable build cache recorded" "${_recl:-unknown} (informational)"
+    _dpct=$(df / --output=pcent 2>/dev/null | tr -dc '0-9' || true)
+    _dfree=$(df -BG / --output=avail 2>/dev/null | tr -dc '0-9' || true)
+    [ -n "$_dfree" ] && metric d6_free_gb "$_dfree"
+    if [ -z "$_dpct" ] || [ -z "$_dfree" ]; then
+        chk D-6 UNKNOWN "could not read disk usage"
+    elif [ "$_dpct" -ge 85 ]; then
+        chk D-6 FAIL "root filesystem ${_dpct}% used, ${_dfree} GB free" \
+            "${_recl:-0} GB is reclaimable build cache; the daily codegraph build writes here"
+    else
+        chk D-6 PASS "root filesystem ${_dpct}% used, ${_dfree} GB free" \
+            "${_recl:-0} GB reclaimable build cache is the lever if this tightens"
+    fi
 }
 
 # ------------------------------------------------------------- dimension E
@@ -2349,6 +2370,36 @@ dim_K() {
         chk K-8 FAIL "cron entries this repo does not describe" \
             "user crontab: ${_cron:-0}, /etc/cron.d: ${_crond:-0}"
     fi
+
+    # K-9. K-3 proves the internal ports do not answer from outside. Nothing
+    # asked what the port that IS open answers with.
+    #
+    # Five distinct internet addresses have probed this host for /.git/config,
+    # /.git/HEAD and /appsettings.json — routine background scanning, and the
+    # scan is not the finding. The response is: every unmatched path falls
+    # through to the ntfy web UI, which returns a 404 status attached to a
+    # 719 KB single-page app. A scanner walking a wordlist pulls three quarters
+    # of a megabyte per guess out of a 2-vCPU host. Correct status code,
+    # thousandfold amplification.
+    _dom=$(sed -n 's/^OMNIROUTE_PUBLIC_DOMAIN=//p' .env 2>/dev/null | tail -1)
+    if [ -z "$_dom" ]; then
+        chk K-9 UNKNOWN "no public domain configured in .env; nothing to probe"
+    else
+        _big=""; _n=0
+        for _pth in /.git/config /appsettings.json /wp-login.php; do
+            _n=$((_n + 1))
+            _sz=$(curl -s -o /dev/null -w '%{size_download}' -m 15 "https://${_dom}${_pth}" 2>/dev/null || true)
+            case "$_sz" in ''|*[!0-9]*) continue ;; esac
+            [ "$_sz" -gt 65536 ] && _big="$_big ${_pth}=$((_sz / 1024))KB"
+        done
+        if [ -z "$_big" ]; then
+            chk K-9 PASS "unmatched public paths return a small response" \
+                "$_n path(s) probed from the host, over the public name"
+        else
+            chk K-9 FAIL "unmatched public paths return the whole app" \
+                "$_big — a correct 404 status carrying a payload a scanner can amplify"
+        fi
+    fi
 }
 
 # ------------------------------------------------------------- dimension L
@@ -2487,6 +2538,49 @@ PYKEYS
         else
             chk L-5 FAIL "credential-shaped string(s) in container logs" "$_hits"
         fi
+    fi
+
+
+    # L-6. L-3 asks whether the journal leaks CREDENTIALS. It does not. But
+    # every entry carries a `task` field holding the prompt verbatim, and L-4
+    # records that nothing rotates the file. So the system retains, forever, a
+    # complete transcript of what was asked of it — which is a data-retention
+    # decision that had never been made, only defaulted into.
+    #
+    # This is not a leak and the check does not pretend it is. It asks whether
+    # the retention is bounded by something or written down anywhere, because
+    # an unbounded default nobody chose is the part worth surfacing.
+    _rj=$(docker exec king-agent-sidecar-http-1 sh -c 'head -1 /audit/runs.jsonl' 2>/dev/null || true)
+    if [ -z "$_rj" ]; then
+        chk L-6 UNKNOWN "the run journal could not be read to see what it retains"
+    else
+        case "$_rj" in
+            *'"task"'*)
+                # This check passed on a coincidence twice before it worked.
+                #
+                # First it grepped docs/ for "retention" and matched
+                # CALL_LOG_RETENTION_DAYS and AP_EXECUTION_DATA_RETENTION_DAYS
+                # — two real settings, for two other stores. Then it required
+                # the same FILE to contain both "runs.jsonl" and a retention
+                # word, and matched king-mistakes.md, where the word is
+                # "rotated key" four hundred lines from any mention of the
+                # journal. File-level co-occurrence cannot establish that a
+                # sentence is about a subject.
+                #
+                # So it reads the neighbourhood: three lines either side of a
+                # runs.jsonl mention. That can still be fooled, but it can no
+                # longer be fooled by a document that merely discusses two
+                # topics.
+                if grep -rn -A3 -B3 'runs\.jsonl' docs/ 2>/dev/null \
+                   | grep -qi 'retention\|rotat\|expire\|prune'; then
+                    chk L-6 PASS "the journal retains prompt text, and a doc that names runs.jsonl bounds it" \
+                        "L-4 measures the growth; this asks whether anyone decided"
+                else
+                    chk L-6 FAIL "the journal retains every prompt verbatim, with nothing bounding it" \
+                        "no rotation (L-4) and no retention statement in docs/; a default, not a decision"
+                fi ;;
+            *)  chk L-6 PASS "the run journal records no prompt text" ;;
+        esac
     fi
 
 }
