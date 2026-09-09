@@ -50,6 +50,32 @@ omniroute/plugins/*
 **/.env.*
 !**/.env.example
 
+# That rule was right and too narrow, in two ways C-1 found on 2026-09-10.
+#
+# It matches a DOT after `.env`, so `.env~` slips past — and `.env~` is what
+# vim and nano write when you save `.env`, a byte-for-byte copy of the live
+# secrets. Three of them were sitting in this tree: `.env~`,
+# `agent-sidecar/.env~`, `activepieces/.env~`.
+#
+# It also anchors on a basename starting with `.env`, so `providers.env.bak`
+# and `providers.env.bak.20260906` matched nothing. `/providers.env` above
+# names one exact path; a suffix defeats it, which is the same failure the
+# `.env.bak-upstash-20260830` incident above was supposed to have closed.
+#
+# So: any editor leftover, and any env file whatever its prefix.
+*~
+*.swp
+*.swo
+**/*.env
+**/*.env.*
+
+# Templates stay tracked. This negation is deliberately wider than
+# `!**/.env.example`, which never covered `omniroute/.env.homolog.example` or
+# `providers.env.example` — both survive today only because git does not
+# apply ignore rules to files it already tracks. Remove and re-add one and it
+# would vanish silently.
+!**/*.env*.example
+
 # Alert webhook URL + HMAC secret for the pool-prove timer, read via
 # EnvironmentFile so the secret never lands in a systemd unit.
 /.pool-prove.env

@@ -1771,10 +1771,53 @@ danger = re.compile(r'delete|remove|clear|drop|reset|purge|revoke|destroy|wipe',
 loose = sorted(n for n in tools if danger.search(n) and n not in never)
 print("\t".join(["OK" if not loose else "LOOSE", ",".join(loose), str(len(tools))]))
 PYDEST
-        _r=$("$PY" "$_dest" "$_tj" agent-sidecar/src/agent_sidecar/mcp_tools.py 2>/dev/null || true)
+        # Read the copy the PROCESS imports, not the copy git tracks.
+        #
+        # F-8 used to parse agent-sidecar/src/agent_sidecar/mcp_tools.py from
+        # the working tree and call the result a guarantee. On 2026-09-10 that
+        # file listed seven names and the running container listed three: the
+        # repo is bind-mounted at /workspace, the image bakes its source at
+        # /app, and editing one does not touch the other. The check was proving
+        # a property of a file nobody executes, and reporting PASS.
+        #
+        # So: the container's copy is the subject. The repo's copy is compared
+        # against it separately, because a divergence means a rebuild is owed
+        # and that is its own finding — not a detail to average away.
+        _live_nr=$(mktemp)
+        if docker exec king-agent-sidecar-http-1 cat /app/src/agent_sidecar/mcp_tools.py \
+             > "$_live_nr" 2>/dev/null && [ -s "$_live_nr" ]; then
+            _nr_src="$_live_nr"; _nr_from="the running container"
+        else
+            _nr_src=agent-sidecar/src/agent_sidecar/mcp_tools.py; _nr_from="the repo (container unreadable)"
+        fi
+        _r=$("$PY" "$_dest" "$_tj" "$_nr_src" 2>/dev/null || true)
+
+        # Drift between what runs and what was reviewed, stated plainly.
+        if [ "$_nr_src" = "$_live_nr" ]; then
+            _n_live=$(grep -c '"[a-z_]*"' "$_live_nr" 2>/dev/null || true)
+            _live_set=$("$PY" -c '
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read().split("NEVER_REGISTER = frozenset(")[-1].split(")")[0]
+print(",".join(sorted(set(re.findall(r"\"([a-z0-9_]+)\"", t)))))' "$_live_nr" 2>/dev/null || true)
+            _repo_set=$("$PY" -c '
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read().split("NEVER_REGISTER = frozenset(")[-1].split(")")[0]
+print(",".join(sorted(set(re.findall(r"\"([a-z0-9_]+)\"", t)))))' agent-sidecar/src/agent_sidecar/mcp_tools.py 2>/dev/null || true)
+            if [ -n "$_live_set" ] && [ "$_live_set" != "$_repo_set" ]; then
+                chk F-8b FAIL "the running NEVER_REGISTER differs from the reviewed one" \
+                    "running: ${_live_set}  |  repo: ${_repo_set} — the image predates the source; a rebuild is owed"
+            elif [ -n "$_live_set" ]; then
+                chk F-8b PASS "the running NEVER_REGISTER matches the reviewed source"
+            else
+                chk F-8b UNKNOWN "could not parse NEVER_REGISTER from the running container"
+            fi
+        else
+            chk F-8b UNKNOWN "the sidecar container's source could not be read; drift unmeasurable"
+        fi
+        rm -f "$_live_nr"
         case "$_r" in
-            OK*)    chk F-8 PASS "every destructive tool in the offered surface is in NEVER_REGISTER" \
-                        "$(printf '%s' "$_r" | cut -f3) tool(s) from both servers, list ${_tj_age:-?}s old" ;;
+            OK*)    chk F-8 PASS "every destructive tool offered is blocked, per $_nr_from" \
+                        "$(printf '%s' "$_r" | cut -f3) tool(s) from both servers, list ${_tj_age:-?}s old; F-8b compares that set against the reviewed one" ;;
             LOOSE*) chk F-8 FAIL "destructive tool(s) the agent could be given" \
                         "$(printf '%s' "$_r" | cut -f2)" ;;
             *)      chk F-8 UNKNOWN "could not compare the offered tools against NEVER_REGISTER" ;;
