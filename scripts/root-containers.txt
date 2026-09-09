@@ -1,0 +1,43 @@
+# Containers that run as uid 0, acknowledged one by one.
+#
+# This daemon has no user-namespace remapping, so uid 0 inside a container is
+# uid 0 on the host the moment anything escapes it. That is the whole reason
+# the list is worth keeping: not because root-in-a-container is exotic — it is
+# the default for most published images — but because the usual mitigation is
+# not in place here, and "we knew" should be provable rather than assumed.
+#
+# B-13 checks drift, not presence. Every name below was looked at once. A
+# SEVENTH container appearing as root turns `king-audit.sh -d B` red, which is
+# the only outcome that would actually change anyone's behaviour. A check that
+# can never be green decays into a check nobody reads — the same reasoning as
+# scripts/pool-dead-models.txt and scripts/network-tools.txt.
+#
+# What would remove a name: the image gaining a non-root default, or a `user:`
+# line in compose that the image's entrypoint tolerates. Neither is free —
+# several of these write to volumes created root-owned, and switching uid
+# without chowning first is how this deployment lost every gateway API key on
+# a restart once already (docs/king-deployment-gotchas).
+#
+# Format: one container name per line. Blank lines and #-comments ignored.
+# Measured 2026-09-09 against the running stack.
+
+# --- the public entrypoint ----------------------------------------------
+# Caddy binds 0.0.0.0:80 and :443 deliberately (CLAUDE.md), and binding a port
+# below 1024 is the classic reason an image keeps uid 0. It drops to a
+# non-privileged uid for its workers after the bind.
+king-caddy-1
+
+# --- vendored, and out of this repo's reach ------------------------------
+# omniroute/ is a squashed subtree; CLAUDE.md forbids editing it, and a root
+# compose override that re-declares one of its services turned every Docker CI
+# job red once. Changing this one means changing it upstream.
+omniroute-redis
+
+# --- upstream images whose entrypoint needs uid 0 ------------------------
+# Each of these chowns its data directory at start-up and then serves. Setting
+# `user:` without also fixing volume ownership makes them fail closed at boot,
+# which is a worse outcome than the risk being recorded here.
+king-ntfy-1
+king-ollama-1
+king-activepieces-1
+king-ap-redis-1

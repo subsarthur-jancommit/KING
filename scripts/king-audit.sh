@@ -92,6 +92,8 @@ B-8
 B-9
 B-10
 B-11
+B-12
+B-13
 C-1
 C-2
 C-3
@@ -155,6 +157,7 @@ L-1
 L-2
 L-3
 L-4
+L-5
 IMPL
 }
 
@@ -178,6 +181,8 @@ B-8|Caddy route inventory: every route and its auth layer
 B-9|env vars: used vs defined vs documented vs actually set
 B-10|systemd units are in the repo, active, and scheduled sanely in local time
 B-11|every compose profile has a preflight check
+B-12|no container is privileged or grants itself capabilities
+B-13|containers running as root, against the acknowledged set
 C-1|every secret file and its backup variants are gitignored
 C-2|no secret in git history
 C-3|no placeholder value still installed
@@ -241,6 +246,7 @@ L-1|gateway API keys: how many, how scoped, how long unused
 L-2|Activepieces registration is closed, re-tested rather than recalled
 L-3|journals hold no credential-shaped string
 L-4|journal growth is bounded by something
+L-5|container logs carry no credential-shaped string
 MANIFEST
 }
 
@@ -710,6 +716,75 @@ print(' '.join(sorted(ps)))" 2>/dev/null || true)
     else
         chk B-11 UNKNOWN "cannot compare profiles to preflight"
     fi
+
+    # B-12 and B-13 ask what a container is ALLOWED to do, which nothing asked.
+    # B-1 bounds memory, B-2 bounds ports; neither notices a container that can
+    # step out of its own cgroup entirely. The blast radius here is not
+    # theoretical -- C-4 already records that the sidecar holds a read-write
+    # docker.sock, so a second privilege path is a second way to reach the host.
+    if ! on_host; then
+        chk B-12 SKIP "not on the host; container privileges are a runtime fact"
+        chk B-13 SKIP "not on the host"
+    else
+        _priv=""; _caps=""; _root=""; _nall=0
+        for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
+            _nall=$((_nall + 1))
+            [ "$(docker inspect -f '{{.HostConfig.Privileged}}' "$_c" 2>/dev/null)" = "true" ] \
+                && _priv="$_priv $_c"
+            case "$(docker inspect -f '{{.HostConfig.CapAdd}}' "$_c" 2>/dev/null)" in
+                ''|'[]'|'<no value>') : ;;
+                *) _caps="$_caps $_c" ;;
+            esac
+            case "$(docker inspect -f '{{.Config.User}}' "$_c" 2>/dev/null)" in
+                ''|root|0|0:0) _root="$_root $_c" ;;
+            esac
+        done
+        metric b12_containers "$_nall"
+        if [ -n "$_priv" ] || [ -n "$_caps" ]; then
+            chk B-12 FAIL "container(s) running with elevated privileges" \
+                "privileged:${_priv:- none} cap_add:${_caps:- none}"
+        else
+            chk B-12 PASS "no container is privileged, none adds a capability" \
+                "$_nall container(s) inspected"
+        fi
+
+        # B-13 is drift, not presence, for the same reason F-9 is: six of these
+        # are vendored or upstream images whose entrypoint needs uid 0, and a
+        # check that can never be green is a check nobody reads. What must not
+        # happen quietly is a SEVENTH.
+        _rack=scripts/root-containers.txt
+        _rn=$(printf '%s' "$_root" | wc -w)
+        metric b13_root_containers "$_rn"
+        if [ ! -f "$_rack" ]; then
+            chk B-13 FAIL "no $_rack; root-running containers have never been reviewed" \
+                "$_rn of $_nall run as uid 0"
+        else
+            _new=""
+            for _c in $_root; do
+                grep -v '^[[:space:]]*#' "$_rack" | grep -qx "$_c" || _new="$_new $_c"
+            done
+            # Measured, not asserted. The first version of this check gave
+            # "no user-namespace remapping on this daemon" as its evidence
+            # without ever reading the daemon — an unverified claim dressed as
+            # a finding, which is the habit this audit exists to break.
+            # `docker info` lists name=userns among SecurityOptions when
+            # remapping is on; its absence is what makes uid 0 inside uid 0
+            # outside, and the seccomp and apparmor profiles it DOES list are
+            # worth naming rather than leaving out of a security sentence.
+            _so=$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null || true)
+            case "$_so" in
+                *userns*) _uns="userns remapping is on: uid 0 inside is not uid 0 outside" ;;
+                '')       _uns="the daemon's security options could not be read" ;;
+                *)        _uns="no userns remapping, so uid 0 inside is uid 0 outside on escape; the daemon does apply $(printf '%s' "$_so" | tr -d '[]\"' | tr ',' ' ')" ;;
+            esac
+            if [ -z "$_new" ]; then
+                chk B-13 PASS "$_rn of $_nall container(s) run as root, all acknowledged" \
+                    "$_uns"
+            else
+                chk B-13 FAIL "container(s) running as root that nobody has reviewed" "$_new"
+            fi
+        fi
+    fi
 }
 
 # ------------------------------------------------------------- dimension C
@@ -989,8 +1064,26 @@ dim_D() {
                   r=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo 0)
                   [ "$r" -gt 3 ] && printf '%s=%s ' "$c" "$r"
                 done; true)
+    # A container that declares NO healthcheck never reports "unhealthy", so
+    # the grep below is silent for it and D-2 passed on a stack where the only
+    # public entrypoint had no healthcheck at all. That is precisely the
+    # failure this dimension was written to catch -- "healthy that was never
+    # checked" -- committed by the check named after it.
+    _nohc=""
+    for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
+        [ "$(docker inspect -f '{{if .Config.Healthcheck}}y{{else}}n{{end}}' "$_c" 2>/dev/null)" = "n" ] \
+            && _nohc="$_nohc $_c"
+    done
+    if [ -z "$_nohc" ]; then
+        chk D-2b PASS "every running container declares a healthcheck"
+    else
+        chk D-2b FAIL "container(s) with no healthcheck at all" \
+            "$_nohc — D-2 cannot see these; its silence about them is not a pass"
+    fi
+
     if [ -z "$_unhealthy" ] && [ -z "$_restarts" ]; then
-        chk D-2 PASS "no unhealthy container, none restarting repeatedly"
+        chk D-2 PASS "no container reports unhealthy, none restarts repeatedly" \
+            "which is a claim only about containers that HAVE a healthcheck; see D-2b"
     else
         chk D-2 FAIL "container health problems" "$_unhealthy $_restarts"
     fi
@@ -1134,8 +1227,22 @@ dim_E() {
     # E-1 is deliberately blunt: this deployment has no backup mechanism at
     # all, so the honest answer is a list of what would be lost, not a PASS.
     _vols=$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -c . || true); _vols=${_vols:-0}
-    chk E-1 UNKNOWN "$_vols docker volume(s); no backup mechanism exists to verify" \
-        "loss would be silent until needed — this is a decision, not a check"
+    # This reported UNKNOWN with the words "this is a decision, not a check",
+    # which reads as humility and is a dodge: whether a backup mechanism EXISTS
+    # is a fact, and it is measurable from here. Measured — no timer, no cron
+    # entry, no backup directory — the answer is that none does, and a check
+    # that can state a fact must state it.
+    _bk=""
+    systemctl --user list-timers --all --no-pager 2>/dev/null | grep -qi 'backup\|dump' && _bk="timer"
+    crontab -l 2>/dev/null | grep -qi 'backup\|pg_dump' && _bk="${_bk:+$_bk,}cron"
+    [ -d "$HOME/KING/backups" ] && _bk="${_bk:+$_bk,}directory"
+    if [ -n "$_bk" ]; then
+        chk E-1 PASS "$_vols docker volume(s); a backup mechanism exists ($_bk)" \
+            "that it RESTORES is a drill, not a check — nothing here has run one"
+    else
+        chk E-1 FAIL "$_vols docker volume(s) and no backup mechanism of any kind" \
+            "no timer, no cron entry, no backups directory; loss is silent until the day it is needed"
+    fi
 
     for _j in /audit/runs.jsonl /audit/vps_exec.log; do
         _n=$(docker exec king-agent-sidecar-http-1 sh -c "wc -l < $_j 2>/dev/null" 2>/dev/null | tr -d ' ' || true)
@@ -2357,6 +2464,31 @@ PYKEYS
                   chk L-4 FAIL "run journal at $_jl lines and nothing rotates it"
               fi ;;
     esac
+
+    # L-3 scans the run journals. Nothing scanned the CONTAINER logs, which are
+    # a larger surface written by code this repo does not own: a library that
+    # logs a request header at debug level puts a bearer token on disk in a
+    # file D-7 has just established nothing rotates.
+    if ! on_host; then
+        chk L-5 SKIP "not on the host"
+    else
+        _hits=""; _scanned=0
+        for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
+            _scanned=$((_scanned + 1))
+            _n=$(docker logs --tail 4000 "$_c" 2>&1 \
+                 | grep -cE 'sk-[A-Za-z0-9]{16,}|Bearer [A-Za-z0-9_.-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.' \
+                 || true)
+            case "$_n" in ''|*[!0-9]*) continue ;; esac
+            [ "$_n" -gt 0 ] && _hits="$_hits $_c($_n)"
+        done
+        if [ -z "$_hits" ]; then
+            chk L-5 PASS "no credential-shaped string in $_scanned container log(s)" \
+                "last 4000 lines each; older lines are not covered and nothing rotates them"
+        else
+            chk L-5 FAIL "credential-shaped string(s) in container logs" "$_hits"
+        fi
+    fi
+
 }
 
 # ----------------------------------------------------------------- self-test
