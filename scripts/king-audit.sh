@@ -1008,15 +1008,55 @@ dim_C() {
         chk C-5 UNKNOWN "curl or Caddyfile unavailable; public surface unmeasurable"
     fi
 
-    if [ -f agent-sidecar/.env ]; then
-        _perm=$(stat -c '%a' agent-sidecar/.env 2>/dev/null || stat -f '%A' agent-sidecar/.env 2>/dev/null || true)
+    # C-7 checked exactly one file — agent-sidecar/.env — and reported "secret
+    # file permissions are not world-readable", plural, generalising from a
+    # sample of one. It passed while omniroute/data/server.env sat at mode 644
+    # holding the STORAGE_ENCRYPTION_KEY that decrypts every provider
+    # credential, and storage.sqlite sat beside it at 644 holding the gateway's
+    # own API keys as literal `sk-` strings.
+    #
+    # The runtime paths are the ones a fixed list was always going to miss:
+    # they are created by the container, owned by uid 1000, and named nothing
+    # like `.env` in five of six cases. They are also where the key lives NEXT
+    # TO the data it encrypts, so the encryption defends against a stolen
+    # database file and not against read access to the directory.
+    _runtime_secrets="omniroute/data/server.env omniroute/data/storage.sqlite .pool-prove.env"
+    _wr=""; _checked=0; _unstat=""
+    for _sf in $SECRET_FILES $_runtime_secrets; do
+        [ -e "$_sf" ] || continue
+        _perm=$(stat -c '%a' "$_sf" 2>/dev/null || priv stat -c '%a' "$_sf" || true)
         case "$_perm" in
-            ""|*[!0-9]*) chk C-7 UNKNOWN "could not read .env permissions" ;;
-            *[2367])     chk C-7 FAIL "agent-sidecar/.env is world-readable" "mode $_perm" ;;
-            *)           chk C-7 PASS "secret file permissions are not world-readable" "mode $_perm" ;;
+            ""|*[!0-9]*)
+                # Never a silent `continue`. A file that cannot be stat'd is
+                # not a file that passed, and dropping it from the count is
+                # how "8 checked, none world-readable" got printed while the
+                # two that mattered were never looked at.
+                _unstat="$_unstat $_sf"; continue ;;
         esac
+        _checked=$((_checked + 1))
+        # The others digit, tested for the READ bit.
+        #
+        # This was `*[2367]`, which matches modes ending in 2, 3, 6 or 7 —
+        # that is the WRITE bit. Mode 644 ends in 4 and never matched, so a
+        # check named "world-readable" was testing world-WRITABLE. It passed
+        # for months because the single file it looked at was 600, where both
+        # tests agree. Nothing catches a wrong predicate that is only ever
+        # asked about a passing case.
+        case "$_perm" in
+            *[4567]) _wr="$_wr ${_sf}($_perm,readable)" ;;
+            *[123])  _wr="$_wr ${_sf}($_perm,writable-or-exec)" ;;
+        esac
+    done
+    if [ -n "$_unstat" ]; then
+        chk C-7 UNKNOWN "secret file(s) could not be stat'd:$_unstat" \
+            "$_checked other file(s) were checked; an unmeasured file is not a passing one"
+    elif [ "$_checked" -eq 0 ]; then
+        chk C-7 UNKNOWN "no secret file was found to check"
+    elif [ -z "$_wr" ]; then
+        chk C-7 PASS "none of $_checked secret-bearing file(s) is world-readable"
     else
-        chk C-7 SKIP "no agent-sidecar/.env here"
+        chk C-7 FAIL "world-readable secret-bearing file(s):$_wr" \
+            "$_checked checked; on this host uid 1001 and 1002 can read anything at mode 644"
     fi
 
     # C-2: rotation does not help if the old value is still in the history.
