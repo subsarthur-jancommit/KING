@@ -92,19 +92,28 @@ services:
       - OMNIROUTE_BASE_URL=http://omniroute-base:${DASHBOARD_PORT:-20128}
       # smolagents' CodeAgent executes model-generated Python. "local" runs it
       # inside THIS container, guarded only by an AST-level import allowlist —
-      # smolagents documents that as not a security boundary. That is fine
-      # while every task arrives from an operator on the command line, which
-      # is the only way this service is invoked today.
+      # smolagents documents that as not a security boundary.
+      #
+      # The default was `local`, justified by: "that is fine while every task
+      # arrives from an operator on the command line, which is the only way
+      # this service is invoked today." That sentence stopped being true when
+      # /run became reachable over MCP. Task text now arrives from a model, and
+      # this container holds a read-write docker.sock — so the unsafe path was
+      # the DEFAULT, and safety depended on .env carrying an override.
+      #
+      # Flipped to e2b on 2026-09-10. A deployment with no E2B credential now
+      # fails loudly at preflight rather than quietly running model-written code
+      # in a container with the host's Docker socket. That is the same choice
+      # codegraph-serve already makes: it REFUSES to start against a missing
+      # graph, because answering confidently and wrongly is worse than not
+      # answering. A silent unsafe fallback is that, inverted.
       #
       # Do NOT reach for "docker" as the hardened option: smolagents'
-      # DockerExecutor uses docker.from_env(), so from inside this container
-      # it needs the host's Docker socket mounted in — root-equivalent host
-      # access, handed to the one service that runs model-written code by
-      # design. If task text ever starts arriving from outside an operator's
-      # shell, move execution off this host instead ("e2b", "modal",
-      # "blaxel"), which needs no local daemon.
+      # DockerExecutor uses docker.from_env(), so from inside this container it
+      # needs the host's Docker socket — root-equivalent access handed to the
+      # one service that runs model-written code by design.
       # See docs/integrations/vps-hardening.md.
-      - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-local}
+      - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-e2b}
       # Read config.py before setting this: under `local` it RESTRICTS imports
       # and is the whole boundary, under e2b/modal smolagents pip-installs it
       # and restricts nothing.
@@ -295,7 +304,12 @@ services:
         required: false
     environment:
       - OMNIROUTE_BASE_URL=http://omniroute-base:${DASHBOARD_PORT:-20128}
-      - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-local}
+      # Same default as `agent-sidecar` above, and this is the service that
+      # actually runs — the HTTP one, reachable over MCP. The first edit
+      # changed only the CLI variant and left this at `local`; the setting that
+      # mattered was the one not touched. Two services sharing a security
+      # default is two places to forget, and only one of them was live.
+      - AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-e2b}
       # Read config.py before setting this: under `local` it RESTRICTS imports
       # and is the whole boundary, under e2b/modal smolagents pip-installs it
       # and restricts nothing.
@@ -461,6 +475,13 @@ services:
       # horizontal-scale layout this VPS has no headroom for and does not
       # need.
       - AP_QUEUE_MODE=${AP_QUEUE_MODE:-REDIS}
+      # Passed here rather than left to activepieces/.env, so the password has
+      # ONE source. Two files holding the same secret is two files that can
+      # disagree, and the failure — a queue nobody can reach — looks like a
+      # broken Redis rather than a mismatched string. `environment:` wins over
+      # `env_file:`, so the (now commented-out) line in activepieces/.env
+      # cannot silently take precedence.
+      - AP_REDIS_PASSWORD=${AP_REDIS_PASSWORD:-CHANGEME-set-AP_REDIS_PASSWORD-in-dot-env}
     depends_on:
       omniroute-base:
         condition: service_healthy
@@ -579,7 +600,33 @@ services:
   # Measured cost of running it here: 4.3 MB of RAM.
   ap-redis:
     image: redis:8.6.5-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # `--requirepass`, and the default is a PLACEHOLDER rather than empty.
+    #
+    # `${AP_REDIS_PASSWORD:-}` would hand redis-server an empty password, which
+    # it treats as no password at all — so a deployment that forgot to set the
+    # variable would come up silently unauthenticated, which is the state
+    # king-audit C-10 exists to catch. A non-empty placeholder means Redis
+    # ALWAYS has a password: forget the variable and Activepieces fails to
+    # connect, loudly, instead of the queue quietly sitting open to every
+    # container on the network.
+    #
+    # `${VAR:?err}` is not an option — CLAUDE.md, it is interpolated across the
+    # whole merged model before profile filtering and breaks unrelated
+    # profiles. stax-preflight.sh enforces the real value instead.
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --requirepass
+      - ${AP_REDIS_PASSWORD:-CHANGEME-set-AP_REDIS_PASSWORD-in-dot-env}
+    environment:
+      # The healthcheck below is `redis-cli ping`, which answers NOAUTH once a
+      # password is set — the container would report unhealthy forever. redis-cli
+      # reads REDISCLI_AUTH from the environment, so the password never appears
+      # on a command line where `ps` inside the container could read it.
+      - REDISCLI_AUTH=${AP_REDIS_PASSWORD:-CHANGEME-set-AP_REDIS_PASSWORD-in-dot-env}
     # No persistence on purpose. This holds an in-flight job queue, not state:
     # the schedule that matters re-fires every 15 minutes, and durable queue
     # history already lives in Postgres. Persistence would buy disk churn.

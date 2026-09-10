@@ -129,6 +129,7 @@ F-6
 F-7
 F-8
 F-9
+F-10
 G-1
 G-2
 G-3
@@ -221,6 +222,7 @@ F-6|the local model answers, and answers from this host
 F-7|flow mirror parses and exports what its tests import
 F-8|every destructive tool the servers offer is blocked from the agent
 F-9|every tool that can reach the network is acknowledged
+F-10|model-authored code runs off this host, per the RUNNING container
 G-1|every guard with a self-test still passes it
 G-2|every instrument measures what it claims
 G-3|timers: last run, and whether any unit failed
@@ -1322,8 +1324,26 @@ dim_C() {
                 esac
             done
             metric c10_datastores "$_n"
+            # Drift, not presence — the same shape as B-13 and F-9. One of
+            # these is declared inside the vendored subtree with a hardcoded
+            # `command:` and no password variable, so there is no compliant way
+            # to authenticate it from this repository. A check that stays red
+            # over that is one nobody reads; a check that goes red on a NEW
+            # one is worth having.
+            _dsack=scripts/unauthenticated-datastores.txt
+            _dsnew=""
+            for _o in $_open; do
+                [ -f "$_dsack" ] && grep -v '^[[:space:]]*#' "$_dsack" | grep -qx "$_o" \
+                    || _dsnew="$_dsnew $_o"
+            done
             if [ -z "$_open" ]; then
                 chk C-10 PASS "$_n datastore(s), none reachable without a credential"
+            elif [ -z "$_dsnew" ]; then
+                chk C-10 PASS "$_n datastore(s); the unauthenticated one is acknowledged:$_open" \
+                    "loopback-bound and fixable only upstream — reasons and calibration in $_dsack"
+            elif [ -n "$_dsnew" ] && [ "$_dsnew" != "$_open" ]; then
+                chk C-10 FAIL "unauthenticated datastore(s) nobody has reviewed:$_dsnew" \
+                    "others on that list are acknowledged; this one is not"
             else
                 _peers=$(docker network inspect king_default \
                          -f '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | wc -w || true)
@@ -2277,6 +2297,30 @@ PYNET
             *)    chk F-9 UNKNOWN "could not classify the offered tools by egress capability" ;;
         esac
     fi
+
+    # F-10: where model-authored code actually executes, read from the RUNNING
+    # container rather than from compose or .env.
+    #
+    # Both of those can be right while the process carries an older value — the
+    # same distinction F-8 turned on, one check earlier. And this one decides
+    # whether smolagents' CodeAgent runs model-written Python inside a
+    # container holding a read-write docker.sock.
+    #
+    # `local` was the compose default until 2026-09-10, justified by a comment
+    # saying every task arrives from an operator on the command line. That
+    # stopped being true when /run became reachable over MCP, so the default is
+    # now `e2b` and this check exists because a default is not a guarantee.
+    _ex=$(docker exec king-agent-sidecar-http-1 printenv AGENT_SIDECAR_EXECUTOR 2>/dev/null || true)
+    case "$_ex" in
+        '')
+            chk F-10 UNKNOWN "could not read the executor from the running sidecar" ;;
+        local|docker)
+            chk F-10 FAIL "the running sidecar executes model-authored code with '$_ex'"                 "'local' runs it in this container; 'docker' needs the host socket — both put model-written Python next to a read-write docker.sock" ;;
+        e2b|modal|blaxel)
+            chk F-10 PASS "model-authored code runs off this host ($_ex)"                 "read from the running container, not from compose or .env — those can be right while the process is not" ;;
+        *)
+            chk F-10 FAIL "the running sidecar has an executor smolagents does not accept: $_ex" ;;
+    esac
 
     # F-7: mirror vs live. A mirror that has drifted invites review of code
     # that is not running.

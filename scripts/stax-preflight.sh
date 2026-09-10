@@ -195,13 +195,21 @@ check_agent_sidecar() {
   # OMNIROUTE_API_KEY — are still read from agent-sidecar/.env below. The rule
   # is: look where compose actually takes the value from.
   executor=$(lookup AGENT_SIDECAR_EXECUTOR .env)
-  executor="${executor:-local}"
+  # The fallback must MATCH the compose default, or this check describes a
+  # deployment that does not exist. It said `local` while compose said `local`;
+  # compose now says `e2b`, so this does too.
+  executor="${executor:-e2b}"
   case "$executor" in
     local)
-      warn "AGENT_SIDECAR_EXECUTOR=local runs model-generated Python inside the sidecar container."
-      echo "         This is the intended setting while tasks come from an operator on the CLI."
-      echo "         If task text ever arrives from outside your shell, move to e2b/modal/blaxel"
-      echo "         (not docker — see below)."
+      # Was a warning, justified by "the intended setting while tasks come from
+      # an operator on the CLI". That stopped being true when /run became
+      # reachable over MCP: task text now arrives from a model, and this
+      # container holds a read-write docker.sock. A warning is what you write
+      # when the risk is conditional; the condition is no longer met.
+      fail "AGENT_SIDECAR_EXECUTOR=local runs model-generated Python inside the sidecar container."
+      echo "         That container holds a read-write docker.sock, and /run is reachable over"
+      echo "         MCP — so the code being executed is written by a model, not typed by you."
+      echo "         Fix:  set AGENT_SIDECAR_EXECUTOR=e2b (or modal/blaxel) in .env"
       ;;
     docker)
       # smolagents' DockerExecutor uses docker.from_env(), so inside a
@@ -358,6 +366,41 @@ check_workflow() {
     fail "AP_ENCRYPTION_KEY must be exactly 32 hex characters (openssl rand -hex 16); got ${#enc}."
   fi
   check_secret "AP_JWT_SECRET" "$(lookup AP_JWT_SECRET activepieces/.env)" '' 32
+
+  # The Redis password, read from the ROOT .env — that is where compose takes
+  # it from, and it is passed to both ap-redis (--requirepass) and activepieces
+  # (environment) from there. One source, because two files holding one secret
+  # is two files that can disagree, and the failure looks like a broken Redis
+  # rather than a mismatched string.
+  #
+  # The compose default is a loud placeholder rather than empty, so a forgotten
+  # variable produces a Redis nobody can reach instead of one anybody can. This
+  # is the check that turns that from a late, confusing failure into an early,
+  # obvious one.
+  local redis_pw
+  redis_pw=$(lookup AP_REDIS_PASSWORD .env)
+  case "$redis_pw" in
+    '')
+      fail "AP_REDIS_PASSWORD is unset in .env; ap-redis would start with the placeholder password."
+      echo "         Activepieces then cannot reach its own queue. Fix:"
+      # No backslash-n in an echo: SC2028 is info-level, and CI lints with NO
+      # severity flag. Four pushes went out red because I verified with
+      # -S warning, which does not show info.
+      #
+      # This comment also may not BEGIN with the linter's name: a line starting
+      # "# shellcheck ..." is parsed as a directive, and an English sentence in
+      # that position is a hard parse error (SC1072/SC1073) that takes the
+      # whole file with it. Found by running the exact command CI runs.
+      echo "         echo \"AP_REDIS_PASSWORD=\$(openssl rand -hex 24)\" >> .env" ;;
+    CHANGEME*)
+      fail "AP_REDIS_PASSWORD is still the placeholder." ;;
+    *)
+      if [ "${#redis_pw}" -lt 24 ]; then
+        warn "AP_REDIS_PASSWORD is ${#redis_pw} characters; 48 hex is what generated it."
+      else
+        pass "AP_REDIS_PASSWORD is set; ap-redis requires it and refuses anonymous commands."
+      fi ;;
+  esac
 
   local pg
   pg=$(lookup AP_POSTGRES_URL activepieces/.env)

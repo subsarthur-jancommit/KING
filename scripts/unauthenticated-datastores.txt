@@ -1,0 +1,50 @@
+# Datastores that answer without a credential, acknowledged one by one.
+#
+# `ap-redis` is not here any more: its `command:` is ours, so it gained
+# `--requirepass` on 2026-09-10 and now refuses an unauthenticated DBSIZE with
+# WRONGPASS. What is left is the one this repo cannot reach.
+#
+# It is drift, not presence. Every name below was looked at once and found to
+# have a reason. A datastore appearing here without review turns
+# `king-audit.sh -d C` red — which is the only outcome that changes anyone's
+# behaviour. Same reasoning as pool-dead-models.txt, network-tools.txt,
+# root-containers.txt, no-healthcheck.txt and swapping-containers.txt.
+#
+# Format: one container name per line. Blank lines and #-comments ignored.
+# Measured 2026-09-10 against the running stack.
+
+# --- declared inside the vendored subtree, with no way in from outside ----
+#
+# omniroute/docker-compose.yml line 71:
+#
+#     command: redis-server --save 60 1 --loglevel warning
+#
+# Hardcoded. No password variable, no config-file mount, nothing an env_file
+# can reach — unlike the same file's REDIS_BIND_HOST, which does take a
+# variable. Adding `--requirepass` means editing the subtree, which CLAUDE.md
+# forbids because the next `git subtree pull` reverts it silently; and a root
+# compose override of a service omniroute/ defines once turned every Docker CI
+# job red with "conflicts with imported resource". So there is no compliant
+# way to authenticate it from this repository. A patch is prepared for
+# upstream instead.
+#
+# WHAT CALIBRATES THE RISK, stated so this is an assessment and not a shrug:
+#
+#   It is loopback-bound. `${REDIS_BIND_HOST:-127.0.0.1}:6379:6379` — the
+#   vendored file gets this right, and K-3 confirms nothing on the public
+#   address answers. Nothing on the internet can reach it.
+#
+#   Its exposure is the compose network, and the ten containers sharing that
+#   network all run first-party code. The one that would sharpen this — the
+#   agent sidecar — does NOT execute model-authored code in-container:
+#   AGENT_SIDECAR_EXECUTOR is `e2b`, so that code runs off-host. As of
+#   2026-09-10 the compose DEFAULT is `e2b` too, so this no longer depends on
+#   .env carrying an override.
+#
+#   It holds two keys. The gateway uses it as a cache and a lock, not as a
+#   store of record; `omniroute/data/storage.sqlite` is where anything worth
+#   stealing lives, and that is now mode 600 in a 700 directory.
+#
+# So: real, bounded, and fixable only upstream. It is lateral-movement
+# hardening that is missing, not an open door.
+omniroute-redis
