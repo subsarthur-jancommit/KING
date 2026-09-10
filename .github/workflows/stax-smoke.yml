@@ -322,6 +322,17 @@ jobs:
             echo "OMNIROUTE_API_KEY=${SIDECAR_API_KEY}"
             echo "AGENT_SIDECAR_MODEL_ID=opencode/big-pickle"
             echo "AGENT_SIDECAR_AUTH_TOKEN=${TOKEN}"
+            # Here as well as on the pytest step's `-e`, because that step runs
+            # a one-shot `compose run --rm` and the end-to-end step below runs
+            # the long-lived agent-sidecar-http SERVICE, which never sees it.
+            # Two places, and the first fix reached only one of them — the same
+            # shape as the compose default itself, where the first edit changed
+            # `agent-sidecar` and left `agent-sidecar-http` on the old value.
+            #
+            # `local` is CI opting in deliberately: no E2B credential on this
+            # runner, an ephemeral machine, no MCP endpoint, and task text from
+            # the workflow file rather than from a model.
+            echo "AGENT_SIDECAR_EXECUTOR=local"
           } > agent-sidecar/.env
           chmod 600 agent-sidecar/.env
 
