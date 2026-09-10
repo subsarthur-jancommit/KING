@@ -1668,8 +1668,20 @@ dim_E() {
     # state cannot possibly contain.
     _newfile=$(git diff --diff-filter=A --name-only "$_gc..origin/main" 2>/dev/null \
                | grep -E '^(scripts|agent-sidecar|flows)/.*\.(sh|py|js|mjs)$' | head -1 || true)
-    if [ -z "$_newfile" ]; then
+    # An empty `_newfile` has two causes and they are not the same statement.
+    #
+    # Either the graph is level with origin — nothing newer exists — or newer
+    # commits exist but none of them ADDED a file matching the probe filter.
+    # This branch reported both as "graph commit matches origin", and on
+    # 2026-09-10 that sentence was simply false: the graph was at b75cf3a3,
+    # origin at e9374e5, and the only added file was audit/baseline.json, which
+    # is not a source file. E-4 was failing on that gap in the same run while
+    # E-5 said they matched.
+    if [ -z "$_newfile" ] && [ "$_gc" = "$_origin" ]; then
         chk E-5 PASS "graph commit matches origin; nothing newer to look for"
+    elif [ -z "$_newfile" ]; then
+        chk E-5 UNKNOWN "graph is behind origin, but no newly-added source file exists to probe with" \
+            "graph=$(printf '%s' "$_gc" | cut -c1-8) origin=$(printf '%s' "$_origin" | cut -c1-8) — correctness unproven either way; E-4 carries the staleness"
     elif [ -z "$PY" ]; then
         chk E-5 UNKNOWN "no interpreter to query the graph with"
     else
@@ -1776,9 +1788,24 @@ if not isinstance(rows, list) or not rows:
 def has(r):
     t = r.get("tokens") or {}
     return bool((t.get("in") or 0) or (t.get("out") or 0))
-paid = [r for r in rows if (r.get("provider") or "") not in ("ollama", "ollama-local")]
-print("%d\t%d\t%d\t%d" % (len(rows), sum(1 for r in rows if has(r)),
-                          len(paid), sum(1 for r in paid if has(r))))
+# The population is INFERENCE, and getting that wrong inverted this check's
+# conclusion for a day.
+#
+# It counted every row and called anything not ollama "paid", then reported
+# "only 42% report tokens; spend cannot be derived". But 288 of 500 rows are
+# /api/providers/test — provider health probes, which consume no tokens and
+# correctly report none. Counting a health check as a paid call that failed to
+# account for itself is what made a well-instrumented gateway look unmeasurable.
+#
+# Failed inference is excluded for the same reason: a 504 that never produced a
+# first byte has no tokens to report. Six of the 212 real calls are exactly
+# that — four 504s, one 502 "empty content", and one Tavily search, which is
+# billed per search rather than per token.
+inference = [r for r in rows if str(r.get("path") or "").startswith("/v1/chat")]
+completed = [r for r in inference if str(r.get("status") or "")[:1] == "2"]
+probes = [r for r in rows if str(r.get("path") or "").startswith("/api/providers/test")]
+print("%d\t%d\t%d\t%d" % (len(completed), sum(1 for r in completed if has(r)),
+                          len(probes), len(rows)))
 PYE8
         _cov=$(curl -s -m 45 "http://localhost:20128/api/usage/call-logs?limit=500" \
                -H "Authorization: Bearer $_k" 2>/dev/null | "$PY" "$_e8" 2>/dev/null || true)
@@ -1786,18 +1813,23 @@ PYE8
         case "$_cov" in
             ''|ERR*) chk E-8 UNKNOWN "the call log did not return a readable list" ;;
             *)
-                _all=$(printf '%s' "$_cov" | cut -f1);  _allt=$(printf '%s' "$_cov" | cut -f2)
-                _pd=$(printf '%s' "$_cov" | cut -f3);   _pdt=$(printf '%s' "$_cov" | cut -f4)
-                metric e8_token_coverage_pct "$(( _allt * 100 / _all ))"
-                if [ "${_pd:-0}" -gt 0 ] && [ "$_pdt" -eq 0 ]; then
-                    chk E-8 FAIL "no paid call reports its tokens ($_pd of $_all calls)" \
-                        "spend cannot be derived, so no budget guard can be built on this log"
-                elif [ "$(( _allt * 100 / _all ))" -lt 50 ]; then
-                    chk E-8 FAIL "only $_allt of $_all calls report tokens" \
-                        "$_pdt of $_pd paid calls; partial accounting reads as a total and is not one"
+                _inf=$(printf '%s' "$_cov" | cut -f1);  _inft=$(printf '%s' "$_cov" | cut -f2)
+                _probes=$(printf '%s' "$_cov" | cut -f3); _rows=$(printf '%s' "$_cov" | cut -f4)
+                if [ "${_inf:-0}" -eq 0 ]; then
+                    chk E-8 UNKNOWN "no completed inference call in the last $_rows log rows" \
+                        "$_probes of them are provider health probes, which carry no tokens by design"
                 else
-                    chk E-8 PASS "$_allt of $_all calls report tokens" \
-                        "$_pdt of $_pd paid calls carry usage"
+                    metric e8_token_coverage_pct "$(( _inft * 100 / _inf ))"
+                    # 95, not 50. Once the population is right the honest bar is
+                    # high: a completed inference call that reports no tokens is
+                    # an accounting hole, not a rounding error.
+                    if [ "$(( _inft * 100 / _inf ))" -lt 95 ]; then
+                        chk E-8 FAIL "$_inft of $_inf completed inference calls report tokens" \
+                            "the rest are an accounting hole; a budget guard built on this would understate"
+                    else
+                        chk E-8 PASS "$_inft of $_inf completed inference calls report tokens" \
+                            "$_probes of $_rows log rows are provider health probes, which carry no tokens by design and are not counted"
+                    fi
                 fi ;;
         esac
     fi
@@ -3254,8 +3286,23 @@ PYF9B
     then printf '  ok    a tool acknowledged with a trailing comment is not new\n'
     else printf '  FAIL  a tool acknowledged with a trailing comment is not new (got %s)\n' "$_f9bout"; _f=$((_f+1)); fi
 
-    # ---- E-8: token coverage, which must not read a paid zero as fine ---
-    printf '%s\n' '[{"provider":"ollama","tokens":{"in":10,"out":5}},{"provider":"openrouter","tokens":{"in":0,"out":0}}]' > "$_t/logs.json"
+    # ---- E-8: the POPULATION, which is what it got wrong -----------------
+    #
+    # The old fixture asserted "a non-ollama call with zero tokens counts as
+    # unaccounted" — which was the bug, encoded as a test. It kept passing
+    # while the check told me spend could not be derived, because it tested
+    # the same wrong idea the check held.
+    #
+    # A test written against the same mistaken premise as the code confirms
+    # the premise. What has to be pinned is the population: health probes are
+    # not inference, and a failed call has no tokens to report.
+    printf '%s\n' '[
+      {"path":"/api/providers/test","status":200,"tokens":{"in":0,"out":0}},
+      {"path":"/api/providers/test","status":200,"tokens":{"in":0,"out":0}},
+      {"path":"/v1/chat/completions","status":200,"tokens":{"in":10,"out":5}},
+      {"path":"/v1/chat/completions","status":504,"tokens":{"in":0,"out":0}},
+      {"path":"/v1/chat/completions","status":200,"tokens":{"in":0,"out":0}}
+    ]' > "$_t/logs.json"
     _e8t=$(mktemp)
     cat > "$_e8t" <<'PYE8T'
 import sys, json
@@ -3263,14 +3310,24 @@ rows = json.load(open(sys.argv[1]))
 def has(r):
     t = r.get("tokens") or {}
     return bool((t.get("in") or 0) or (t.get("out") or 0))
-paid = [r for r in rows if (r.get("provider") or "") not in ("ollama", "ollama-local")]
-print("%d\t%d" % (len(paid), sum(1 for r in paid if has(r))))
+inference = [r for r in rows if str(r.get("path") or "").startswith("/v1/chat")]
+completed = [r for r in inference if str(r.get("status") or "")[:1] == "2"]
+probes = [r for r in rows if str(r.get("path") or "").startswith("/api/providers/test")]
+print("%d\t%d\t%d" % (len(completed), sum(1 for r in completed if has(r)), len(probes)))
 PYE8T
     _e8out=$("$PY" "$_e8t" "$_t/logs.json" 2>/dev/null || echo PYFAIL)
     rm -f "$_e8t"
-    if [ "$_e8out" = "$(printf '1\t0')" ]
-    then printf '  ok    a paid call reporting zero tokens is counted as unaccounted\n'
-    else printf '  FAIL  a paid call reporting zero tokens is counted as unaccounted (got %s)\n' "$_e8out"; _f=$((_f+1)); fi
+    # 2 completed inference calls (the 504 is excluded), 1 of them accounted,
+    # 2 health probes not counted at all.
+    if [ "$_e8out" = "$(printf '2\t1\t2')" ]
+    then printf '  ok    health probes and failed calls are out of the token population\n'
+    else printf '  FAIL  health probes and failed calls are out of the token population (got %s)\n' "$_e8out"; _f=$((_f+1)); fi
+
+    # And the direction that matters: a COMPLETED inference call with no
+    # tokens is still an accounting hole, and must stay countable.
+    if [ "$(printf '%s' "$_e8out" | cut -f1)" -gt "$(printf '%s' "$_e8out" | cut -f2)" ]
+    then printf '  ok    a completed call reporting no tokens is still counted as a hole\n'
+    else printf '  FAIL  a completed call reporting no tokens is still counted as a hole\n'; _f=$((_f+1)); fi
 
     rm -rf "$_t"
     echo
