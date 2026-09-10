@@ -2540,3 +2540,32 @@ omits it — rather than through an `environment:` list, which cannot.
 It appears in `docker-compose.yml` only inside the comment explaining this.
 `B-9` used to read the file as flat text and report the warning as the
 violation; it now strips comments first.
+
+### The Redis password, and why it lives in the root `.env`
+
+`AP_REDIS_PASSWORD` was added on 2026-09-10 when `ap-redis` gained
+`--requirepass`. It is read from the **root** `.env` — not from
+`activepieces/.env`, where a now-commented-out line used to hold it — because
+compose passes it to two services and one secret in two files is two files that
+can disagree. When they do, the symptom is a queue nobody can reach, which
+reads as a broken Redis rather than a mismatched string.
+
+Three details that are load-bearing rather than stylistic:
+
+- **The compose default is a placeholder, not empty.** `${VAR:-}` hands
+  `redis-server` an empty password, which it treats as *no* password — a
+  forgotten variable would produce a silently unauthenticated queue, the exact
+  state `C-10` exists to catch. A placeholder means Redis always requires
+  something, and Activepieces fails loudly when it does not have it.
+- **`REDISCLI_AUTH`, not `-a`.** The healthcheck is `redis-cli ping`, which
+  answers `NOAUTH` once a password exists; the container would report unhealthy
+  forever. redis-cli reads that variable from the environment, so the password
+  never lands on a command line inside the container.
+- **`stax-preflight.sh` enforces it**, because `${VAR:?err}` is forbidden here —
+  it is interpolated across the whole merged model before profile filtering and
+  breaks unrelated profiles.
+
+`omniroute-redis` has no password and cannot be given one from this repository:
+its `command:` is hardcoded in the vendored compose. `scripts/unauthenticated-datastores.txt`
+records that with what calibrates the risk, and `C-10` goes red if a *different*
+datastore ever joins it.

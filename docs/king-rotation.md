@@ -78,12 +78,20 @@ documents the only path: `reset-encrypted-columns --force`, which wipes every
 stored provider credential so they can be re-entered by hand. Back up
 `omniroute/data/server.env` before touching anything in that directory.
 
-Both files there are mode **644** — world-readable, on a host with three shell
-accounts, while `subsa` is uid 1001 and the files are uid 1000. That is
-`king-audit.sh` C-7, and the fix is `chmod 600` with the container (uid 1000,
-the owner) unaffected. It is left for a moment when someone is watching,
-because permissions in this directory are what silently destroyed every API key
-once already.
+Both files were mode **644** until 2026-09-10 — world-readable on a host with
+three shell accounts, while `subsa` is uid 1001 and the files are uid 1000, so
+read access came entirely from that mode. They are now 600 **inside a 700
+directory**, and the directory is the half that lasts: `chmod 600` on
+`storage.sqlite` is undone the next time SQLite rewrites its WAL, which happens
+minute by minute, while nothing the application does rewrites a directory's
+mode. The container is the owner, so it was unaffected; `stax-preflight` only
+stats the directory, which needs traverse on the parent.
+
+`C-7` now checks the directory as well as the files. It also stopped counting
+the two files the moment they went behind a 700 directory — `[ -e ]` needs
+traverse on every parent — and reported a pass over six of eight until the
+existence test learned to fall back to `sudo` like the stat beside it already
+did.
 
 ## Tier 4 — the workflow engine
 
@@ -92,7 +100,7 @@ once already.
 | `AP_ENCRYPTION_KEY` | `activepieces/.env` | Encrypts stored connections. Same class of hazard as above: rotating it orphans every saved connection. |
 | `AP_JWT_SECRET` | `activepieces/.env` | Signs sessions. Rotating logs everyone out, which is harmless. |
 | `AP_POSTGRES_URL` | `activepieces/.env` | **Carries the Neon password inline.** Rotating the database password means editing this URL. `king-backup.sh` reads it to run `pg_dump`, and passes it through the environment rather than a command line so `ps` cannot read it. |
-| `AP_REDIS_PASSWORD` | `activepieces/.env` | **Empty.** This is `king-audit.sh` C-10 seen from the other side: both Redis instances answer `CONFIG GET requirepass` with nothing, on one flat network shared with ten containers including the sidecar that runs model-authored code. Setting it means setting it in Redis and here, in the same change. |
+| `AP_REDIS_PASSWORD` | **root `.env`** | Set 2026-09-10. Compose passes it to `ap-redis` as `--requirepass` and to `activepieces` as an environment entry, so there is **one** source — the line in `activepieces/.env` is commented out with a pointer, because two files holding one secret is two files that can disagree and the failure looks like a broken Redis. Rotating it means one edit and `docker compose … up -d --force-recreate ap-redis activepieces`, both together: change Redis first and the workflow engine loses its queue until they agree. `omniroute-redis` is still unauthenticated and cannot be fixed from this repo — see `scripts/unauthenticated-datastores.txt`. |
 | `AP_FRONTEND_URL` | `activepieces/.env` | Not a secret; listed so the file's inventory is complete. |
 
 ## Tier 5 — provider and third-party credentials
