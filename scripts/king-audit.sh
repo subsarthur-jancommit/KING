@@ -82,6 +82,7 @@ A-5
 A-6
 A-7
 A-8
+A-9
 B-1
 B-2
 B-3
@@ -175,6 +176,7 @@ A-5|running image vs what its declared tag resolves to now
 A-6|local worktree vs origin
 A-7|leftover .orig/.rej merge artefacts
 A-8|locally-built images vs the source they were built from
+A-9|artefacts installed outside the repo vs the copies in it
 B-1|every service pairs mem_limit with an equal memswap_limit, plus cpus
 B-2|every published port binds loopback, Caddy excepted
 B-3|every image pinned to an exact tag or digest
@@ -567,6 +569,52 @@ print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$_ctx/${_f#.
         else
             chk A-8 PASS "every running image carries byte-identical source to the tree" \
                 "$_built context(s) compared by digest, not by timestamp${_nosrc:+; no first-party source to compare in:$_nosrc}"
+        fi
+    fi
+
+    # A-9: artefacts this repo installs OUTSIDE itself.
+    #
+    # A-1 compares git refs and A-8 compares baked images. Neither sees a file
+    # copied to /usr/local/sbin or /etc/systemd/system — and the one installed
+    # there is a firewall script, applied on every Docker start by a unit that
+    # also lives outside the tree. Edit the repo copy, forget the install, and
+    # the reviewed version is not the running one with nothing to say so.
+    #
+    # Compared with `priv`, and "cannot read" is reported apart from "differs".
+    # Plain `cmp -s` conflates them: run as this user against a root-owned 750
+    # file it exits non-zero for permission denied, which reads exactly like a
+    # content difference. That false alarm happened here first, and cost a
+    # reinstall that changed nothing.
+    if ! on_host; then
+        chk A-9 SKIP "not on the host; installed artefacts unreachable"
+    else
+        _drift=""; _unread=""; _pairs=0
+        for _spec in "/usr/local/sbin/king-firewall.sh|scripts/king-firewall.sh" \
+                     "/etc/systemd/system/king-firewall.service|scripts/king-firewall.service"; do
+            _dst=${_spec%%|*}; _src=${_spec##*|}
+            [ -f "$_src" ] || continue
+            _pairs=$((_pairs + 1))
+            if ! priv test -e "$_dst"; then
+                _drift="$_drift ${_dst}(absent)"
+            elif priv cmp -s "$_dst" "$_src"; then
+                :
+            elif priv test -r "$_dst"; then
+                _drift="$_drift ${_dst}(differs)"
+            else
+                _unread="$_unread $_dst"
+            fi
+        done
+        if [ "$_pairs" -eq 0 ]; then
+            chk A-9 UNKNOWN "no installed artefact could be matched to a repo copy"
+        elif [ -n "$_unread" ]; then
+            chk A-9 UNKNOWN "installed artefact(s) could not be read:$_unread" \
+                "an unreadable file is not a matching one"
+        elif [ -z "$_drift" ]; then
+            chk A-9 PASS "$_pairs installed artefact(s) match their repo copy" \
+                "compared with sudo, and 'cannot read' is reported apart from 'differs'"
+        else
+            chk A-9 FAIL "installed artefact(s) no longer match the repo:$_drift" \
+                "the reviewed copy is not the running one; re-run the install step in the unit's header"
         fi
     fi
 }
