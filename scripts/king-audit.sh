@@ -2880,7 +2880,11 @@ for t in d.get('results') or []:
     # lockfile -- an image can be rebuilt and never deployed, and the artefact
     # is not the process.
     _pinf="scripts/tls-client-pin.txt"
-    _gw=$(docker ps --filter "name=omniroute" --format '{{.Names}}' 2>/dev/null | head -1)
+    # Anchored. Docker's name filter is a substring match, so "name=omniroute"
+    # also returns omniroute-redis, and `head -1` then picks by creation time —
+    # a redis restart alone would make this check read node out of a Redis
+    # container and report the gateway as having no TLS binary at all.
+    _gw=$(docker ps --filter "name=^omniroute$" --format '{{.Names}}' 2>/dev/null | head -1)
     if [ ! -f "$_pinf" ]; then
         chk J-4 FAIL "no record of which TLS binary the gateway should run" \
             "expected $_pinf"
