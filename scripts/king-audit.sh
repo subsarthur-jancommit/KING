@@ -1531,10 +1531,38 @@ dim_D() {
     # zero, because grep -c exits 1 on no match.
     if _dm=$(priv dmesg); then
         _oom=$(printf '%s' "$_dm" | grep -ci 'out of memory\|oom-kill' || true)
+        # A cgroup-bounded kill and a host-wide kill are opposite events and
+        # this counted them together, under a sentence -- "the kernel has been
+        # choosing victims by RSS" -- that only describes the second.
+        #
+        # CLAUDE.md requires equal mem_limit/memswap_limit on every service
+        # precisely so a container "OOMs loudly inside its own cgroup instead
+        # of dragging the whole 7.8 GB host into swap thrash". A
+        # CONSTRAINT_MEMCG kill is therefore that rule WORKING: the blast was
+        # contained and the host chose nothing. Reporting it identically to a
+        # host-wide OOM makes the safety mechanism firing look like the
+        # emergency it prevents, and a reader who learns to wave this red away
+        # will wave away the one that matters.
+        #
+        # Five deliberately-capped gateway builds on 2026-09-10 put nine
+        # CONSTRAINT_MEMCG kills in this buffer while the gateway answered 200
+        # on every single health poll. That is the distinction, measured.
+        _oomhost=$(printf '%s' "$_dm" | grep -c 'constraint=CONSTRAINT_NONE' || true)
+        _oomcg=$(printf '%s' "$_dm" | grep -c 'constraint=CONSTRAINT_MEMCG' || true)
+        _oomvictims=$(printf '%s' "$_dm" | grep -oE 'task=[^,]+' | sed 's/^task=//' \
+                      | sort | uniq -c | sort -rn | head -4 | awk '{$1=$1;print $2" x"$1}' | tr '\n' ' ')
         if [ "${_oom:-0}" -eq 0 ]; then
             chk D-4 PASS "no OOM kill in the kernel ring buffer"
+        elif [ "${_oomhost:-0}" -gt 0 ]; then
+            chk D-4 FAIL "$_oomhost host-wide OOM kill(s) in dmesg" \
+                "constraint=CONSTRAINT_NONE -- the host itself ran out, not a cgroup; victims: ${_oomvictims:-unknown}"
+        elif [ "${_oomcg:-0}" -gt 0 ]; then
+            chk D-4 PASS "$_oomcg OOM kill(s), every one contained inside its own cgroup" \
+                "constraint=CONSTRAINT_MEMCG, zero host-wide -- the mem_limit rule doing its job; victims: ${_oomvictims:-unknown}"
         else
-            chk D-4 FAIL "$_oom OOM event(s) in dmesg" "the kernel has been choosing victims by RSS"
+            # 'out of memory' present but no constraint= line to classify it by.
+            chk D-4 FAIL "$_oom OOM event(s) in dmesg, and this kernel did not say which cgroup" \
+                "no constraint= field to separate a contained kill from a host-wide one"
         fi
     else
         chk D-4 UNKNOWN "dmesg unreadable even with sudo -n; OOM history unknown"
@@ -3648,6 +3676,51 @@ PINFIX
     if [ "$_j4extra" != "$_j4want" ]
     then printf '  ok    an unrecorded extra binary in the container is caught\n'
     else printf '  FAIL  an unrecorded extra binary in the container is caught\n'; _f=$((_f+1)); fi
+
+    # ---- D-4: a contained kill is not a host-wide kill --------------------
+    #
+    # The old check counted both and printed the host-wide sentence either way,
+    # so the mem_limit rule working looked exactly like the emergency it
+    # prevents. These fixtures are real dmesg shapes, trimmed.
+    cat > "$_t/dmesg-cg.txt" <<'DMCG'
+[Thu Sep 10 15:04:35 2026] oom-kill:constraint=CONSTRAINT_MEMCG,oom_memcg=/system.slice/docker-80c6.scope,task=next-build,pid=181559,uid=0
+[Thu Sep 10 15:04:35 2026] Memory cgroup out of memory: Killed process 181559 (next-build)
+DMCG
+    cat > "$_t/dmesg-host.txt" <<'DMHOST'
+[Thu Sep 10 09:12:01 2026] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),task=node,pid=4242,uid=0
+[Thu Sep 10 09:12:01 2026] Out of memory: Killed process 4242 (node)
+DMHOST
+    printf '%s\n' '[Thu Sep 10 01:00:00 2026] Out of memory: Killed process 7 (thing)' > "$_t/dmesg-old.txt"
+
+    _d4class() {  # the check's own predicates, run over a fixture
+        _h=$(grep -c 'constraint=CONSTRAINT_NONE' "$1" || true)
+        _c=$(grep -c 'constraint=CONSTRAINT_MEMCG' "$1" || true)
+        _a=$(grep -ci 'out of memory\|oom-kill' "$1" || true)
+        if   [ "${_a:-0}" -eq 0 ]; then printf 'clean'
+        elif [ "${_h:-0}" -gt 0 ]; then printf 'hostwide'
+        elif [ "${_c:-0}" -gt 0 ]; then printf 'contained'
+        else printf 'unclassified'; fi
+    }
+
+    if [ "$(_d4class "$_t/dmesg-cg.txt")" = "contained" ]
+    then printf '  ok    a cgroup-bounded OOM is not reported as a host-wide one\n'
+    else printf '  FAIL  a cgroup-bounded OOM is not reported as a host-wide one (got %s)\n' "$(_d4class "$_t/dmesg-cg.txt")"; _f=$((_f+1)); fi
+
+    if [ "$(_d4class "$_t/dmesg-host.txt")" = "hostwide" ]
+    then printf '  ok    a real host-wide OOM is still caught\n'
+    else printf '  FAIL  a real host-wide OOM is still caught (got %s)\n' "$(_d4class "$_t/dmesg-host.txt")"; _f=$((_f+1)); fi
+
+    # The direction that would hide an emergency: host-wide must win over
+    # contained when the buffer holds both.
+    cat "$_t/dmesg-cg.txt" "$_t/dmesg-host.txt" > "$_t/dmesg-mixed.txt"
+    if [ "$(_d4class "$_t/dmesg-mixed.txt")" = "hostwide" ]
+    then printf '  ok    one host-wide kill outranks any number of contained ones\n'
+    else printf '  FAIL  one host-wide kill outranks any number of contained ones\n'; _f=$((_f+1)); fi
+
+    # And a kernel that names no constraint must not be silently called clean.
+    if [ "$(_d4class "$_t/dmesg-old.txt")" = "unclassified" ]
+    then printf '  ok    an unclassifiable OOM line is not waved through\n'
+    else printf '  FAIL  an unclassifiable OOM line is not waved through\n'; _f=$((_f+1)); fi
 
     rm -rf "$_t"
     echo
