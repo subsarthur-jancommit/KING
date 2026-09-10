@@ -2422,7 +2422,15 @@ dim_G() {
 
     # G-3: a timer that stopped is a guard that is gone, and it is silent.
     if have systemctl; then
-        _failed=$(systemctl --user --failed --no-legend 2>/dev/null | awk '{print $1}' | tr '\n' ' ' || true)
+        # Strip the status glyph before taking the first field. `systemctl
+        # --failed --no-legend` prints "● unitname loaded failed …", so
+        # `awk '{print $1}'` returns the bullet and the evidence line read
+        # "failed unit(s)  ●" — telling you something broke and not what.
+        #
+        # Found when monitor-deadman genuinely failed after a reboot, which is
+        # the one moment this check has ever had something to say.
+        _failed=$(systemctl --user --failed --no-legend 2>/dev/null \
+                  | sed 's/^[^A-Za-z0-9]*//' | awk '{print $1}' | tr '\n' ' ' || true)
         if [ -z "$_failed" ]; then
             chk G-3 PASS "no failed user unit"
         else
