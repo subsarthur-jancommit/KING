@@ -338,7 +338,25 @@ jobs:
 
       - name: Start the HTTP wrapper
         run: |
+          set -euo pipefail
+          # The ROOT .env, because that is what compose INTERPOLATES.
+          #
+          # agent-sidecar/.env was not enough, and the reason is a rule this
+          # repo already tests in stax-preflight's own self-test: compose's
+          # `environment:` wins over `env_file:`. The service block carries
+          # `AGENT_SIDECAR_EXECUTOR=${AGENT_SIDECAR_EXECUTOR:-e2b}`, so it
+          # overrode the file every time — the value has to be somewhere
+          # compose can substitute it, not where the process would read it.
+          #
+          # I put it where the service reads its configuration instead of where
+          # compose resolves it, which is a distinction the self-test asserts
+          # and I still got backwards.
+          echo "AGENT_SIDECAR_EXECUTOR=local" >> .env
           docker compose -f docker-compose.yml --profile base --profile agent-sidecar-http up -d agent-sidecar-http
+          # Prove the override actually landed, rather than trusting the file.
+          got=$(docker compose -f docker-compose.yml --profile base --profile agent-sidecar-http                   exec -T agent-sidecar-http printenv AGENT_SIDECAR_EXECUTOR 2>/dev/null || echo MISSING)
+          echo "wrapper executor: $got"
+          [ "$got" = "local" ] || { echo "expected local, got $got" >&2; exit 1; }
 
       - name: Wait for the wrapper to report healthy
         run: |
