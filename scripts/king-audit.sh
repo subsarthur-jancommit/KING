@@ -148,6 +148,8 @@ I-4
 J-1
 J-2
 J-3
+J-4
+J-5
 K-1
 K-2
 K-3
@@ -242,6 +244,8 @@ I-4|every concrete CLAUDE.md rule is enforced by a check
 J-1|pinned versions vs latest, and known CVEs
 J-2|active upstream breakage
 J-3|image age, origin, and whether it is still published
+J-4|the TLS binary the gateway runs vs the one on record
+J-5|whether an outdated TLS binary is reachable from a configured provider
 K-1|listening sockets bound to 0.0.0.0 beyond the intended three
 K-2|whether the host firewall actually covers Docker-published ports
 K-3|what answers from outside the host, tested from outside the host
@@ -3807,6 +3811,80 @@ DMHOST
     then printf '  ok    a driver that writes off this disk is not judged by max-size\n'
     else printf '  FAIL  a driver that writes off this disk is not judged by max-size\n'; _f=$((_f+1)); fi
 
+    # ---- J-5: the watch-list, and the way it actually goes wrong -----------
+    #
+    # J-5 answers "is the outdated TLS binary reachable" by asking whether any
+    # of five providers is configured. The branch logic is trivial; what is
+    # not trivial is the list. If upstream adds a sixth TLS-impersonation
+    # provider, J-5 keeps returning "dormant" forever and is wrong in the one
+    # direction that matters, with nothing to notice it -- the "safe because
+    # nothing uses it" condition silently stops being measured.
+    #
+    # So the fixture pins the list to its source of truth, omniroute's own
+    # Dockerfile comment, rather than to a copy of my assumption.
+    _j5check=$(grep -oE 'const W=\[[^]]*\]' "$REPO/scripts/king-audit.sh" \
+               | grep -oE '"[a-z-]+"' | tr -d '"' | sort | tr '\n' ' ')
+    _j5src=$(grep -oE '\(chatgpt-web[a-z/-]*' "$REPO/omniroute/Dockerfile" \
+             | tr -d '(' | tr '/' '\n' | sort | tr '\n' ' ')
+    if [ -n "$_j5src" ] && [ "$_j5check" = "$_j5src" ]
+    then printf '  ok    the J-5 provider list still matches omniroute/Dockerfile\n'
+    else printf '  FAIL  the J-5 provider list still matches omniroute/Dockerfile (check=%s src=%s)\n' "$_j5check" "$_j5src"; _f=$((_f+1)); fi
+
+    # And the decision table, including the direction a live host cannot be
+    # made to demonstrate without configuring a provider on production.
+    _j5decide() {   # $1 = active providers, comma-separated; "UNREADABLE" for a dead db
+        case "$1" in
+            UNREADABLE) printf 'unknown' ;;
+            '')         printf 'dormant' ;;
+            *)          printf 'exposed' ;;
+        esac
+    }
+    if [ "$(_j5decide '')" = "dormant" ]
+    then printf '  ok    no TLS-impersonation provider reads as dormant\n'
+    else printf '  FAIL  no TLS-impersonation provider reads as dormant\n'; _f=$((_f+1)); fi
+
+    if [ "$(_j5decide 'chatgpt-web')" = "exposed" ]
+    then printf '  ok    one configured provider flips the verdict to exposed\n'
+    else printf '  FAIL  one configured provider flips the verdict to exposed\n'; _f=$((_f+1)); fi
+
+    # An unreadable provider table must NOT read as dormant. Treating "could
+    # not tell" as "safe" is how a check reports a clean bill on no evidence.
+    if [ "$(_j5decide 'UNREADABLE')" = "unknown" ]
+    then printf '  ok    an unreadable provider table is not treated as safe\n'
+    else printf '  FAIL  an unreadable provider table is not treated as safe\n'; _f=$((_f+1)); fi
+
+    # ---- the manifest, in the direction it never guarded -------------------
+    #
+    # Exercises the REAL manifest function, not a copy of it, because a
+    # fixture that restates the premise confirms the premise -- see E-8 above.
+    if manifest | grep -q "^A-1|"
+    then printf '  ok    a declared check is found in the manifest\n'
+    else printf '  FAIL  a declared check is found in the manifest\n'; _f=$((_f+1)); fi
+
+    if ! manifest | grep -q "^Z-9|"
+    then printf '  ok    an undeclared id is detected as absent from the manifest\n'
+    else printf '  FAIL  an undeclared id is detected as absent from the manifest\n'; _f=$((_f+1)); fi
+
+    # The three added on 2026-09-10, which is what exposed the gap. J-4 and
+    # J-5 must be declared; D-7b must NOT be, because chk() folds a trailing
+    # letter into its base id and no sub-check has ever been manifested.
+    for _need in J-4 J-5; do
+        if manifest | grep -q "^$_need|"
+        then printf '  ok    %s is declared in the manifest\n' "$_need"
+        else printf '  FAIL  %s is declared in the manifest\n' "$_need"; _f=$((_f+1)); fi
+    done
+    if ! manifest | grep -q "^D-7b|"
+    then printf '  ok    a sub-check is not manifested, matching every other -b check\n'
+    else printf '  FAIL  a sub-check is not manifested, matching every other -b check\n'; _f=$((_f+1)); fi
+
+    # implemented() and the manifest must agree, or coverage reports TODO for
+    # a check that exists.
+    for _need in J-4 J-5; do
+        if implemented | grep -qx "$_need"
+        then printf '  ok    %s is listed in implemented()\n' "$_need"
+        else printf '  FAIL  %s is listed in implemented()\n' "$_need"; _f=$((_f+1)); fi
+    done
+
     rm -rf "$_t"
     echo
     if [ "$_f" -eq 0 ]; then c_green "self-test passed"; echo; exit 0; fi
@@ -3868,6 +3946,33 @@ else
 fi
 rm -f "$SEEN.todo"
 
+# The other direction, which nothing checked until three checks were added on
+# 2026-09-10 and disappeared from the declared inventory without a word.
+#
+# Above, the manifest is compared against implemented(): a check that is
+# declared and never runs is a TODO, counted, and it keeps the run from going
+# green. Nothing compared the other way -- a check that RUNS and was never
+# declared. It prints its verdict like any other, so the output looks complete,
+# while the manifest quietly stops being the single list of what this audit
+# does. That is the same failure the manifest was written to remove, arriving
+# from the side it did not guard.
+#
+# Grepping the source for chk() calls is the wrong instrument, and the comment
+# on the manifest says why: five checks emitted through a loop variable were
+# counted as missing. So ask the run rather than the source. chk() already
+# records the base id of everything it emits into $SEEN.
+n_undeclared=0
+_undeclared=$(sort -u "$SEEN" 2>/dev/null | while IFS= read -r _sid; do
+    [ -n "$_sid" ] || continue
+    manifest | grep -q "^$_sid|" || printf '%s ' "$_sid"
+done)
+if [ -n "$_undeclared" ]; then
+    n_undeclared=$(printf '%s' "$_undeclared" | wc -w | tr -d ' ')
+    printf '  %s  %s check(s) ran that the manifest does not declare: %s\n' \
+        "$(c_red 'UNDEC')" "$n_undeclared" "$_undeclared"
+    printf '            add them to implemented() and the MANIFEST, or the inventory is fiction\n'
+fi
+
 echo
 printf '  %s pass, ' "$(c_green "$n_pass")"
 printf '%s fail, ' "$(c_red "$n_fail")"
@@ -3890,7 +3995,9 @@ fi
 
 [ "$n_fail" -gt 0 ] && exit 1
 # An incomplete audit is not a passing audit. This is the whole reason the
-# manifest exists.
+# manifest exists -- and an audit that runs checks it never declared is
+# incomplete in the same way, just from the other side.
 [ "$n_todo" -gt 0 ] && exit 3
+[ "$n_undeclared" -gt 0 ] && exit 3
 [ "$n_unknown" -gt 0 ] && exit 2
 exit 0
