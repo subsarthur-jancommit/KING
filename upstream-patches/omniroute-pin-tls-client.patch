@@ -1,0 +1,83 @@
+Prepared for upstream. NOT applied to the vendored subtree — CLAUDE.md forbids
+editing `omniroute/`, and the next `git subtree pull` would revert it silently.
+
+--------------------------------------------------------------------------
+
+Subject: Dockerfile: let the tls-client native binary be pinned
+
+`tls-client-node`'s postinstall resolves its native `.so` from
+`bogdanfinn/tls-client` **at build time**, from `/releases/latest`, with no
+version pin. Two consequences, both of which this deployment has now had:
+
+1. A third party's release cadence decides what binary ships in the image.
+   On 2026-09-02 upstream published v1.16.0, which dropped the older asset
+   naming scheme v1.15.1 had carried alongside the newer `xgo` one. The same
+   commit that built green on 08-31 built red on 09-04 — nothing in the
+   repository had changed. The guard at line 117 caught it and failed the
+   build loudly, which is the right behaviour and is why this is a
+   reproducibility problem rather than a silent-corruption one.
+
+2. Rebuilding to pick up a security fix produces an image nobody can
+   reproduce. Our gateway ran `tls-client-linux-ubuntu-amd64-1.15.1.so` —
+   affected by a `crypto/tls` session-resumption flaw
+   (`AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N`) — and the only way to move off it
+   was a rebuild whose result depends on what `/releases/latest` serves that
+   minute.
+
+The postinstall script already honours a `TLS_CLIENT_VERSION` environment
+variable. It just cannot be reached: `docker build --build-arg` requires the
+Dockerfile to declare the `ARG`, and this one does not. Three lines fix it,
+and the default keeps today's behaviour exactly.
+
+--- a/Dockerfile
++++ b/Dockerfile
+@@
+ # a broken/rate-limited fetch fails the BUILD loudly instead of shipping a
+ # broken image.
++#
++# TLS_CLIENT_VERSION is honoured by that postinstall script and pins the
++# release it fetches. Empty by default, which keeps the current behaviour —
++# `/releases/latest` — so this changes nothing for anyone who does not set it.
++# Set it to reproduce a build, or to hold a known-good binary across an
++# upstream release that renames assets.
++ARG TLS_CLIENT_VERSION=""
++ENV TLS_CLIENT_VERSION=${TLS_CLIENT_VERSION}
+ RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,target=/root/.npm \
+   npm ci --include=optional --no-audit --no-fund --legacy-peer-deps --ignore-scripts \
+   && (cd node_modules/better-sqlite3 \
+       && node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild) \
+   && node -e "require('better-sqlite3')(':memory:').close()" \
+   && node node_modules/tls-client-node/scripts/postinstall.js \
+   && (test -n "$(find node_modules/tls-client-node/bin -mindepth 1 -print -quit 2>/dev/null)" \
+       || (echo "tls-client-node native binary missing after postinstall — GitHub API fetch likely rate-limited or failed (#7802)" >&2 && exit 1))
+
+--------------------------------------------------------------------------
+
+Then:
+
+    docker build --build-arg TLS_CLIENT_VERSION=1.16.0 …
+
+A note on placement: the `ARG`/`ENV` pair goes immediately before the RUN
+rather than at the top of the stage, so it does not invalidate the cache of
+every layer above it when the value changes.
+
+Declared as ARG *and* ENV, not a bare ENV — the same pattern this Dockerfile
+already uses at line 129 for `OMNIROUTE_USE_TURBOPACK`, and for the same
+reason recorded in its comment there: a bare ENV shadows any same-named ARG.
+
+--------------------------------------------------------------------------
+
+A second, smaller ask in the same file, if it is welcome:
+
+`redis` at line 71 is `command: redis-server --save 60 1 --loglevel warning`,
+with no way to give it a password from outside. The service correctly binds
+`${REDIS_BIND_HOST:-127.0.0.1}` — the comment above it even explains why
+exposing it without `--requirepass` would be dangerous — but a deployment that
+wants defence in depth on its own compose network has no lever at all. The
+same shape would work:
+
+    command: redis-server --save 60 1 --loglevel warning
+             ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}
+
+or an explicit `REDIS_PASSWORD` variable threaded through, whichever fits the
+project's conventions better.
