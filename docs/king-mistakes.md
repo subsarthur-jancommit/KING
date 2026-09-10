@@ -1238,3 +1238,55 @@ precisely because it needed a daemon restart nobody wanted to schedule.
 
 Neither is a defence of what happened. A fix that arrives through an outage is
 not a fix that was delivered.
+
+---
+
+## 31. Five builds and an outage to replace a binary nothing had ever loaded
+
+The gateway carried `tls-client-linux-ubuntu-amd64-1.15.1.so` with
+CVE-2025-68121 in it. The plan said rebuild. So I rebuilt: one unbounded
+attempt that took the host down for 45 minutes (entry 30), then four bounded
+ones, all of which failed on memory.
+
+Only after the fifth failure did I ask the question that should have been
+first: **does anything load it?**
+
+```
+provider_connections    ->  agy, ollama-local, openrouter, tavily-search
+/proc/1/maps            ->  no tls-client .so mapped, 3h into the process
+find /app -name '*.so'  ->  exactly one copy, never opened
+```
+
+`omniroute/Dockerfile:101` names the five providers that pull that library in —
+chatgpt-web, claude-web, grok-web, lmarena, perplexity-web — and not one of
+them is configured. The vulnerable code does not execute in this deployment.
+The advisory is medium, CVSS 4.8, attack complexity HIGH.
+
+**Reachability is not a detail you confirm after choosing the fix. It is what
+tells you which fix is proportionate.** Had I measured it first:
+
+- the 45-minute outage would not have been risked for it,
+- the four bounded attempts would have been scheduled for a maintenance
+  window rather than run against a live host,
+- and the patch layer I prepared — COPY the verified 1.16.0 `.so` in, delete
+  1.15.1 — would have been recognised for what it is: a change to a production
+  image, carrying real recreate risk, buying nothing against code that never
+  runs.
+
+The severity number was already checked carefully — entry in the "not ours"
+section above catches PR #12612 calling a 4.8 flaw "CVSS 9.8". So the *rating*
+was verified against the advisory and the *reachability* was never measured at
+all. Half the risk assessment was done rigorously and the half that would have
+changed the decision was assumed. A CVSS score describes the vulnerability; it
+does not describe your deployment.
+
+The same shape as everything else here. `daemon.json` was correct and not
+loaded. `ufw` was active and did not cover Docker. This binary was vulnerable
+and not reachable. Three times the artefact was read and the system was not.
+
+What it left behind: `J-4` compares the digest in the running container against
+`scripts/tls-client-pin.txt` and is red on purpose, because the deployment is
+not running what is recorded. `J-5` asserts the condition that makes that red
+tolerable, and goes red itself the moment one of those five providers is
+configured. "Safe because nothing uses it" is a condition, and an unwatched
+condition is what every entry in this document turns out to be.
