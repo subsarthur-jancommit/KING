@@ -1,0 +1,47 @@
+# Re-apply the DOCKER-USER rules whenever Docker starts. Paired with
+# king-firewall.sh.
+#
+# A SYSTEM unit, unlike the three user units in this repo (codegraph-refresh,
+# monitor-deadman, king-backup). Those run as the operator because the operator
+# is in the docker group; iptables needs root, so this one cannot.
+#
+#   sudo cp scripts/king-firewall.{service,sh} /etc/systemd/system/  # .sh path below
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now king-firewall.service
+#
+#   systemctl status king-firewall
+#   sudo iptables -S DOCKER-USER
+#
+# PartOf=docker.service is the load-bearing line. Docker REBUILDS DOCKER-USER
+# from scratch every time it starts, discarding whatever was in it — so a
+# one-shot `iptables -I` survives until the next `systemctl restart docker` and
+# then silently vanishes. PartOf makes systemd restart this unit whenever
+# docker.service restarts, which covers both the daemon restart D-7 is waiting
+# for and every reboot.
+#
+# That is also why iptables-persistent is deliberately not installed: it would
+# restore rules at boot from a saved file, in parallel with this unit applying
+# them from the script, and the two could disagree about which is authoritative
+# the moment someone edits one of them.
+
+[Unit]
+Description=Close the gateway ports at DOCKER-USER (king-audit K-2)
+# An absolute path, not %h. In a SYSTEM unit %h resolves to /root, so the three
+# user units in this repo can use it and this one cannot — the same specifier
+# meaning two different directories depending on which manager runs the unit.
+Documentation=file:/home/subsa/KING/scripts/king-firewall.sh
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/king-firewall.sh
+# Removing the rules on stop would leave the ports open for the window between
+# `docker stop` and `docker start`, which is exactly when nothing else is
+# guarding them either. Docker flushes the chain itself on start, so there is
+# nothing to clean up.
+
+[Install]
+WantedBy=multi-user.target

@@ -2803,11 +2803,32 @@ dim_K() {
     # ufw's INPUT chain entirely unless DOCKER-USER is populated. An empty
     # DOCKER-USER means the firewall people trust is not the control keeping
     # those ports closed.
+    #
+    # Counting rules is not the same as covering the ports. A single rule
+    # pointed at the wrong interface, or at a port nothing publishes, would
+    # have turned this green — the same shape as K-3 probing a hardcoded list
+    # that omitted the very ports K-1 complains about. So it asks whether each
+    # port K-1 names actually has a DROP, in BOTH families: the mappings bind
+    # `[::]` as well as `0.0.0.0`, and a v4-only rule set closes the front door
+    # while leaving the back one open, which is worse than leaving both open
+    # because it looks finished.
     if sudo -n iptables -S DOCKER-USER >/dev/null 2>&1; then
         _du=$(sudo -n iptables -S DOCKER-USER 2>/dev/null | grep -c '^-A' || true)
         metric k2_docker_user_rules "${_du:-0}"
-        if [ "${_du:-0}" -gt 0 ]; then
-            chk K-2 PASS "DOCKER-USER carries ${_du} rule(s); the host firewall covers published ports"
+        _uncovered=""
+        for _wp in 20128 20129 20132; do
+            for _fam in iptables ip6tables; do
+                sudo -n "$_fam" -S DOCKER-USER 2>/dev/null \
+                    | grep -qE -- "--dport $_wp .*-j DROP" \
+                    || _uncovered="$_uncovered ${_wp}/${_fam%tables}"
+            done
+        done
+        if [ "${_du:-0}" -gt 0 ] && [ -z "$_uncovered" ]; then
+            chk K-2 PASS "every wide port has a DROP in DOCKER-USER, v4 and v6" \
+                "${_du} rule(s); applied by king-firewall.service, which is PartOf=docker.service so a daemon restart re-applies them"
+        elif [ "${_du:-0}" -gt 0 ]; then
+            chk K-2 FAIL "DOCKER-USER has rules but not for every wide port:$_uncovered" \
+                "a rule that misses the port it was written for reads as coverage and is not"
         else
             chk K-2 FAIL "DOCKER-USER is empty: the host firewall does NOT cover Docker ports" \
                 "ufw may report active while something upstream is the only real control"
