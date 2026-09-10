@@ -1674,6 +1674,53 @@ dim_D() {
         fi
     fi
 
+    # D-7b: the question D-7 stops asking the moment daemon.json exists.
+    #
+    # Look at the two branches above. With NO daemon.json, D-7 interrogates the
+    # containers and counts the unbounded ones. With a daemon.json it compares
+    # the file's mtime against the daemon's start time and passes. The second
+    # is a proxy for the first, and on 2026-09-10 the proxy was wrong.
+    #
+    # Docker resolves the daemon's default log-opts into a container's
+    # HostConfig at CREATE time, not at start. Measured that day: a container
+    # created fresh came up with `map[max-file:3 max-size:10m]` baked in, while
+    # `omniroute` (created 09-06, before daemon.json was written 09-10 04:38)
+    # still read `map[]` -- and it had been through the 12:25 daemon restart
+    # that made D-7 green. Restarting a container does not re-resolve this;
+    # only recreating it does.
+    #
+    # So D-7 said "the daemon has the policy", which was true, and the two
+    # containers the vendored compose declares did not have it, which was also
+    # true. Same shape as every other entry in docs/king-mistakes.md: the
+    # artefact was read and the system was not.
+    if ! on_host; then
+        chk D-7b SKIP "not on the host"
+    else
+        _nocap=""; _capped=0; _elsewhere=0
+        for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
+            _lt=$(docker inspect -f '{{.HostConfig.LogConfig.Type}}' "$_c" 2>/dev/null || true)
+            case "$_lt" in
+                json-file|local|'')
+                    if docker inspect -f '{{.HostConfig.LogConfig.Config}}' "$_c" 2>/dev/null | grep -q 'max-size'
+                    then _capped=$((_capped + 1))
+                    else _nocap="$_nocap $_c"
+                    fi ;;
+                # journald/syslog/none/awslogs and friends do not accumulate a
+                # file on this disk, so max-size is not the control for them.
+                *) _elsewhere=$((_elsewhere + 1)) ;;
+            esac
+        done
+        if [ -z "$_nocap" ] && [ $((_capped + _elsewhere)) -gt 0 ]; then
+            chk D-7b PASS "every running container carries an effective log cap" \
+                "$_capped capped in HostConfig, $_elsewhere logging off this disk"
+        elif [ -n "$_nocap" ]; then
+            chk D-7b FAIL "container(s) predate the log policy and never inherited it" \
+                "no max-size in HostConfig:$_nocap — a daemon restart does not fix this, only recreating them does"
+        else
+            chk D-7b UNKNOWN "no running container could be inspected"
+        fi
+    fi
+
     # D-6 used to print the reclaimable figure and PASS unconditionally. A
     # check with no failing branch is not a check -- it is a log line wearing a
     # green badge, and G-1 exists to catch exactly that in other people's
@@ -3721,6 +3768,44 @@ DMHOST
     if [ "$(_d4class "$_t/dmesg-old.txt")" = "unclassified" ]
     then printf '  ok    an unclassifiable OOM line is not waved through\n'
     else printf '  FAIL  an unclassifiable OOM line is not waved through\n'; _f=$((_f+1)); fi
+
+    # ---- D-7b: an effective cap, read the way docker actually renders it ---
+    #
+    # These strings are verbatim `docker inspect -f
+    # '{{.HostConfig.LogConfig.Config}}'` output. The one that matters is
+    # `map[]` -- what a container created before /etc/docker/daemon.json
+    # existed still reports after a daemon restart has made D-7 green.
+    _d7bclass() {   # $1 = LogConfig.Type, $2 = LogConfig.Config as rendered
+        case "$1" in
+            json-file|local|'')
+                if printf '%s' "$2" | grep -q 'max-size'; then printf 'capped'
+                else printf 'nocap'; fi ;;
+            *) printf 'elsewhere' ;;
+        esac
+    }
+
+    if [ "$(_d7bclass json-file 'map[max-file:3 max-size:10m]')" = "capped" ]
+    then printf '  ok    a container with max-size baked in reads as capped\n'
+    else printf '  FAIL  a container with max-size baked in reads as capped\n'; _f=$((_f+1)); fi
+
+    if [ "$(_d7bclass json-file 'map[]')" = "nocap" ]
+    then printf '  ok    an empty LogConfig is uncapped even when the daemon has a policy\n'
+    else printf '  FAIL  an empty LogConfig is uncapped even when the daemon has a policy\n'; _f=$((_f+1)); fi
+
+    # max-file without max-size bounds the NUMBER of files and not their size,
+    # so it must not read as a cap. Matching on "max-" would pass this.
+    if [ "$(_d7bclass json-file 'map[max-file:3]')" = "nocap" ]
+    then printf '  ok    max-file without max-size does not count as a size cap\n'
+    else printf '  FAIL  max-file without max-size does not count as a size cap\n'; _f=$((_f+1)); fi
+
+    # An empty driver string means the daemon default, which is json-file.
+    if [ "$(_d7bclass '' 'map[]')" = "nocap" ]
+    then printf '  ok    an unnamed driver is treated as json-file, not waved through\n'
+    else printf '  FAIL  an unnamed driver is treated as json-file, not waved through\n'; _f=$((_f+1)); fi
+
+    if [ "$(_d7bclass journald 'map[]')" = "elsewhere" ]
+    then printf '  ok    a driver that writes off this disk is not judged by max-size\n'
+    else printf '  FAIL  a driver that writes off this disk is not judged by max-size\n'; _f=$((_f+1)); fi
 
     rm -rf "$_t"
     echo
