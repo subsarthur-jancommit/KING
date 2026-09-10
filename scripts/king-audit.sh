@@ -1453,7 +1453,12 @@ dim_D() {
         # as unbounded as they would be under no policy at all. So the question
         # is asked of the containers, not of the compose file: compose declares
         # intent, `docker inspect` reports what the daemon actually applied.
-        _svc_rot=$(grep -c 'max-size' docker-compose.yml 2>/dev/null || true)
+        # Count services that REFERENCE the anchor, not occurrences of the
+        # string. `max-size` appears once in this file because it lives in a
+        # YAML anchor that eleven services then share, so grepping for it
+        # reported "compose caps 1 service" while compose was capping all
+        # eleven. A number in an evidence line is a claim like any other.
+        _svc_rot=$(grep -c 'logging: \*default-logging' docker-compose.yml 2>/dev/null || true)
         _running=$(docker ps -q 2>/dev/null | wc -l || true)
         _unbounded=0; _names=""
         for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do

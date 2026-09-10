@@ -15,8 +15,18 @@ include:
 # Docker's default json-file driver has NO size cap, so a chatty container
 # fills the disk until the host stops working — a failure that arrives as
 # "everything broke at once" rather than as anything pointing at logs. This
-# host has 20 GB free. Every service defined below carries this; the vendored
-# omniroute/ and observability/ files are left alone under the never-edit rule.
+# host has 15 GB free (D-6, 2026-09-10; the 20 GB this comment used to claim
+# was true when it was written and had not been re-measured since).
+#
+# Every service defined below carries this. That sentence was ALSO untrue for
+# as long as it has been here: `ntfy` did not, and nothing noticed until D-7
+# started asking the containers what the daemon applied instead of reading
+# this file. A comment asserting a property is not a check of it.
+#
+# The vendored omniroute/ and observability/ files are left alone under the
+# never-edit rule, so `omniroute` and `omniroute-redis` stay unbounded — that
+# is the remainder D-7 reports, and it is fixable only upstream or with a
+# daemon-wide /etc/docker/daemon.json.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -897,6 +907,11 @@ services:
     mem_limit: ${NTFY_MEM_LIMIT:-128m}
     memswap_limit: ${NTFY_MEM_LIMIT:-128m}
     cpus: ${NTFY_CPUS:-0.25}
+    # The one service that did not carry the anchor, while the header of this
+    # file said every service below does. Found by D-7, which asks the
+    # CONTAINERS what the daemon applied rather than reading this file — a
+    # check that read the compose would have believed the comment.
+    logging: *default-logging
     profiles:
       - alerting
 
