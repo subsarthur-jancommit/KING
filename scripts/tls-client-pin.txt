@@ -35,9 +35,49 @@
 #   2026-09-07  upstream re-uploads the legacy `ubuntu`/`alpine`/`arm64` names
 #               into the same release at 22:42Z. The break ends, with no change
 #               in this repo and none in tls-client-node.
-#   2026-09-10  gateway rebuilt on this VPS to take v1.16.0. See
-#               docs/king-mistakes.md for why the first rebuild attempt took
-#               the host down and what bounded the later ones.
+#   2026-09-10  five bounded rebuild attempts on this VPS, all failed on
+#               memory. The recorded digest below is therefore what the gateway
+#               SHOULD run, not what it does -- J-4 is red on purpose until a
+#               rebuild happens, the same way D-7 is red for a policy that is
+#               written and not yet in force.
+#
+# WHY THAT RED IS NOT AN EMERGENCY, MEASURED RATHER THAN ASSUMED.
+#
+# The .so is loaded lazily, on first use of a provider that does TLS
+# impersonation. omniroute/Dockerfile:101 names them: chatgpt-web, claude-web,
+# grok-web, lmarena, perplexity-web. Measured on the running gateway
+# 2026-09-10:
+#
+#   provider_connections   ->  agy, ollama-local, openrouter, tavily-search
+#   /proc/1/maps           ->  no tls-client .so mapped, 3h into the process
+#   find /app -name '*.so' ->  exactly one copy, never opened
+#
+# So the vulnerable code does not execute in this configuration. Combined with
+# the advisory's own numbers -- GHSA-h355-32pf-p2xm, medium, CVSS 4.8, attack
+# complexity HIGH, confidentiality and integrity impact LOW -- that is a fine
+# reason to wait for a maintenance window and a terrible reason to forget.
+#
+# "Safe because nothing uses it" is a CONDITION. An unwatched condition is what
+# every entry in docs/king-mistakes.md turns out to be, so the condition is
+# asserted instead of trusted: J-5 goes red the moment one of those five
+# providers is configured while the running binary is still the wrong one.
+#
+# WHAT WAS DELIBERATELY NOT DONE. A patch layer over omniroute:base -- COPY the
+# verified 1.16.0 .so in, delete 1.15.1 -- was prepared and verified (the
+# runtime resolver reads the directory, so it would work). It was not applied.
+# It fixes the artefact rather than the build, leaves a bespoke production image
+# for someone to unwind later, and buys nothing today against code that never
+# runs. The real fix is a rebuild on a host that can hold it, or the upstream
+# ARG in upstream-patches/omniroute-pin-tls-client.patch.
+#
+#   Why five attempts failed, for whoever tries next:
+#     turbopack  needs ~3.11 GB RSS and NOTHING bounds it (Dockerfile:131)
+#                -> cgroup OOM at 2560, 3072 and 3584 MB
+#     webpack    needs ~3.9 GB V8 heap (build-next-isolated.mjs:194)
+#                -> clean "heap out of memory" at a 2560 MB ceiling
+#   A build needs ~4.6 GB; this host has ~4.4 GB free while serving ten
+#   containers. omniroute-smoke builds the same commit green on a GitHub
+#   runner, so the Dockerfile is fine and the host is the constraint.
 #
 # The upstream release publishes its own digest, so the value below was checked
 # against the source and not merely observed locally:

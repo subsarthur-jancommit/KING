@@ -2916,6 +2916,43 @@ process.stdout.write(out.join("\n"));' 2>/dev/null || true)
             chk J-4 FAIL "the gateway's TLS binary is not the one on record" \
                 "running: $(printf '%s' "$_have" | awk '{print $2" ("substr($1,1,12)")"}' | tr '\n' ' ')| recorded: $(printf '%s' "$_want" | awk '{print $2" ("substr($1,1,12)")"}' | tr '\n' ' ')"
         fi
+
+        # J-5: whether that drift is currently EXPOSED, which is a different
+        # question and the one that sets priority.
+        #
+        # The .so is loaded lazily, on first use of a provider that does TLS
+        # impersonation. omniroute/Dockerfile:101 names them: chatgpt-web,
+        # claude-web, grok-web, lmarena, perplexity-web. On 2026-09-10 none was
+        # configured, /proc/1/maps showed the library had never been mapped, and
+        # so a binary carrying CVE-2025-68121 sat in the image executing nothing.
+        #
+        # That is a fine reason to defer a rebuild and a terrible reason to
+        # forget. "Safe because nothing uses it" is a condition, and an
+        # unwatched condition is exactly what this audit keeps finding. So the
+        # condition gets asserted: configure one of those providers while the
+        # binary is still the wrong one, and this goes red the next time the
+        # audit runs.
+        if [ "$_have" = "$_want" ]; then
+            chk J-5 PASS "TLS-impersonation exposure moot; the recorded binary is running"
+        else
+            _tlsusers=$(docker exec "$_gw" node -e '
+const D=require("better-sqlite3")("/app/data/storage.sqlite",{readonly:true});
+const W=["chatgpt-web","claude-web","grok-web","lmarena","perplexity-web"];
+try {
+  const r=D.prepare("SELECT provider FROM provider_connections WHERE is_active=1").all();
+  process.stdout.write(r.map(x=>x.provider).filter(p=>W.includes(p)).join(","));
+} catch (e) { process.exit(4); }' 2>/dev/null || echo "UNREADABLE")
+            if [ "$_tlsusers" = "UNREADABLE" ]; then
+                chk J-5 UNKNOWN "cannot tell whether the outdated TLS binary is reachable" \
+                    "provider table unreadable; treat as exposed until shown otherwise"
+            elif [ -n "$_tlsusers" ]; then
+                chk J-5 FAIL "an outdated TLS binary is now reachable from a configured provider" \
+                    "active: $_tlsusers -- the deferral reason no longer holds, rebuild the gateway"
+            else
+                chk J-5 PASS "the outdated TLS binary is dormant" \
+                    "no chatgpt-web/claude-web/grok-web/lmarena/perplexity-web provider is active"
+            fi
+        fi
     fi
 }
 
