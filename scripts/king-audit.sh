@@ -3236,9 +3236,25 @@ dim_K() {
         _aptout=$(apt-get -s upgrade 2>/dev/null); _aptrc=$?
         _unatt=$(systemctl is-enabled unattended-upgrades 2>/dev/null || echo disabled)
         _aptimer=$(systemctl is-enabled apt-daily-upgrade.timer 2>/dev/null || echo disabled)
+        # Exit status is not enough, and the first version of this fix stopped
+        # there. With its package lists gone, `apt-get -s upgrade` exits 0 and
+        # prints a perfectly well-formed "0 upgraded, 0 newly installed, 0 to
+        # remove and 0 not upgraded." -- an answer of zero from a program with
+        # nothing to count. Measured: Dir::State::Lists=/nonexistent gives
+        # rc=0, 379 bytes of output, 0 security lines, and the check was green.
+        #
+        # So ask apt how much it actually knows. `indextargets` lists the index
+        # files it will read: 62 on this host, 0 when the lists are missing.
+        # $(FILENAME) is apt's own --format template, not a shell expansion,
+        # so the single quotes are the point.
+        # shellcheck disable=SC2016
+        _aptidx=$(apt-get indextargets --format '$(FILENAME)' 2>/dev/null | grep -c . || true)
         if [ "$_aptrc" -ne 0 ] || [ -z "$_aptout" ]; then
             chk K-6 UNKNOWN "apt could not report what is pending" \
                 "exit $_aptrc — an unanswerable question is not a clean bill of health"
+        elif [ "${_aptidx:-0}" -eq 0 ]; then
+            chk K-6 UNKNOWN "apt has no package indexes, so its zero means nothing" \
+                "apt-get indextargets returned 0 files — 'nothing pending' from a program with nothing to read"
         else
             _sec=$(printf '%s\n' "$_aptout" | grep -ciE '^Inst.*security' || true)
             metric k6_security_updates "${_sec:-0}"
@@ -3915,8 +3931,9 @@ DMHOST
     #
     # The old code was `apt-get -s upgrade 2>/dev/null | grep -c … || true`,
     # which turns every apt failure into 0, and 0 was the green branch.
-    _k6verdict() {  # $1 = apt exit, $2 = apt output, $3 = unattended, $4 = timer
+    _k6verdict() {  # $1 = apt exit, $2 = apt output, $3 = unattended, $4 = timer, $5 = index count
         if [ "$1" -ne 0 ] || [ -z "$2" ]; then printf 'unknown'; return; fi
+        if [ "${5:-1}" -eq 0 ]; then printf 'noindex'; return; fi
         _n=$(printf '%s\n' "$2" | grep -ciE '^Inst.*security' || true)
         if [ "${_n:-0}" -gt 0 ]; then printf 'pending'
         elif [ "$3" != enabled ] || [ "$4" != enabled ]; then printf 'unscheduled'
@@ -3926,25 +3943,39 @@ DMHOST
 Inst locales [2.39-0ubuntu8.8] (2.39-0ubuntu8.9 Ubuntu:24.04/noble-security [all])
 Inst somepkg [1.0] (1.1 Ubuntu:24.04/noble-updates [amd64])'
 
-    if [ "$(_k6verdict 1 '' enabled enabled)" = "unknown" ]
+    if [ "$(_k6verdict 1 '' enabled enabled 62)" = "unknown" ]
     then printf '  ok    a failed apt is UNKNOWN, never "no pending security updates"\n'
     else printf '  FAIL  a failed apt is UNKNOWN, never "no pending security updates"\n'; _f=$((_f+1)); fi
 
-    if [ "$(_k6verdict 0 '' enabled enabled)" = "unknown" ]
+    if [ "$(_k6verdict 0 '' enabled enabled 62)" = "unknown" ]
     then printf '  ok    empty apt output is UNKNOWN even when apt exits 0\n'
     else printf '  FAIL  empty apt output is UNKNOWN even when apt exits 0\n'; _f=$((_f+1)); fi
 
-    if [ "$(_k6verdict 0 "$_k6apt" enabled enabled)" = "pending" ]
+    # The case the FIRST version of this fix still got wrong. With its lists
+    # gone apt exits 0 and prints a well-formed "0 upgraded, 0 newly
+    # installed, 0 to remove and 0 not upgraded." — a zero from a program with
+    # nothing to count. Verbatim output, so the fixture cannot flatter itself.
+    _k6empty='NOTE: This is only a simulation!
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.'
+    if [ "$(_k6verdict 0 "$_k6empty" enabled enabled 0)" = "noindex" ]
+    then printf '  ok    a well-formed zero from an apt with no indexes is not clean\n'
+    else printf '  FAIL  a well-formed zero from an apt with no indexes is not clean\n'; _f=$((_f+1)); fi
+
+    if [ "$(_k6verdict 0 "$_k6apt" enabled enabled 62)" = "pending" ]
     then printf '  ok    security lines are counted and non-security ones are not\n'
     else printf '  FAIL  security lines are counted and non-security ones are not\n'; _f=$((_f+1)); fi
 
     # The proxy that was wrong: apt-daily-upgrade.timer applies the updates,
     # not the unattended-upgrades shutdown helper. A masked timer must fail.
-    if [ "$(_k6verdict 0 'Inst nothing [1] (2 Ubuntu:24.04/noble-updates [amd64])' enabled disabled)" = "unscheduled" ]
+    if [ "$(_k6verdict 0 'Inst nothing [1] (2 Ubuntu:24.04/noble-updates [amd64])' enabled disabled 62)" = "unscheduled" ]
     then printf '  ok    a masked apt-daily-upgrade.timer fails even with nothing pending\n'
     else printf '  FAIL  a masked apt-daily-upgrade.timer fails even with nothing pending\n'; _f=$((_f+1)); fi
 
-    if [ "$(_k6verdict 0 'Inst nothing [1] (2 Ubuntu:24.04/noble-updates [amd64])' enabled enabled)" = "clean" ]
+    if [ "$(_k6verdict 0 'Inst nothing [1] (2 Ubuntu:24.04/noble-updates [amd64])' enabled enabled 62)" = "clean" ]
     then printf '  ok    no security lines with both units enabled is the only green\n'
     else printf '  FAIL  no security lines with both units enabled is the only green\n'; _f=$((_f+1)); fi
 
