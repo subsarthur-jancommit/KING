@@ -25,6 +25,7 @@ bad news.
 - [12. Use cases this supports today](#12-use-cases-this-supports-today)
 - [13. Scope for what comes next](#13-scope-for-what-comes-next)
 - [Rules that survived contact with production](#rules-that-survived-contact-with-production)
+- [16. Container log retention: the daemon policy, and why live-restore is off](#16-container-log-retention-the-daemon-policy-and-why-live-restore-is-off)
 
 ---
 
@@ -2569,3 +2570,87 @@ Three details that are load-bearing rather than stylistic:
 its `command:` is hardcoded in the vendored compose. `scripts/unauthenticated-datastores.txt`
 records that with what calibrates the risk, and `C-10` goes red if a *different*
 datastore ever joins it.
+
+---
+
+## 16. Container log retention: the daemon policy, and why live-restore is off
+
+### The policy, and the two ways it is enforced
+
+`/etc/docker/daemon.json` caps every container's log at three files of 10 MB:
+
+```json
+{ "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "3" } }
+```
+
+The eight `king-*` services do not depend on it — the root compose gives them
+`logging: *default-logging`, and a per-service block wins. The only services
+relying on the daemon default are the two the **vendored** compose declares,
+`omniroute` and `omniroute-redis`, because `CLAUDE.md` forbids both editing
+`omniroute/` and overriding a vendored service from the root file. That is the
+whole reason the daemon-wide policy exists.
+
+### Applying it is a restart, not a reload — and then a recreate
+
+Two separate traps, and this deployment fell into both.
+
+**`log-opts` is not SIGHUP-reloadable.** `systemctl reload docker` returns
+success and the journal prints "Reloaded configuration", while the config it
+prints back carries `log-driver` with no `log-opts` at all. Measured
+2026-09-10: a container started after that reload put 58 MB into a single file
+under a nominal 10 MB cap. Only `systemctl restart docker` applies it, and that
+stops every container for about a minute.
+
+**A daemon restart is still not enough for containers that already exist.**
+Docker resolves the daemon's defaults into a container's `HostConfig` at
+**create** time. Restarting the daemon, or the container, does not re-resolve
+them. Measured the same day, after the restart that made `D-7` green:
+
+```
+container created just then  ->  json-file map[max-file:3 max-size:10m]
+omniroute      (created 09-06) ->  json-file map[]
+omniroute-redis (created 08-27) ->  json-file map[]
+```
+
+Both had been through that restart. Recreating them — no config change, no
+image change, `docker compose up -d --force-recreate` — moved them to
+`map[max-file:3 max-size:10m]`, which is what closed it.
+
+**The procedure, in order:**
+
+```bash
+sudo systemctl restart docker              # applies daemon.json; ~1 min of downtime
+docker compose --profile base up -d --no-build --force-recreate redis omniroute-base
+```
+
+Verify with the system, not the file: `D-7` compares `daemon.json`'s mtime
+against the daemon's start time, and **`D-7b` reads every running container's
+`HostConfig`**, which is the question that actually matters. Before recreating,
+diff the rendered config against the live container's environment — a recreate
+silently adopts any `.env` drift since the container was created, and on
+2026-09-10 that diff was zero, which is what made the recreate safe to run.
+
+### live-restore is deliberately off
+
+`--live-restore` keeps containers running across a **daemon** restart. It is
+off, and the numbers say leave it off. Every Docker start this host has ever
+had matches a host boot to the second:
+
+```
+host boot 2026-08-27 17:30:35   ->  dockerd 17:48:39
+host boot 2026-08-31 16:40:35   ->  dockerd 16:40:49
+host boot 2026-09-10 12:25:35   ->  dockerd 12:25:50
+```
+
+**Zero daemon-only restarts in fifteen days.** live-restore cannot help a
+reboot — the kernel takes the container processes with it — so it would have
+changed nothing on any of those three occasions. Against that, enabling it
+costs a *certain* full-stack restart now, because the setting itself only takes
+effect on a daemon restart, and it leaves `restart: unless-stopped` and every
+healthcheck unsupervised for as long as dockerd is down. Swarm is inactive, so
+compatibility is not the objection; frequency is.
+
+**The trigger to revisit.** The moment a daemon-only restart is genuinely
+needed — a Docker upgrade, or another `daemon.json` change — enable
+`live-restore` *in that same restart*, so the one unavoidable outage also buys
+the protection. Turning it on at any other time pays the outage twice.
