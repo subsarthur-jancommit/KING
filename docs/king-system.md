@@ -2441,3 +2441,89 @@ journal as unbounded again, which is the accurate description of that state.
 records commands run as root on the host, and an audit log of privileged
 actions is the last thing that should have a rotation policy invented for it in
 passing.
+
+## 15. Every variable the root compose reads
+
+`king-audit.sh` B-9 compares three populations that should agree: variables
+compose **uses**, variables an `.env` **sets**, and variables the docs
+**explain**. Forty-four were used and explained nowhere, which means each was
+silently taking a default nobody had looked at since it was written.
+
+Most are ceilings and bindings and are boring on purpose. The ones that are
+not boring are in the last table, and two of them decide whether a service
+starts at all.
+
+### Resource ceilings
+
+Every service carries `mem_limit`, an **equal** `memswap_limit`, and `cpus`.
+The equality is the `CLAUDE.md` rule that makes a container OOM inside its own
+cgroup instead of dragging a 7.9 GB host into swap — see `D-1`, which measured
+the correlation exactly: the four services that lacked the pairing were the
+four holding swap, and they fell to 0 MB the moment it was applied.
+
+| Variable | Default | Service |
+|---|---|---|
+| `AP_MEM_LIMIT` / `AP_CPUS` | `1536m` / `1.0` | Activepieces |
+| `AP_REDIS_MEM_LIMIT` / `AP_REDIS_CPUS` | `256m` / `0.5` | its queue |
+| `AGENT_SIDECAR_MEM_LIMIT` / `AGENT_SIDECAR_CPUS` | `1g` / `1.0` | the agent |
+| `CADDY_MEM_LIMIT` / `CADDY_CPUS` | `192m` / `0.5` | the proxy |
+| `CODEGRAPH_BUILD_MEM_LIMIT` / `CODEGRAPH_BUILD_CPUS` | `4g` / `2.0` | the graph build |
+| `CODEGRAPH_SERVE_MEM_LIMIT` / `CODEGRAPH_SERVE_CPUS` | `768m` / `0.5` | the graph server |
+| `NTFY_MEM_LIMIT` / `NTFY_CPUS` | `128m` / `0.25` | alerts |
+| `OLLAMA_MEM_LIMIT` / `OLLAMA_CPUS` | `1536m` / `1.0` | the local model |
+| `OLLAMA_PULL_MEM_LIMIT` / `OLLAMA_PULL_CPUS` | `256m` / `0.5` | its one-shot pull |
+| `OTEL_COLLECTOR_MEM_LIMIT` / `OTEL_COLLECTOR_CPUS` | `256m` / `0.5` | tracing |
+| `OPENHANDS_CANVAS_MEM_LIMIT` / `OPENHANDS_CANVAS_CPUS` | `2g` / `2.0` | the canvas |
+
+`CODEGRAPH_BUILD_MEM_LIMIT` is the outlier at 4g and it is not arbitrary: the
+build's measured peak is 3584 MB, which is also the floor
+`scripts/codegraph-refresh.sh` refuses below. See 13.
+
+### Bindings and ports
+
+All loopback, deliberately. Only Caddy binds `0.0.0.0`, and `B-2` fails on any
+published port that is not written `${X_BIND_HOST:-127.0.0.1}:`.
+
+| Variable | Default | Reaches |
+|---|---|---|
+| `AP_BIND_HOST` / `AP_PORT` | `127.0.0.1` / `8080` | Activepieces |
+| `AGENT_SIDECAR_HTTP_BIND_HOST` / `AGENT_SIDECAR_HTTP_PORT` | `127.0.0.1` / `8100` | the agent's HTTP API |
+| `CODEGRAPH_BIND_HOST` / `CODEGRAPH_PORT` | `127.0.0.1` / `8130` | the graph MCP server |
+| `NTFY_BIND_HOST` / `NTFY_PORT` | `127.0.0.1` / `8140` | ntfy |
+| `OPENHANDS_CANVAS_BIND_HOST` / `OPENHANDS_CANVAS_PORT` | `127.0.0.1` / `8000` | the canvas |
+
+`K-1` still fails, and not because of any of these: `20128`, `20129` and
+`20132` are published on `0.0.0.0` by the **vendored** `omniroute/` compose
+file, which the never-edit rule puts out of reach. ntfy is on `8140`, not
+`20132` — a detail worth stating because assuming otherwise turned a working
+alert path into an apparent outage for one command.
+
+### The ones that decide behaviour
+
+| Variable | Default | What it actually does |
+|---|---|---|
+| `OLLAMA_KEEP_ALIVE` | `-1` | **Never unload the model.** Unset in `.env`, so the default is live and qwen2.5 holds ~1.4 GB resident permanently. That RAM is the single largest movable block on this host, and `scripts/codegraph-refresh.sh` unloads it explicitly before a build for exactly that reason. Changing it to `15m` frees the memory between uses at the cost of a reload on the next call. |
+| `OLLAMA_MODEL` | `qwen2.5:1.5b-instruct-q4_K_M` | **Must match what the healthcheck greps for.** It did not once: the puller said 3b while the server said 1.5b, so a fresh deploy would pull 2 GB and then fail a healthcheck forever. The running host never showed it because 1.5b had been pulled by hand. |
+| `OLLAMA_MAX_QUEUE` | `2` | Requests queued behind the one in flight. Two, because the container has one CPU. |
+| `DOCKER_GID` | `988` | The **host's** docker group id, passed in so the sidecar can use the mounted socket. Measured on this host: 988, and `.env` sets 988. A mismatch does not fail loudly — the socket is simply unreadable, and `vps_exec` returns permission errors that look like a bug in the tool. |
+| `AP_QUEUE_MODE` | `REDIS` | Activepieces runs its queue in the local Redis rather than in-memory, which is what makes the workflow engine survive a restart. |
+| `NTFY_CACHE_DURATION` | `72h` | How long a message stays fetchable for a phone that was offline. |
+| `CODEGRAPH_WORKERS` | `2` | Extraction parallelism, matched to 2 vCPU. |
+| `CODEGRAPH_COMMIT` | `unknown` | Written into `BUILD_INFO` as the graph's provenance label. `E-4` reads it; `E-5` checks the graph's *contents* separately, because a label and what it labels can disagree. |
+| `CODEGRAPH_MCP_URL` | `http://codegraph-serve:8130/mcp` | Where the agent loads graph tools from. Over the compose network, never the public path. |
+| `ACTIVEPIECES_PUBLIC_DOMAIN` | `activepieces.localhost` | A **non-empty** default on purpose. Caddy's `{$VAR:default}` fires only for an UNSET variable; an empty one reaches the site address as an empty string and the whole config fails to load, taking every route down. Compose's `:-` covers empty, so this is the layer that has to hold. `B-7b` tests it. |
+| `LANGFUSE_OTLP_ENDPOINT` | Langfuse cloud | Where traces go. |
+| `OH_AGENT_CANVAS_SECRET_KEY` | `CHANGEME-…` | A deliberate placeholder. `${VAR:?err}` is forbidden here — compose interpolates it across the whole merged model before profile filtering, so one required variable breaks every unrelated profile. `scripts/stax-preflight.sh` enforces it instead, and `C-3` looks for placeholders in the `.env` files rather than in compose defaults, which is why this one is not a finding. |
+
+### One variable that must stay unset
+
+`AP_REDIS_USE_SSL` is documented here and set **nowhere**, which is the point.
+Activepieces attempts a TLS handshake whenever the variable is present at all,
+including when it is present and set to `"false"` (upstream #4857). A compose
+`${AP_REDIS_USE_SSL:-}` default injects an empty value and trips exactly that
+bug, so Activepieces' configuration arrives through `env_file` — which simply
+omits it — rather than through an `environment:` list, which cannot.
+
+It appears in `docker-compose.yml` only inside the comment explaining this.
+`B-9` used to read the file as flat text and report the warning as the
+violation; it now strips comments first.

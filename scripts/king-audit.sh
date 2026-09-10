@@ -776,7 +776,15 @@ PYAUDIT
         _envpy=$(mktemp)
         cat > "$_envpy" <<'PYENV'
 import io, os, re, sys
-comp = io.open("docker-compose.yml", encoding="utf-8").read()
+# Comments stripped first. `${AP_REDIS_USE_SSL:-}` appears in this file
+# exactly once, inside a comment explaining why it must NEVER be written that
+# way -- setting it at all makes Activepieces attempt a TLS handshake
+# (upstream #4857), so an env_file omits it instead. Reading the file as flat
+# text counted the warning as the offence.
+comp = "".join(
+    line for line in io.open("docker-compose.yml", encoding="utf-8")
+    if not line.lstrip().startswith("#")
+)
 used = {v for v in re.findall(r'\$\{([A-Z0-9_]+)[:}-]', comp) if v != "VAR"}
 docs = ""
 for f in ("docs/king-system.md", "README.md", ".env.example"):
