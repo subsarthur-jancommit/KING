@@ -92,11 +92,25 @@ jobs:
           # Guard against exactly the failure mode described above: prove the
           # file really parses before trusting what the next assertion means.
           grep -q '^AP_REDIS_USE_SSL=false$' activepieces/.env
-          if ./scripts/stax-preflight.sh workflow; then
+          # Everything ELSE must be valid, or this proves nothing.
+          #
+          # These negative tests assert only that preflight exited non-zero. The
+          # moment a second, unrelated check also fails — AP_REDIS_PASSWORD did,
+          # from 2026-09-10 — they pass no matter what happens to the check they
+          # are named after. A negative test with two possible causes tests
+          # neither, and the assertion is not strong enough to notice.
+          echo "AP_REDIS_PASSWORD=$(openssl rand -hex 24)" >> .env
+          out=$(./scripts/stax-preflight.sh workflow 2>&1) && {
             echo "preflight accepted AP_REDIS_USE_SSL=false — it must not" >&2
             exit 1
-          fi
-          echo "Correctly rejected."
+          }
+          case "$out" in
+            *AP_REDIS_USE_SSL*) ;;
+            *) echo "preflight failed, but not for AP_REDIS_USE_SSL — this proves nothing:" >&2
+               echo "$out" >&2
+               exit 1 ;;
+          esac
+          echo "Correctly rejected, for the stated reason."
 
       - name: A wrong-length AP_ENCRYPTION_KEY must be rejected
         run: |
@@ -105,18 +119,31 @@ jobs:
           # boot rather than degrading, so it is worth catching before deploy.
           sed -i 's|^AP_ENCRYPTION_KEY=.*|AP_ENCRYPTION_KEY=tooshort|' activepieces/.env
           sed -i '/^AP_REDIS_USE_SSL=/d' activepieces/.env
-          if ./scripts/stax-preflight.sh workflow; then
+          out=$(./scripts/stax-preflight.sh workflow 2>&1) && {
             echo "preflight accepted a short AP_ENCRYPTION_KEY — it must not" >&2
             exit 1
-          fi
-          echo "Correctly rejected."
+          }
+          # Same reasoning as above: assert WHICH check rejected it.
+          case "$out" in
+            *AP_ENCRYPTION_KEY*) ;;
+            *) echo "preflight failed, but not for AP_ENCRYPTION_KEY — this proves nothing:" >&2
+               echo "$out" >&2
+               exit 1 ;;
+          esac
+          echo "Correctly rejected, for the stated reason."
 
       - name: A valid workflow config must be accepted
         run: |
           set -euo pipefail
           sed -i "s|^AP_ENCRYPTION_KEY=.*|AP_ENCRYPTION_KEY=$(openssl rand -hex 16)|" activepieces/.env
+          # The ROOT .env, because that is where compose takes AP_REDIS_PASSWORD
+          # from and therefore where preflight looks. Written here rather than
+          # left unset so this job exercises the configuration a real deployment
+          # has: unset means ap-redis starts with the placeholder password,
+          # which is the state C-10 exists to catch.
+          echo "AP_REDIS_PASSWORD=$(openssl rand -hex 24)" >> .env
           ./scripts/stax-preflight.sh workflow
-          rm -f activepieces/.env
+          rm -f activepieces/.env .env
 
       # Fixtures only: no host files, no model, no network. It guards the
       # patterns and the masking, which are the two things that decide whether
@@ -251,9 +278,25 @@ jobs:
 
       - name: Run agent-sidecar pytest suite against live OmniRoute
         run: |
+          # AGENT_SIDECAR_EXECUTOR is passed EXPLICITLY, and it is `local`.
+          #
+          # The compose default became `e2b` on 2026-09-10, because a
+          # deployment running model-authored Python inside a container holding
+          # a read-write docker.sock should fail loudly rather than do it
+          # quietly. This runner has no E2B credential, so that flip turned
+          # test_smolagents_reaches_omniroute into an AuthenticationException —
+          # which is the new default working, and which revealed that CI had
+          # been relying on the unsafe one without ever saying so.
+          #
+          # CI opts back in deliberately and in the open. Its threat model is
+          # genuinely different: an ephemeral runner, no MCP endpoint, and task
+          # text that comes from the test file rather than from a model. The
+          # alternative — skipping the test when there is no key — would trade
+          # real coverage of the smolagents path for a green tick.
           docker compose -f docker-compose.yml --profile base --profile agent-sidecar run --rm \
             -e OMNIROUTE_API_KEY="${SIDECAR_API_KEY}" \
             -e AGENT_SIDECAR_MODEL_ID=opencode/big-pickle \
+            -e AGENT_SIDECAR_EXECUTOR=local \
             agent-sidecar uv run pytest tests/ -v
 
       - name: Give the wrapper its key the way a deployment does
@@ -698,7 +741,16 @@ jobs:
           } > activepieces/.env
 
       - name: Preflight must pass for base + workflow
-        run: ./scripts/stax-preflight.sh base workflow
+        run: |
+          set -euo pipefail
+          # Same reason as the preflight job: AP_REDIS_PASSWORD is read from the
+          # root .env, and ap-redis in the stack this job actually starts takes
+          # its --requirepass from the same place. Setting it here means the
+          # queue Activepieces connects to below is a password-protected one,
+          # which is what production runs — so this job tests the real shape
+          # rather than a weaker one that happens to be easier to stand up.
+          echo "AP_REDIS_PASSWORD=$(openssl rand -hex 24)" >> .env
+          ./scripts/stax-preflight.sh base workflow
 
       - name: Provide omniroute:base (pull the pinned published image)
         run: ./scripts/ci-build-omniroute-base.sh
