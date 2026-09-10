@@ -1290,3 +1290,57 @@ not running what is recorded. `J-5` asserts the condition that makes that red
 tolerable, and goes red itself the moment one of those five providers is
 configured. "Safe because nothing uses it" is a condition, and an unwatched
 condition is what every entry in this document turns out to be.
+
+---
+
+## 32. The manifest guarded one direction, and I broke it from the other
+
+The manifest at the top of `king-audit.sh` exists because the first version of
+that script shipped 43 of the 62 checks its own plan defined and reported the
+result as "the audit". Its comment is unambiguous: *"an unimplemented check is
+invisible, and invisible is indistinguishable from passing."*
+
+It compares `MANIFEST` against `implemented()`. A check that is **declared and
+never runs** is a TODO, counted, and it stops the run going green.
+
+Nothing compared the other way. On 2026-09-10 I added three checks — `D-7b`,
+`J-4`, `J-5` — and registered none of them:
+
+```
+D-7b  implemented()=0  MANIFEST=0
+J-4   implemented()=0  MANIFEST=0
+J-5   implemented()=0  MANIFEST=0
+```
+
+They ran. They printed verdicts. One of them was red and I quoted it in a
+commit message. And the same run printed **"every planned check in the selected
+dimension(s) ran"**, which was true, because they were not planned. The file
+that is supposed to be the single list of what this audit does had quietly
+stopped being that list, and every signal on screen said the audit was healthy.
+
+That is the identical failure the manifest was written to remove, arriving from
+the side it did not guard. A guard tests a predicate, not a subject: "declared
+implies runs" and "runs implies declared" are two claims, and enforcing the
+first tells you nothing about the second.
+
+**How it was found, which is the part worth keeping.** Not by noticing. By
+being told not to trust my own account of what I had covered, and answering the
+question with a script instead:
+
+```sh
+grep -oE 'chk [A-L]-[0-9]+[a-z]?' scripts/king-audit.sh | awk '{print $2}' | sort -u
+awk '/^implemented\(\)/,/^IMPL$/' scripts/king-audit.sh | grep -cx "$id"
+```
+
+The first of those was *also* wrong — it misses `chk "E-3"` and the five checks
+emitted through a loop variable, which the manifest's own comment already
+records as a trap someone fell into before. So the enumeration had to be
+checked before its answer could be used. An inventory you take by hand is a
+claim; an inventory you take with a script is a measurement, and a script you
+have not validated is back to being a claim.
+
+**Closed at runtime, not by grep**, for exactly that reason: `chk()` already
+records every id it emits, so the check compares what actually ran against the
+manifest and exits 3 — the same exit a TODO gets — on anything undeclared.
+Proven in both directions on the host: dimension I exits 0 normally, and exits
+3 printing `UNDEC … I-2` when that entry is removed.
