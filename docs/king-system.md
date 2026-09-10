@@ -827,7 +827,7 @@ Three MCP servers, two of which already existed and had never been switched on.
 |---|---|---|
 | `https://gateway.arject.co/api/mcp/stream` | **110** | OmniRoute's own control plane — routing, quota, cost, cache, skills, memory, `best_combo_for_task`, `explain_route` |
 | `https://gateway.arject.co/king-agent/mcp` | **4** | `run_agent`, `ask_model`, `vps_status`, `vps_exec` |
-| `http://127.0.0.1:8130/mcp` (tunnel) | **10** | codegraph — `get_neighbors`, `shortest_path`, `god_nodes`, … |
+| `https://gateway.arject.co/king-codegraph/mcp` | **10** | codegraph — `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs` |
 
 ### Connecting
 
@@ -836,6 +836,13 @@ claude mcp add --transport http king \
   https://gateway.arject.co/king-agent/mcp \
   --header "Authorization: Bearer $AGENT_SIDECAR_AUTH_TOKEN"
 
+claude mcp add --transport http codegraph \
+  https://gateway.arject.co/king-codegraph/mcp \
+  --header "Authorization: Bearer $GRAPHIFY_API_KEY"
+
+# Not connected, deliberately: 110 tool descriptions is a context cost paid on
+# every message, and a routing control plane is not what Claude reaches for
+# while writing code. Add it for a session that needs it, then remove it.
 claude mcp add --transport http omniroute \
   https://gateway.arject.co/api/mcp/stream \
   --header "Authorization: Bearer $OMNIROUTE_MANAGE_KEY"
@@ -843,6 +850,12 @@ claude mcp add --transport http omniroute \
 
 Both tokens live in gitignored files on the VPS — `agent-sidecar/.env` and the
 OmniRoute key list. Never put them in a committed `.mcp.json`.
+
+The codegraph row above said `http://127.0.0.1:8130/mcp (tunnel)` until
+2026-09-10, and had been wrong since the route went public — `CLAUDE.md` gave
+the public URL while this table still described the tunnel it replaced. Both
+servers were re-read against their live `tools/list` when that was found, which
+is how the ten names got there in place of three and an ellipsis.
 
 Both endpoints re-verified over the public domain on 2026-09-05: `initialize`
 answers `serverInfo.name = "king"` on the first and `"omniroute" 1.8.1` on the
