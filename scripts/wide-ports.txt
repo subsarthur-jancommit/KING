@@ -1,0 +1,49 @@
+# Ports bound to 0.0.0.0 that are not 22, 80 or 443, acknowledged one by one.
+#
+# Nothing here is a claim that a wide binding is fine. It is a record that this
+# repository cannot narrow these three, and of what stands in front of them
+# instead.
+#
+# WHY THEY CANNOT BE NARROWED FROM HERE
+#
+# They are published by `omniroute/docker-compose.yml`, a squashed subtree.
+# CLAUDE.md forbids editing it — the next `git subtree pull` reverts anything
+# written there — and forbids a root-compose override of a service it defines,
+# because a partial `omniroute-base:` override turned every Docker CI job red
+# with "conflicts with imported resource".
+#
+# The usual escape is an environment variable, and it does not exist here. The
+# redis service in that file publishes `${REDIS_BIND_HOST:-127.0.0.1}:...`, so
+# upstream clearly knows the pattern. The gateway's three do not:
+#
+#     - "${DASHBOARD_PORT:-20128}:${DASHBOARD_PORT:-20128}"
+#
+# The same variable appears on BOTH sides of the mapping and again as the
+# application's own listening port, so setting it to `127.0.0.1:20128` produces
+# an invalid mapping and changes what the app binds to. There is no value that
+# narrows the interface. Fixing this means fixing it upstream.
+#
+# WHAT STANDS IN FRONT OF THEM
+#
+# `K-3` asks the host to reach its own PUBLIC address on every port that is
+# listening wide — 20129 and 20132 included, which it did not do until its
+# probe list stopped being hardcoded. All are filtered. So the GCP VPC firewall
+# is closing them, and that is measured rather than assumed.
+#
+# WHAT IS STILL MISSING, and is deliberately NOT acknowledged
+#
+# That VPC firewall is the ONLY control. `K-2` stays red because `DOCKER-USER`
+# is empty, which means ufw does not cover Docker-published ports at all — the
+# firewall an operator would reasonably believe is protecting these three is
+# not the one doing it. One control, no second layer, and the second layer is
+# the thing a change in cloud configuration would silently remove.
+#
+# Acknowledging K-1 must not read as acknowledging that. It does not: K-2 is a
+# separate check and it is still failing.
+#
+# Format: <port> <reason>. Blank lines and #-comments ignored.
+# Measured 2026-09-10.
+
+20128 omniroute dashboard and /v1 — vendored, no bind-host variable exists
+20129 omniroute API port — same mapping shape, same constraint
+20132 omniroute live websocket — same mapping shape, same constraint

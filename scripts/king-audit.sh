@@ -2689,16 +2689,37 @@ dim_K() {
     if have ss; then
         _wide=$(ss -tlnH 2>/dev/null | awk '{print $4}' \
                 | grep -E '^(0\.0\.0\.0|\*):' | sed 's/.*://' | sort -un | tr '\n' ' ' || true)
-        _unexpected=""
+        # Acknowledged wide ports, with the reason each cannot be narrowed from
+        # this repository. Three are published by the vendored subtree using a
+        # mapping shape that has no bind-host variable — the same variable sits
+        # on both sides of `${DASHBOARD_PORT}:${DASHBOARD_PORT}` and again as
+        # the app's own listening port, so no value narrows the interface.
+        #
+        # This does NOT acknowledge that they are adequately protected. K-3
+        # proves the VPC firewall filters them, and K-2 stays red because that
+        # firewall is the only control — DOCKER-USER is empty, so ufw does not
+        # cover Docker-published ports at all. Two checks, two findings, and
+        # the second one is still failing.
+        _wpack=scripts/wide-ports.txt
+        _unexpected=""; _ackd=""
         for _pt in $_wide; do
-            case "$_pt" in 22|80|443) : ;; *) _unexpected="$_unexpected $_pt" ;; esac
+            case "$_pt" in 22|80|443) continue ;; esac
+            if [ -f "$_wpack" ] && grep -v '^[[:space:]]*#' "$_wpack" 2>/dev/null \
+                 | awk '{print $1}' | grep -qx "$_pt"; then
+                _ackd="$_ackd $_pt"
+            else
+                _unexpected="$_unexpected $_pt"
+            fi
         done
         metric k1_wide_ports "$(printf '%s' "$_wide" | wc -w | tr -d ' ')"
-        if [ -z "$_unexpected" ]; then
+        if [ -z "$_unexpected" ] && [ -z "$_ackd" ]; then
             chk K-1 PASS "only 22, 80 and 443 listen on all interfaces"
+        elif [ -z "$_unexpected" ]; then
+            chk K-1 PASS "wide port(s)$_ackd, each acknowledged with why it cannot be narrowed here" \
+                "vendored mappings with no bind-host variable; K-3 proves them filtered, K-2 says that filter is the only one"
         else
-            chk K-1 FAIL "port(s) listening on 0.0.0.0 beyond the intended three" \
-                "$_unexpected — declared in omniroute/, which the compose checks never read"
+            chk K-1 FAIL "port(s) listening on 0.0.0.0 that nobody has reviewed" \
+                "$_unexpected — add them to $_wpack with a reason, or bind them to loopback"
         fi
     else
         chk K-1 UNKNOWN "ss unavailable; listening sockets unmeasurable"
@@ -2730,8 +2751,24 @@ dim_K() {
         if [ -z "$_ip" ]; then
             chk K-3 UNKNOWN "could not determine this host's public address"
         else
+            # Derived, not hardcoded. The list used to be
+            # `20128 8100 8130 8140`, which happened to omit 20129 and 20132 —
+            # two of the three ports K-1 reports as wide open. A sample that
+            # misses the cases the neighbouring check is complaining about is
+            # not a sample, it is a gap.
+            #
+            # Everything bound to 0.0.0.0, plus the loopback services worth
+            # confirming are NOT reachable from outside.
+            _probe=$(ss -tlnH 2>/dev/null | awk '{print $4}' \
+                     | grep -E '^(0\.0\.0\.0|\*):' | sed 's/.*://' | sort -un | tr '\n' ' ' || true)
+            for _lp in 8100 8130 8140 8080; do
+                case " $_probe " in *" $_lp "*) : ;; *) _probe="$_probe $_lp" ;; esac
+            done
             _reach=""
-            for _pt in 20128 8100 8130 8140; do
+            for _pt in $_probe; do
+                # 22, 80 and 443 are meant to answer from outside; probing them
+                # would report the intended surface as a finding.
+                case "$_pt" in 22|80|443) continue ;; esac
                 # No `|| echo 000` here. curl -w already prints 000 on a
                 # connection failure, so the fallback CONCATENATES and yields
                 # "000000", which is not equal to "000" -- and every filtered
@@ -2747,9 +2784,10 @@ dim_K() {
                     *) _reach="$_reach $_pt=$_rc" ;;
                 esac
             done
+            metric k3_probed "$(printf '%s' "$_probe" | wc -w | tr -d ' ')"
             if [ -z "$_reach" ]; then
                 chk K-3 PASS "no internal port answers on the public address" \
-                    "verified through whatever sits in front of the host, not from its config"
+                    "$(printf '%s' "$_probe" | wc -w | tr -d ' ') port(s), derived from what is listening; verified through whatever sits in front of the host"
             else
                 chk K-3 FAIL "internal port(s) answering on the public address" "$_reach"
             fi
