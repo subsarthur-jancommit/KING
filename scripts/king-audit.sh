@@ -3216,16 +3216,42 @@ dim_K() {
     fi
 
     # K-6: an unpatched host behind a good firewall is still an unpatched host.
+    #
+    # Two ways this check used to lie, both found on 2026-09-10.
+    #
+    # 1. It read `apt-get -s upgrade 2>/dev/null | grep -c … || true`. When apt
+    #    cannot answer -- lists unreadable, lock held, sources broken -- that
+    #    pipeline yields 0, and 0 with unattended-upgrades enabled was the PASS
+    #    branch. So the check reported "no pending security updates" precisely
+    #    when it had no idea. Demonstrated by pointing Dir::State::Lists at a
+    #    nonexistent path: the count came back 0 and the old code was happy.
+    #    apt's exit status is now kept and a failure is UNKNOWN, never green.
+    #
+    # 2. `systemctl is-enabled unattended-upgrades` is not the question. That
+    #    unit is `unattended-upgrade-shutdown --wait-for-signal`, the helper
+    #    that finishes upgrades during shutdown. The thing that actually
+    #    applies them on a schedule is apt-daily-upgrade.timer, and it could be
+    #    masked while this check still reported "enabled" and passed.
     if have apt-get; then
-        _sec=$(apt-get -s upgrade 2>/dev/null | grep -ciE '^Inst.*security' || true)
+        _aptout=$(apt-get -s upgrade 2>/dev/null); _aptrc=$?
         _unatt=$(systemctl is-enabled unattended-upgrades 2>/dev/null || echo disabled)
-        metric k6_security_updates "${_sec:-0}"
-        if [ "${_sec:-0}" -eq 0 ] && [ "$_unatt" = "enabled" ]; then
-            chk K-6 PASS "no pending security updates, and unattended-upgrades is enabled"
-        elif [ "${_sec:-0}" -gt 0 ]; then
-            chk K-6 FAIL "${_sec} security update(s) pending" "unattended-upgrades: $_unatt"
+        _aptimer=$(systemctl is-enabled apt-daily-upgrade.timer 2>/dev/null || echo disabled)
+        if [ "$_aptrc" -ne 0 ] || [ -z "$_aptout" ]; then
+            chk K-6 UNKNOWN "apt could not report what is pending" \
+                "exit $_aptrc — an unanswerable question is not a clean bill of health"
         else
-            chk K-6 FAIL "unattended-upgrades is $_unatt" "nothing will apply the next one"
+            _sec=$(printf '%s\n' "$_aptout" | grep -ciE '^Inst.*security' || true)
+            metric k6_security_updates "${_sec:-0}"
+            if [ "${_sec:-0}" -gt 0 ]; then
+                chk K-6 FAIL "${_sec} security update(s) pending" \
+                    "$(printf '%s\n' "$_aptout" | grep -iE '^Inst.*security' | awk '{printf "%s ", $2}')— unattended-upgrades:$_unatt apt-daily-upgrade.timer:$_aptimer"
+            elif [ "$_unatt" != "enabled" ] || [ "$_aptimer" != "enabled" ]; then
+                chk K-6 FAIL "nothing is scheduled to apply the next security update" \
+                    "unattended-upgrades:$_unatt apt-daily-upgrade.timer:$_aptimer — the timer is the one that applies them"
+            else
+                chk K-6 PASS "no pending security updates, and the apply timer is enabled" \
+                    "unattended-upgrades:$_unatt apt-daily-upgrade.timer:$_aptimer"
+            fi
         fi
     else
         chk K-6 SKIP "not an apt host"
@@ -3884,6 +3910,43 @@ DMHOST
         then printf '  ok    %s is listed in implemented()\n' "$_need"
         else printf '  FAIL  %s is listed in implemented()\n' "$_need"; _f=$((_f+1)); fi
     done
+
+    # ---- K-6: "apt could not answer" must never render as "nothing pending" -
+    #
+    # The old code was `apt-get -s upgrade 2>/dev/null | grep -c … || true`,
+    # which turns every apt failure into 0, and 0 was the green branch.
+    _k6verdict() {  # $1 = apt exit, $2 = apt output, $3 = unattended, $4 = timer
+        if [ "$1" -ne 0 ] || [ -z "$2" ]; then printf 'unknown'; return; fi
+        _n=$(printf '%s\n' "$2" | grep -ciE '^Inst.*security' || true)
+        if [ "${_n:-0}" -gt 0 ]; then printf 'pending'
+        elif [ "$3" != enabled ] || [ "$4" != enabled ]; then printf 'unscheduled'
+        else printf 'clean'; fi
+    }
+    _k6apt='Inst libc6 [2.39-0ubuntu8.8] (2.39-0ubuntu8.9 Ubuntu:24.04/noble-security [amd64])
+Inst locales [2.39-0ubuntu8.8] (2.39-0ubuntu8.9 Ubuntu:24.04/noble-security [all])
+Inst somepkg [1.0] (1.1 Ubuntu:24.04/noble-updates [amd64])'
+
+    if [ "$(_k6verdict 1 '' enabled enabled)" = "unknown" ]
+    then printf '  ok    a failed apt is UNKNOWN, never "no pending security updates"\n'
+    else printf '  FAIL  a failed apt is UNKNOWN, never "no pending security updates"\n'; _f=$((_f+1)); fi
+
+    if [ "$(_k6verdict 0 '' enabled enabled)" = "unknown" ]
+    then printf '  ok    empty apt output is UNKNOWN even when apt exits 0\n'
+    else printf '  FAIL  empty apt output is UNKNOWN even when apt exits 0\n'; _f=$((_f+1)); fi
+
+    if [ "$(_k6verdict 0 "$_k6apt" enabled enabled)" = "pending" ]
+    then printf '  ok    security lines are counted and non-security ones are not\n'
+    else printf '  FAIL  security lines are counted and non-security ones are not\n'; _f=$((_f+1)); fi
+
+    # The proxy that was wrong: apt-daily-upgrade.timer applies the updates,
+    # not the unattended-upgrades shutdown helper. A masked timer must fail.
+    if [ "$(_k6verdict 0 'Inst nothing [1] (2 Ubuntu:24.04/noble-updates [amd64])' enabled disabled)" = "unscheduled" ]
+    then printf '  ok    a masked apt-daily-upgrade.timer fails even with nothing pending\n'
+    else printf '  FAIL  a masked apt-daily-upgrade.timer fails even with nothing pending\n'; _f=$((_f+1)); fi
+
+    if [ "$(_k6verdict 0 'Inst nothing [1] (2 Ubuntu:24.04/noble-updates [amd64])' enabled enabled)" = "clean" ]
+    then printf '  ok    no security lines with both units enabled is the only green\n'
+    else printf '  FAIL  no security lines with both units enabled is the only green\n'; _f=$((_f+1)); fi
 
     rm -rf "$_t"
     echo
