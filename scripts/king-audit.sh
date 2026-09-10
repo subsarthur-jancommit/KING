@@ -498,7 +498,13 @@ s = (d.get("services") or {}).get(sys.argv[1]) or {}
 b = s.get("build")
 print(b if isinstance(b, str) else (b or {}).get("context", "") if isinstance(b, dict) else "")
 ' "$_svc" 2>/dev/null || true)
-            [ -n "$_ctx" ] && [ -d "$_ctx" ] || continue
+            # `A && B || continue` happens to behave here, because C is a
+            # no-value action. It is still the SC2015 shape this script warns
+            # about twice in its own comments, and the header of pool-prove.sh
+            # carries the same warning — so it does not get to appear here.
+            if [ -z "$_ctx" ] || [ ! -d "$_ctx" ]; then
+                continue
+            fi
             _built=$((_built + 1))
             # Compare CONTENT, not timestamps. Two earlier versions of this
             # check used a clock and both were wrong for different reasons:
@@ -3072,6 +3078,7 @@ PYKEYS
                   # evidence line that states a fact about the system has to be
                   # derived from the system, or it becomes a confident lie on
                   # the day someone fixes the thing it describes.
+                  # shellcheck disable=SC2016  # the sed pattern matches the literal ${...} in that file
                   _keep=$(sed -n 's/^JOURNAL_KEEP="\${KING_JOURNAL_KEEP:-\([0-9]*\)}"/\1/p' \
                           scripts/king-backup.sh 2>/dev/null | head -1)
                   # `${_keep:-else}` substitutes the VALUE when set, not the
