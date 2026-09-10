@@ -1139,3 +1139,65 @@ The fix needs `systemctl restart docker`, which stops every container. That is
 a different decision from writing a file, and it is left to the operator rather
 than folded into a batch — but D-7 fails loudly until it happens, instead of
 passing on a policy nothing is enforcing.
+
+## 30. "If the build fails, nothing breaks" — the build was not the risk
+
+The gateway ran a CVE-affected `tls-client` binary. The fix is a rebuild, and
+the risk assessment written into the plan was:
+
+> Kalau OOM, tidak ada yang rusak — image lama tetap berjalan.
+
+Every clause of that is true. It is also the wrong risk. The build was started
+to a separate tag, the running `omniroute:base` was never touched, and when the
+build died nothing was corrupted — exactly as predicted.
+
+**The site was down for forty-five minutes anyway.**
+
+`OMNIROUTE_BUILD_MEMORY_MB` is 4096. The host has 2 vCPU and reported 4633 MB
+available with ten containers running. A Next.js production build took both
+cores and pushed the host into swap; Caddy — capped at 0.5 CPU and 192 MB by
+the very rule this audit had just applied — stopped answering. So did every
+other container. So did **sshd**, which meant the build could not be stopped by
+the person who started it. Recovery took a console reboot by the operator.
+
+### What the assessment actually missed
+
+It reasoned about the **artefact** and not the **host**. "Does the build
+produce a broken image" and "can this host survive the build" are different
+questions, and only the first was asked. The same shape as every instrument
+fault catalogued this week — F-8 asking a file instead of a process, D-7
+asking a config instead of a daemon — arriving one level up, in the risk
+analysis rather than in a check.
+
+`scripts/codegraph-refresh.sh` had the answer written down the whole time. It
+unloads Ollama, then re-reads MemAvailable **immediately before** building, and
+refuses below a measured floor. It ran three times during the same session
+without incident, including once while the public surface was watched
+throughout. The omniroute build had none of that, and nobody noticed the
+asymmetry because the codegraph one had never failed.
+
+### What would have made it survivable
+
+- **Measure the floor for THIS build**, as codegraph-refresh does for its own,
+  and refuse below it rather than hoping 4633 > 4096 leaves enough for ten
+  containers.
+- **Stop what can be stopped first.** Ollama alone is 1.5 GB and a full CPU.
+- **Watch the thing that matters during the operation**, not after. The public
+  surface was checked once the build had already been running for fifteen
+  minutes, from outside the host — which was the only channel left.
+- **Never start an unbounded operation you cannot stop.** SSH going down was
+  the fault that turned a slow build into an outage, and it was foreseeable
+  from the CPU budget alone.
+
+### The two things it proved by accident
+
+`king-firewall.service` is `PartOf=docker.service`, and a real reboot re-applied
+its rules with no intervention. That design was argued for on paper an hour
+earlier; the reboot tested it for real.
+
+And the reboot restarted dockerd, which **applied** the `log-opts` that
+`systemctl reload` had silently dropped — closing D-7, which had been deferred
+precisely because it needed a daemon restart nobody wanted to schedule.
+
+Neither is a defence of what happened. A fix that arrives through an outage is
+not a fix that was delivered.
