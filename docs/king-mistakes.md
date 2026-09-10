@@ -1089,3 +1089,53 @@ Before writing `UNKNOWN`, ask what the rest of this script does when it needs
 the same thing. If any other check reaches further — a different privilege, a
 different endpoint, a different parse — the honest report is not "unknown", it
 is "not attempted", and the fix is to attempt it.
+
+## 29. "Reloaded configuration" is not the same as "applied your configuration"
+
+`/etc/docker/daemon.json` did not exist, so every container ran on the
+json-file driver's default: no size cap, no rotation. The fix is four lines of
+JSON, and `docker.service` declares `ExecReload=/bin/kill -s HUP $MAINPID` —
+so a reload looked like the way to apply it without stopping anything.
+
+It reported success at every layer:
+
+```
+sudo systemctl reload docker     # exit 0
+systemctl is-active docker       # active
+docker ps -q | wc -l             # 10, nothing restarted
+```
+
+The journal agreed: `Got signal to reload configuration`, then
+`Reloaded configuration`. Nothing anywhere said no.
+
+**`log-opts` is not in the set dockerd reloads on SIGHUP.** The proof is in
+the daemon's own log line, which prints back the configuration it accepted:
+
+```
+"log-driver":"json-file", ... "mtu":1500, ...
+```
+
+`log-driver` is there. `log-opts` is not in that object at all. The daemon took
+the half it reloads and dropped the half it does not, and called the whole
+thing reloaded.
+
+The empirical test settled it in one container: after the successful reload, a
+deliberately chatty container wrote **58.6 MB into a single log file** under a
+policy that says 10 MB. Had that test not been run, this would have been
+reported as fixed, and the next audit would have read the file, seen the
+policy, and agreed.
+
+### The shape
+
+This is the same fault as `king-audit.sh` F-8 reading `mcp_tools.py` from the
+working tree while the container ran a different copy, and A-8 trusting
+BuildKit's `.Created` — all three are **a check that asks the artefact instead
+of the system**. A config file says what someone wanted. Only the running
+daemon says what is true, and it will tell you if asked precisely: here, by
+comparing its own start time against the file's mtime, which is what D-7 now
+does rather than passing on the file's existence.
+
+The fix needs `systemctl restart docker`, which stops every container. That is
+a different decision from writing a file, and it is left to the operator rather
+than folded into a batch — but D-7 fails loudly until it happens, instead of
+passing on a policy nothing is enforcing.

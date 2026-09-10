@@ -1441,7 +1441,32 @@ dim_D() {
         chk D-7 SKIP "not on the host"
     elif [ -f /etc/docker/daemon.json ] && grep -q 'max-size' /etc/docker/daemon.json 2>/dev/null; then
         _pol=$(grep -o '"max-[a-z]*"[^,}]*' /etc/docker/daemon.json 2>/dev/null | tr '\n' ' ')
-        chk D-7 PASS "a daemon-wide log rotation policy is set" "$_pol"
+        # Written is not the same as APPLIED, and this is the case where the
+        # difference bites. `log-opts` is not in the set dockerd reloads on
+        # SIGHUP: `systemctl reload docker` returns success, the journal logs
+        # "Reloaded configuration", and the config it prints back carries
+        # `log-driver` with no `log-opts` at all. Measured on 2026-09-10 — a
+        # container written after that reload put 58 MB into a single file
+        # under a 10 MB cap.
+        #
+        # So a check that reads the file and passes would report a fix that is
+        # not in force. The daemon's start time against the file's mtime
+        # settles it without writing 58 MB to find out.
+        _djm=$(stat -c %Y /etc/docker/daemon.json 2>/dev/null || true)
+        _dstart=$(priv systemctl show docker -p ActiveEnterTimestampMonotonic --value)
+        _dstart_epoch=$(date -d "$(priv systemctl show docker -p ActiveEnterTimestamp --value)" +%s 2>/dev/null || true)
+        case "$_djm$_dstart_epoch" in
+            ''|*[!0-9]*)
+                chk D-7 UNKNOWN "a daemon-wide policy is written, but whether it is applied could not be determined" \
+                    "$_pol" ;;
+            *)
+                if [ "$_djm" -gt "$_dstart_epoch" ]; then
+                    chk D-7 FAIL "the daemon-wide log policy is written but NOT applied" \
+                        "$_pol — log-opts is not SIGHUP-reloadable; it needs \`systemctl restart docker\`, which stops every container briefly"
+                else
+                    chk D-7 PASS "a daemon-wide log rotation policy is set and the daemon has it" "$_pol"
+                fi ;;
+        esac
     else
         # A per-service logging block is the other legitimate answer, so look
         # before concluding. But "SOME services set it" is not that answer.
