@@ -1108,7 +1108,18 @@ dim_C() {
     _runtime_secrets="omniroute/data/server.env omniroute/data/storage.sqlite .pool-prove.env"
     _wr=""; _checked=0; _unstat=""
     for _sf in $SECRET_FILES $_runtime_secrets; do
-        [ -e "$_sf" ] || continue
+        # `[ -e ]` needs traverse on every parent, so it answers FALSE for a
+        # file that exists inside a directory this user cannot enter. The stat
+        # below already falls back to `priv`; the existence test did not, and
+        # the moment omniroute/data went to 700 the two files it holds
+        # vanished from the count. C-7 then reported "none of 6 are
+        # world-readable" — passing by not looking, on the two files the chmod
+        # was for.
+        #
+        # This is the check's own subject arriving in its own loop, and it took
+        # a count dropping from 8 to 6 to notice. A count in an evidence line
+        # is a claim; this one was the only thing that gave it away.
+        [ -e "$_sf" ] || priv test -e "$_sf" || continue
         _perm=$(stat -c '%a' "$_sf" 2>/dev/null || priv stat -c '%a' "$_sf" || true)
         case "$_perm" in
             ""|*[!0-9]*)
@@ -1132,16 +1143,40 @@ dim_C() {
             *[123])  _wr="$_wr ${_sf}($_perm,writable-or-exec)" ;;
         esac
     done
+
+    # The DIRECTORY, not only the files in it.
+    #
+    # This is where the real protection lives. `chmod 600 storage.sqlite` is
+    # undone the next time SQLite rewrites its WAL — measured: -wal and -shm
+    # are rewritten minute by minute — while a directory's mode is not
+    # rewritten by anything the application does. So the durable control is
+    # `chmod 700` on omniroute/data, and a check that watched only the files
+    # would go green on the day the directory was widened back.
+    _dirs="omniroute/data"
+    _opendir=""
+    for _d in $_dirs; do
+        [ -d "$_d" ] || priv test -d "$_d" || continue
+        _dm=$(stat -c '%a' "$_d" 2>/dev/null || priv stat -c '%a' "$_d" || true)
+        case "$_dm" in
+            ''|*[!0-9]*) _opendir="$_opendir ${_d}(unreadable)" ;;
+            *[1-7])      _opendir="$_opendir ${_d}($_dm)" ;;
+        esac
+    done
+
     if [ -n "$_unstat" ]; then
         chk C-7 UNKNOWN "secret file(s) could not be stat'd:$_unstat" \
             "$_checked other file(s) were checked; an unmeasured file is not a passing one"
     elif [ "$_checked" -eq 0 ]; then
         chk C-7 UNKNOWN "no secret file was found to check"
-    elif [ -z "$_wr" ]; then
-        chk C-7 PASS "none of $_checked secret-bearing file(s) is world-readable"
-    else
+    elif [ -n "$_wr" ]; then
         chk C-7 FAIL "world-readable secret-bearing file(s):$_wr" \
             "$_checked checked; on this host uid 1001 and 1002 can read anything at mode 644"
+    elif [ -n "$_opendir" ]; then
+        chk C-7 FAIL "secret-bearing director(ies) others can enter:$_opendir" \
+            "the files inside are 600 today, but SQLite rewrites them and the directory mode is what holds"
+    else
+        chk C-7 PASS "$_checked secret file(s) and $(printf '%s' "$_dirs" | wc -w) directory closed to other users" \
+            "the directory is the durable half: file modes are rewritten by the app, its mode is not"
     fi
 
     # C-2: rotation does not help if the old value is still in the history.
