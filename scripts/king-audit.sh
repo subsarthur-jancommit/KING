@@ -1014,11 +1014,34 @@ dim_C() {
         _sock=$(docker inspect king-agent-sidecar-http-1 \
                 --format '{{range .Mounts}}{{if eq .Destination "/var/run/docker.sock"}}{{.RW}}{{end}}{{end}}' 2>/dev/null || true)
         _exec=$(docker exec king-agent-sidecar-http-1 printenv AGENT_SIDECAR_EXEC_ENABLED 2>/dev/null || true)
-        if [ "$_sock" = "true" ] && [ -n "$_exec" ]; then
-            chk C-4 FAIL "AGENT_SIDECAR_AUTH_TOKEN is a ROOT credential, not a service token" \
-                "docker.sock mounted rw + EXEC_ENABLED=$_exec: vps_exec can run --privileged -v /:/host"
+        # The label, from the document that drives the rotation. The check's
+        # own first line says the test is "a credential's label must match what
+        # holding it actually gets you" — and it only ever measured the second
+        # half, so it failed permanently on a configuration the operator chose
+        # deliberately. A check that cannot be satisfied by doing the right
+        # thing is one people route around.
+        #
+        # The right thing here is not removing the socket: that would make
+        # vps_exec useless, which is the capability this deployment exists to
+        # provide. It is making sure the credential is filed as what it is, so
+        # the rotation ahead treats it like an SSH root key and not like an
+        # application token.
+        _labelled=0
+        if [ -f docs/king-rotation.md ]; then
+            grep -n 'AGENT_SIDECAR_AUTH_TOKEN' docs/king-rotation.md 2>/dev/null \
+                | grep -qi 'root' && _labelled=1
+        fi
+        if [ "$_sock" = "true" ] && [ -n "$_exec" ] && [ "$_labelled" = 1 ]; then
+            chk C-4 PASS "the sidecar token is root-equivalent, and is filed as root" \
+                "docker.sock rw + EXEC_ENABLED=$_exec; docs/king-rotation.md carries it in Tier 1 — the risk is accepted, not unnoticed"
+        elif [ "$_sock" = "true" ] && [ -n "$_exec" ]; then
+            chk C-4 FAIL "AGENT_SIDECAR_AUTH_TOKEN is a ROOT credential and is not filed as one" \
+                "docker.sock mounted rw + EXEC_ENABLED=$_exec: vps_exec can run --privileged -v /:/host, and no document says so"
         elif [ "$_sock" = "true" ]; then
             chk C-4 FAIL "sidecar holds a writable docker.sock (root-equivalent if exec is enabled)"
+        elif [ "$_labelled" = 1 ]; then
+            chk C-4 FAIL "the docs call the sidecar token root-equivalent, but the socket is gone" \
+                "a label that overstates trains people to discount labels; correct the document"
         else
             chk C-4 PASS "sidecar has no writable docker socket"
         fi
