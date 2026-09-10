@@ -1344,3 +1344,37 @@ records every id it emits, so the check compares what actually ran against the
 manifest and exits 3 — the same exit a TODO gets — on anything undeclared.
 Proven in both directions on the host: dimension I exits 0 normally, and exits
 3 printing `UNDEC … I-2` when that entry is removed.
+
+---
+
+## 33. I undid C-7 with the backup I took to make C-7 safe to fix
+
+Before recreating the gateway I copied its data directory somewhere safe first,
+which is the right instinct and was done with the wrong command:
+
+```
+-rw-r--r-- 1 root root 11319182 Sep 10 16:09 /tmp/omniroute-data-prerecreate.tgz
+  data/server.env
+  data/storage.sqlite
+```
+
+`644`. World-readable, on a host with three shell accounts, containing the
+encryption key and all seven provider API keys — for about twenty minutes.
+
+Earlier the same day I had set `omniroute/data` to `700` **because** those files
+were readable by uid 1001 and 1002, and wrote a check to keep it that way. Then
+I copied the entire contents past that boundary with a default umask. The
+control was still in force on the directory it names, and the data was outside
+it.
+
+`scripts/king-backup.sh` does not have this bug: it `chmod 700`s the destination
+and `chmod 600`s every file it writes, deliberately. I did not use it. **A
+safety step improvised around the tool that already implements it is not a
+safety step** — the tool encodes the requirements you are about to forget, and
+the reason it exists is that somebody already forgot them once.
+
+Deleted with `shred -u` rather than `rm`, and recorded here rather than quietly
+cleaned up, because a twenty-minute exposure that nobody writes down is
+indistinguishable from one that never happened — which is the same reasoning
+that put `GRAPHIFY_API_KEY` in `docs/king-rotation.md` when I printed it to a
+transcript.
