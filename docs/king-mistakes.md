@@ -993,6 +993,43 @@ build, so it stays red and should. `stax-smoke` no longer does: as of
 `omniroute/package.json` vendors, pinned by index digest, because they exist to
 test our compose graph, Caddy's routes, Activepieces' reach and the sidecar
 against a live `/v1` — none of which depends on the image being built here.
+
+### Resolved 2026-09-07 — and not by any of the three routes listed above
+
+Re-checked from the release API on 2026-09-10, because a build that was
+supposed to fail at `omniroute/Dockerfile:111` walked straight past it:
+
+```
+ASET                                      DIUNGGAH               UNDUHAN
+tls-client-xgo-1.16.0-linux-amd64.so      2026-09-02T15:05:19Z    1 473
+tls-client-linux-ubuntu-amd64-1.16.0.so   2026-09-07T22:42:23Z   16 087
+tls-client-linux-alpine-amd64-1.16.0.so   2026-09-07T22:42:25Z        3
+```
+
+v1.16.0 shipped on 2026-09-02 with the `xgo` names only — the analysis above was
+correct on the day it was written. On **2026-09-07T22:42Z**, five days later,
+upstream re-uploaded the legacy `ubuntu`/`alpine`/`arm64` names into the same
+release. `tls-client-node@0.2.0` asks for exactly the first of those, so the
+break ended without a single line changing in this repo or in that package.
+The 16 087 downloads against `xgo`'s 1 473 are the size of the population that
+was blocked for those five days.
+
+**The lesson is not "it fixed itself". It is that the entry above enumerated
+how it could clear and treated the list as complete.** It named two routes —
+`tls-client-node` publishes a fix, or an omniroute release carrying one arrives
+via `git subtree pull` — and concluded *"Neither has happened … Those jobs stay
+red, and that is the correct state."* It cleared by a third route the list did
+not contain: the third party un-did its own rename. A release's asset list is
+mutable, and nothing in the earlier reasoning treated it as such.
+
+That is the same shape as the rest of this document. The sentence was not
+wrong about the facts; it was wrong to be *final* about a fact it had sampled
+once. Both the enumeration and its conclusion were carried forward for five
+days without being re-read against the system they describe, and the check that
+quoted them, `J-2`, would have gone on excusing a red workflow indefinitely.
+`J-2` now queries the release API for the asset name before it accepts the
+excuse, and reports **FAIL** — not UNKNOWN — when the workflow is red and the
+asset is present, because at that point whatever is red is something else.
 `agent-sidecar-unit` needs no gateway at all and was green throughout.
 
 The split is load-bearing and must not be tidied into one path. If both

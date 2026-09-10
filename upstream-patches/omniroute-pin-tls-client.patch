@@ -9,13 +9,22 @@ Subject: Dockerfile: let the tls-client native binary be pinned
 `bogdanfinn/tls-client` **at build time**, from `/releases/latest`, with no
 version pin. Two consequences, both of which this deployment has now had:
 
-1. A third party's release cadence decides what binary ships in the image.
-   On 2026-09-02 upstream published v1.16.0, which dropped the older asset
-   naming scheme v1.15.1 had carried alongside the newer `xgo` one. The same
-   commit that built green on 08-31 built red on 09-04 — nothing in the
-   repository had changed. The guard at line 117 caught it and failed the
+1. A third party's release cadence decides what binary ships in the image,
+   and a release's asset list is mutable, so this moves in both directions.
+   Measured from the release API:
+
+       tls-client-xgo-1.16.0-linux-amd64.so      uploaded 2026-09-02T15:05Z
+       tls-client-linux-ubuntu-amd64-1.16.0.so   uploaded 2026-09-07T22:42Z
+
+   v1.16.0 shipped on 09-02 with the `xgo` names only, dropping the scheme
+   v1.15.1 had carried alongside them. The same commit that built green on
+   08-31 built red on 09-04. On 09-07 upstream re-uploaded the legacy names
+   into that same release, and the same commit built green again on 09-10.
+   **Three different outcomes from one commit, none of them caused by a
+   change to it.** The guard at line 117 caught the red window and failed the
    build loudly, which is the right behaviour and is why this is a
-   reproducibility problem rather than a silent-corruption one.
+   reproducibility problem rather than a silent-corruption one — but "wait
+   for upstream to change its mind back" is not a build strategy.
 
 2. Rebuilding to pick up a security fix produces an image nobody can
    reproduce. Our gateway ran `tls-client-linux-ubuntu-amd64-1.15.1.so` —

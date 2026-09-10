@@ -5,27 +5,37 @@
 # Every workflow job that needs a running OmniRoute calls this first, so the
 # logic lives here rather than being copy-pasted into each one.
 #
-# It PULLS by default and builds only on request. That reversed on 2026-09-05,
-# and the reason matters more than the mechanism.
+# It PULLS by default and builds only on request. That reversed on 2026-09-05
+# because the build was broken by a third party, and the reason it STAYS
+# reversed is no longer that one — read on before restoring the build here.
 #
-# The build is broken by something outside this repository:
-# `tls-client-node@0.2.0` resolves its native binary from a third party's
-# GitHub releases at build time with no pin, and that project renamed its
-# assets in v1.16.0. No commit here caused it and no commit here can fix it —
-# the full account, including the lever that exists and cannot be reached, is
-# in docs/king-mistakes.md. While it stands, every job that built this image
-# failed before running a single assertion.
+# The 2026-09-05 breakage is over. `tls-client-node@0.2.0` resolves its native
+# binary from `bogdanfinn/tls-client` at build time with no pin; that project
+# dropped the asset name the package constructs when it published v1.16.0 on
+# 2026-09-02, and re-uploaded it on 2026-09-07T22:42Z. Verified from the
+# release API on 2026-09-10, and by a build here that walked past the guard at
+# omniroute/Dockerfile:111 which had been failing. Full account, including why
+# the earlier analysis called this unfixable and was right at the time, is in
+# docs/king-mistakes.md.
 #
-# That cost more than it looks. These three jobs do not exist to prove the
-# vendored app compiles — `omniroute-smoke` does that, and it is red for this
-# same reason, correctly. They exist to prove OUR wiring works against a
-# running gateway: the compose graph, Caddy's routes, Activepieces reaching
-# the gateway over the network, the sidecar's suite against a live /v1. All of
-# that stopped being tested because of a build step none of it depends on.
+# Pulling remains the default anyway, for the reason that was always the
+# stronger one. These three jobs do not exist to prove the vendored app
+# compiles — `omniroute-smoke` does that. They exist to prove OUR wiring works
+# against a running gateway: the compose graph, Caddy's routes, Activepieces
+# reaching the gateway over the network, the sidecar's suite against a live
+# /v1. Building here spends ~15 minutes per job re-answering a question
+# another workflow already owns, and couples every one of those assertions to
+# a third party's release page. That argument did not depend on the break and
+# does not expire with it.
 #
-# So: pull a published image of the exact version this repo vendors, and let
-# the build question stay where it belongs. `omniroute-smoke` still answers
-# it, and CI_OMNIROUTE_BUILD=1 restores the build here once upstream is fixed.
+# `CI_OMNIROUTE_BUILD=1` builds from source instead, and now works again.
+#
+# One caveat that comes with pulling. The pinned digest was published before
+# 2026-09-07, so the image it provides carries tls-client 1.15.1 and with it
+# CVE-2025-68121 (GHSA-h355-32pf-p2xm, medium, CVSS 4.8). That is acceptable
+# for jobs whose assertions are about compose wiring and HTTP routes, and it
+# is NOT acceptable for the deployment — which is why the VPS gateway is
+# rebuilt rather than pulled. See scripts/tls-client-pin.txt.
 #
 # Pinned by digest, not tag — tags are mutable, and CLAUDE.md requires a digest
 # or an exact tag for every image. The digest is the multi-arch index, so it

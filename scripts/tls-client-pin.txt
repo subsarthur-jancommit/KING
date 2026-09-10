@@ -1,0 +1,54 @@
+# The native TLS binary the gateway runs, recorded by digest.
+#
+# WHY THIS IS RECORDED AND NOT PINNED, WHICH IS AN ADMISSION, NOT A DESIGN.
+#
+# `tls-client-node@0.2.0` fetches a platform `.so` from the `bogdanfinn/tls-client`
+# GitHub releases at image-build time and resolves the version THEN, from
+# `/releases/latest`, with nothing pinning it. A third party therefore decides
+# which binary runs inside this deployment's gateway, and the decision is made
+# on the day the image is built rather than on the day the code is reviewed.
+#
+# We cannot pin it from here. The lever exists -- the package's postinstall
+# reads `TLS_CLIENT_VERSION` -- but the `RUN` that invokes it is at
+# omniroute/Dockerfile:111, and every `ARG` in that file is declared at 135,
+# 140, 152 and 169, all AFTER it. A `--build-arg` has nothing to bind to, and
+# `env_file:` is runtime, not build time. Adding the ARG means editing a
+# squashed subtree that the next `git subtree pull` silently reverts, which
+# CLAUDE.md forbids for exactly that reason. It is proposed upstream instead:
+# upstream-patches/omniroute-pin-tls-client.patch.
+#
+# So this file does the one honest thing left: it records what is actually
+# running, and `king-audit.sh` J-4 compares the running container against it.
+# A future build that quietly pulls a different binary cannot be PREVENTED
+# here, but it becomes VISIBLE the next time the audit runs. Claiming the pin
+# is under control would be worse than admitting it is not.
+#
+# HISTORY, because this binary has a five-day hole in it.
+#
+#   2026-06-08  v1.15.1 published, both naming schemes.
+#   2026-08-27  omniroute:base built -> tls-client-linux-ubuntu-amd64-1.15.1.so
+#               (carries CVE-2025-68121, GHSA-h355-32pf-p2xm, medium, CVSS 4.8:
+#               a crypto/tls Config whose ClientCAs/RootCAs are mutated between
+#               handshakes may resume a session it should have rejected.)
+#   2026-09-02  v1.16.0 published with the `xgo` asset names ONLY. Every build
+#               of this image fails at the Dockerfile:111 guard, correctly.
+#   2026-09-07  upstream re-uploads the legacy `ubuntu`/`alpine`/`arm64` names
+#               into the same release at 22:42Z. The break ends, with no change
+#               in this repo and none in tls-client-node.
+#   2026-09-10  gateway rebuilt on this VPS to take v1.16.0. See
+#               docs/king-mistakes.md for why the first rebuild attempt took
+#               the host down and what bounded the later ones.
+#
+# The upstream release publishes its own digest, so the value below was checked
+# against the source and not merely observed locally:
+#
+#   GET /repos/bogdanfinn/tls-client/releases/tags/v1.16.0
+#     name   tls-client-linux-ubuntu-amd64-1.16.0.so
+#     size   17379216
+#     digest sha256:2ec853496634545e7a7ea028715763948d55bbdd97aca7ecaa9fea8c2ebb08df
+#
+# Format: `<sha256>  <filename>`, i.e. sha256sum output. Blank lines and
+# #-comments ignored. Every file in the container's
+# /app/node_modules/tls-client-node/bin must appear here, and vice versa.
+
+2ec853496634545e7a7ea028715763948d55bbdd97aca7ecaa9fea8c2ebb08df  tls-client-linux-ubuntu-amd64-1.16.0.so

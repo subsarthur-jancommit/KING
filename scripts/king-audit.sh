@@ -2791,8 +2791,33 @@ dim_J() {
                 --json conclusion --jq '.[0].conclusion' 2>/dev/null || true)
         case "$_omni" in
             success) chk J-2 PASS "omniroute-smoke is green" ;;
-            failure) chk J-2 UNKNOWN "omniroute-smoke is red — known upstream break" \
-                         "tls-client-node asset renamed upstream; not caused here, not fixable here" ;;
+            failure)
+                # This check used to answer "known upstream break" and stop.
+                # That sentence was true when it was written on 2026-09-05 and
+                # stopped being true on 2026-09-07T22:42Z, when
+                # bogdanfinn/tls-client re-published the legacy asset names it
+                # had dropped in v1.16.0. A check that keeps reciting a
+                # resolved excuse launders a real failure into UNKNOWN for as
+                # long as nobody re-reads it -- the same shape as a firewall
+                # rule that no longer matches. So ask the release API whether
+                # the excuse still holds instead of trusting the sentence.
+                _tc_ver=$(curl -fsS --max-time 15 \
+                    https://api.github.com/repos/bogdanfinn/tls-client/releases/latest 2>/dev/null \
+                    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
+                _tc_asset="tls-client-linux-ubuntu-amd64-${_tc_ver}.so"
+                if [ -z "$_tc_ver" ]; then
+                    chk J-2 UNKNOWN "omniroute-smoke is red; cannot verify the upstream excuse" \
+                        "release API unreachable from here -- the claim is untested, not confirmed"
+                elif curl -fsS --max-time 15 \
+                        "https://api.github.com/repos/bogdanfinn/tls-client/releases/tags/v${_tc_ver}" \
+                        2>/dev/null | grep -q "$_tc_asset"; then
+                    chk J-2 FAIL "omniroute-smoke is red and the upstream asset break is over" \
+                        "v${_tc_ver} publishes ${_tc_asset}; whatever is red now is a different cause"
+                else
+                    chk J-2 UNKNOWN "omniroute-smoke is red — upstream asset naming still broken" \
+                        "v${_tc_ver} does not publish ${_tc_asset}"
+                fi
+                ;;
             *)       chk J-2 UNKNOWN "omniroute-smoke state unreadable" ;;
         esac
     else
@@ -2838,6 +2863,55 @@ for t in d.get('results') or []:
         chk J-3 PASS "the vendored gateway image is pinned by digest"
     else
         chk J-3 FAIL "no digest pin for the gateway image"
+    fi
+
+    # J-4: the one dependency in this deployment that nothing here pins.
+    #
+    # tls-client-node@0.2.0 resolves its native .so from a third party's
+    # /releases/latest at IMAGE-BUILD time. Two builds of the identical commit
+    # can therefore ship different binaries, and on 2026-08-27 this one shipped
+    # 1.15.1 with CVE-2025-68121 in it. The pin belongs in the subtree and
+    # cannot be put there (scripts/tls-client-pin.txt says why, at length).
+    #
+    # So this check does not assert a pin. It asserts that what is RUNNING
+    # matches what was RECORDED, which is the only property still available
+    # once the version is somebody else's decision. It reads the digest out of
+    # the live container rather than out of the image, the Dockerfile, or the
+    # lockfile -- an image can be rebuilt and never deployed, and the artefact
+    # is not the process.
+    _pinf="scripts/tls-client-pin.txt"
+    _gw=$(docker ps --filter "name=omniroute" --format '{{.Names}}' 2>/dev/null | head -1)
+    if [ ! -f "$_pinf" ]; then
+        chk J-4 FAIL "no record of which TLS binary the gateway should run" \
+            "expected $_pinf"
+    elif [ -z "$_gw" ]; then
+        chk J-4 SKIP "gateway container not running here"
+    else
+        # node, not sha256sum: node is guaranteed present in this image and
+        # coreutils is not.
+        _live=$(docker exec "$_gw" node -e '
+const fs=require("fs"),c=require("crypto"),d="/app/node_modules/tls-client-node/bin";
+let out=[];
+try { for (const f of fs.readdirSync(d).sort())
+        out.push(c.createHash("sha256").update(fs.readFileSync(d+"/"+f)).digest("hex")+"  "+f); }
+catch (e) { process.exit(3); }
+process.stdout.write(out.join("\n"));' 2>/dev/null || true)
+        # Both sides go through the SAME normalisation. Two near-identical
+        # pipelines would eventually disagree about a trailing space and the
+        # check would then be comparing formatting, not binaries.
+        _norm='s/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/  /'
+        _want=$(grep -vE '^[[:space:]]*(#|$)' "$_pinf" | sed "$_norm" | sort)
+        _have=$(printf '%s\n' "$_live" | grep -vE '^[[:space:]]*$' | sed "$_norm" | sort)
+        if [ -z "$_have" ]; then
+            chk J-4 FAIL "the gateway has no TLS binary, or it could not be read" \
+                "tls-client-node/bin is empty or unreadable in $_gw"
+        elif [ "$_have" = "$_want" ]; then
+            chk J-4 PASS "the gateway's TLS binary is the one on record" \
+                "$(printf '%s' "$_have" | awk '{print $2}' | tr '\n' ' ')"
+        else
+            chk J-4 FAIL "the gateway's TLS binary is not the one on record" \
+                "running: $(printf '%s' "$_have" | awk '{print $2" ("substr($1,1,12)")"}' | tr '\n' ' ')| recorded: $(printf '%s' "$_want" | awk '{print $2" ("substr($1,1,12)")"}' | tr '\n' ' ')"
+        fi
     fi
 }
 
@@ -3491,6 +3565,48 @@ PYE8T
     if [ "$(printf '%s' "$_e8out" | cut -f1)" -gt "$(printf '%s' "$_e8out" | cut -f2)" ]
     then printf '  ok    a completed call reporting no tokens is still counted as a hole\n'
     else printf '  FAIL  a completed call reporting no tokens is still counted as a hole\n'; _f=$((_f+1)); fi
+
+    # ---- J-4: recorded TLS binary vs the one actually loaded --------------
+    #
+    # The comparison, not docker. What can go wrong here is the normalisation:
+    # a pin file written by a human has comments, blank lines and an arbitrary
+    # run of spaces as its separator, while node emits exactly two. If those
+    # two sides are normalised by different code they drift, and the check
+    # starts reporting formatting differences as a swapped binary.
+    #
+    # So the fixture runs the check's own pipeline over a deliberately untidy
+    # pin file and asserts all three outcomes: match, altered digest, and an
+    # extra file present in the container that nobody recorded.
+    cat > "$_t/pin.txt" <<'PINFIX'
+# a comment
+#
+   aaa111  tls-client-linux-ubuntu-amd64-1.16.0.so
+
+bbb222     libextra.so
+PINFIX
+    _j4norm='s/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/  /'
+    _j4want=$(grep -vE '^[[:space:]]*(#|$)' "$_t/pin.txt" | sed "$_j4norm" | sort)
+
+    _j4same=$(printf '%s\n' 'bbb222  libextra.so' 'aaa111  tls-client-linux-ubuntu-amd64-1.16.0.so' \
+              | grep -vE '^[[:space:]]*$' | sed "$_j4norm" | sort)
+    if [ "$_j4same" = "$_j4want" ]
+    then printf '  ok    an untidy pin file still matches the binaries it records\n'
+    else printf '  FAIL  an untidy pin file still matches the binaries it records\n'; _f=$((_f+1)); fi
+
+    # A rebuild that quietly pulled a different binary keeps the filename.
+    _j4diff=$(printf '%s\n' 'bbb222  libextra.so' 'ZZZ999  tls-client-linux-ubuntu-amd64-1.16.0.so' \
+              | grep -vE '^[[:space:]]*$' | sed "$_j4norm" | sort)
+    if [ "$_j4diff" != "$_j4want" ]
+    then printf '  ok    a same-named binary with a different digest is caught\n'
+    else printf '  FAIL  a same-named binary with a different digest is caught\n'; _f=$((_f+1)); fi
+
+    # And the direction a "does every recorded file exist?" check would miss.
+    _j4extra=$(printf '%s\n' 'bbb222  libextra.so' 'aaa111  tls-client-linux-ubuntu-amd64-1.16.0.so' \
+               'ccc333  tls-client-linux-ubuntu-amd64-1.15.1.so' \
+               | grep -vE '^[[:space:]]*$' | sed "$_j4norm" | sort)
+    if [ "$_j4extra" != "$_j4want" ]
+    then printf '  ok    an unrecorded extra binary in the container is caught\n'
+    else printf '  FAIL  an unrecorded extra binary in the container is caught\n'; _f=$((_f+1)); fi
 
     rm -rf "$_t"
     echo
