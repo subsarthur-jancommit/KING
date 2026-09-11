@@ -152,6 +152,7 @@ J-2
 J-3
 J-4
 J-5
+J-6
 K-1
 K-2
 K-3
@@ -245,11 +246,12 @@ I-1|measured numbers in the docs vs today's measurement
 I-2|commands in the docs actually run
 I-3|cross-referenced file paths still exist
 I-4|every concrete CLAUDE.md rule is enforced by a check
-J-1|pinned versions vs latest, and known CVEs
+J-1|pinned versions vs latest
 J-2|active upstream breakage
 J-3|image age, origin, and whether it is still published
 J-4|the TLS binary the gateway runs vs the one on record
 J-5|whether an outdated TLS binary is reachable from a configured provider
+J-6|published advisories against the versions actually pinned
 K-1|listening sockets bound to 0.0.0.0 beyond the intended three
 K-2|whether the host firewall actually covers Docker-published ports
 K-3|what answers from outside the host, tested from outside the host
@@ -3264,6 +3266,142 @@ for t in d.get('results') or []:
         chk J-1 UNKNOWN "no curl or interpreter to query the registry with"
     fi
 
+    # J-6. J-1's manifest line used to read "pinned versions vs latest, and
+    # known CVEs". The code only ever compared version numbers, so the second
+    # half of that sentence was a promise nothing kept. J-1 now claims only
+    # what it does, and the advisory half lives here, where it is actually run.
+    #
+    # It asks GitHub's published security advisories for each pinned image's
+    # upstream repository, and it took two false-positive classes to make the
+    # answer trustworthy. Both were found by reading the raw records rather
+    # than the count:
+    #
+    #   1. WRONG PACKAGE. `opentelemetry-collector-contrib` publishes an
+    #      advisory whose vulnerable range is `<0.311.3` -- a PROMETHEUS
+    #      version, for the Go module it depends on. Compared against the
+    #      collector's own 0.139.0 it matched, and meant nothing. So a match
+    #      only counts when the advisory's package name contains the image's
+    #      own name.
+    #
+    #   2. NO UPPER BOUND. Redis advisories are written `>= 7.0.0` with the
+    #      fix recorded separately in `patched_versions`. Taken literally, ten
+    #      of sixteen matches said a 2022 bug fixed in 7.0.4 still affects
+    #      8.6.5. So a match is discarded when our version is at or above the
+    #      HIGHEST patched version -- highest, not per-branch: a first attempt
+    #      compared within the same major series and refused 7.0.12 as cover
+    #      for 8.6.5, which is wrong.
+    #
+    # AND IT NEVER FAILS, deliberately. A version range cannot tell whether the
+    # vulnerable code path is reachable here. The Caddy advisory is the case in
+    # point: it needs `forward_auth` beside `reverse_proxy`, and this Caddyfile
+    # has `reverse_proxy` six times and `forward_auth` none. Reporting that as
+    # a breach would be the same mistake as the CRITICAL this deployment once
+    # emitted for an event no user experienced. UNKNOWN is not a shrug here --
+    # it still stops the run going green, since any UNKNOWN exits 2.
+    #
+    # The map is hand-kept, so the number of images it does NOT cover is
+    # printed rather than left to look like zero.
+    if ! have curl || [ -z "$PY" ]; then
+        chk J-6 UNKNOWN "no curl or interpreter; published advisories cannot be read"
+    else
+        _j6py=$(mktemp)
+        cat > "$_j6py" <<'PYJ6'
+import json, re, sys
+ver, token = sys.argv[1], sys.argv[2]
+def parse(v):
+    m = re.search(r'(\d+(?:\.\d+)*)', str(v))
+    return [int(x) for x in m.group(1).split(".")] if m else None
+def vcmp(a, b):
+    a, b = a[:], b[:]
+    while len(a) < len(b): a.append(0)
+    while len(b) < len(a): b.append(0)
+    return (a > b) - (a < b)
+def in_range(pv, rng):
+    if pv is None or not rng: return False
+    for t in rng.split(","):
+        m = re.match(r'^(<=|>=|<|>|=)\s*(\S+)', t.strip())
+        if not m: return False
+        rhs = parse(m.group(2))
+        if rhs is None: return False
+        c = vcmp(pv, rhs)
+        if not {"<": c < 0, "<=": c <= 0, ">": c > 0, ">=": c >= 0, "=": c == 0}[m.group(1)]:
+            return False
+    return True
+def patched_already(pv, patched):
+    if not patched or patched.strip().upper() == "TBD": return False
+    best = None
+    for p in re.split(r'[,\s]+', patched):
+        q = parse(p)
+        if q and (best is None or vcmp(q, best) > 0): best = q
+    return best is not None and vcmp(pv, best) >= 0
+try:
+    advs = json.load(sys.stdin)
+except Exception:
+    print("ERR"); raise SystemExit(0)
+if not isinstance(advs, list):
+    print("ERR"); raise SystemExit(0)
+pv = parse(ver)
+if pv is None:
+    print("ERR"); raise SystemExit(0)
+fix, nofix, wrongpkg = [], [], 0
+for a in advs:
+    if a.get("withdrawn_at"): continue
+    for v in a.get("vulnerabilities") or []:
+        if not in_range(pv, v.get("vulnerable_version_range") or ""): continue
+        name = ((v.get("package") or {}).get("name") or "")
+        if name and token.lower() not in name.lower():
+            wrongpkg += 1; continue
+        p = (v.get("patched_versions") or "").strip()
+        if patched_already(pv, p): continue
+        tag = "%s/%s" % (a.get("severity") or "?", a.get("cve_id") or a.get("ghsa_id") or "?")
+        (fix if p and p.upper() != "TBD" else nofix).append(tag)
+        break
+print("%d\t%d\t%d\t%s\t%s" % (len(fix), len(nofix), wrongpkg,
+                              ",".join(fix[:3]) or "-", ",".join(nofix[:3]) or "-"))
+PYJ6
+        _j6fix=0; _j6nofix=0; _j6err=""; _j6detail=""; _j6seen=""
+        for _j6s in "caddy|caddyserver/caddy|caddy" \
+                    "binwiederhier/ntfy|binwiederhier/ntfy|ntfy" \
+                    "redis|redis/redis|redis" \
+                    "ollama/ollama|ollama/ollama|ollama" \
+                    "otel/opentelemetry-collector-contrib|open-telemetry/opentelemetry-collector-contrib|opentelemetry-collector-contrib" \
+                    "ghcr.io/activepieces/activepieces|activepieces/activepieces|activepieces"; do
+            _img=${_j6s%%|*}; _rest=${_j6s#*|}; _repo=${_rest%%|*}; _tok=${_rest#*|}
+            # The tag as written in compose, digest suffix and -alpine and all.
+            _ref=$(grep -oE "image: ${_img}:[^[:space:]]+" docker-compose.yml 2>/dev/null | head -1)
+            [ -n "$_ref" ] || continue
+            _j6seen="$_j6seen $_img"
+            _ver=${_ref#image: "${_img}":}; _ver=${_ver%%@*}
+            _out=$(curl -s -m 30 -H 'Accept: application/vnd.github+json' \
+                    "https://api.github.com/repos/${_repo}/security-advisories?per_page=100" 2>/dev/null \
+                   | "$PY" "$_j6py" "$_ver" "$_tok" 2>/dev/null || true)
+            case "$_out" in
+                ''|ERR*) _j6err="$_j6err ${_img}(unreadable)"; continue ;;
+            esac
+            _f=$(printf '%s' "$_out" | cut -f1); _n=$(printf '%s' "$_out" | cut -f2)
+            _j6fix=$((_j6fix + _f)); _j6nofix=$((_j6nofix + _n))
+            if [ "$_f" != "0" ] || [ "$_n" != "0" ]; then
+                _j6detail="$_j6detail ${_img}@${_ver}:fix=${_f}/nofix=${_n}"
+            fi
+        done
+        rm -f "$_j6py"
+        # Registry images the map does not reach. Stated, not implied.
+        _j6all=$(grep -oE '^\s+image: [^[:space:]]+' docker-compose.yml 2>/dev/null \
+                 | sed 's/.*image: //' | grep -v ':local$' | grep -v '^omniroute' | sort -u | wc -l)
+        _j6cov=$(printf '%s' "$_j6seen" | wc -w)
+        metric j6_advisories_open "$((_j6fix + _j6nofix))"
+        if [ -n "$_j6err" ]; then
+            chk J-6 UNKNOWN "advisory source unreadable for:$_j6err" \
+                "not asked is not the same as nothing found"
+        elif [ "$((_j6fix + _j6nofix))" -eq 0 ]; then
+            chk J-6 PASS "no published advisory matches the pinned versions" \
+                "$_j6cov of $_j6all registry image(s) have an advisory source in the map"
+        else
+            chk J-6 UNKNOWN "$_j6fix advisory(s) with a published fix, $_j6nofix with none" \
+                "$_j6detail — reachability is not decided here; $_j6cov of $_j6all registry image(s) covered"
+        fi
+    fi
+
     _pinned=$(grep -c 'OMNIROUTE_IMAGE_DIGEST=' scripts/ci-build-omniroute-base.sh 2>/dev/null || true)
     if [ "${_pinned:-0}" -ge 1 ]; then
         chk J-3 PASS "the vendored gateway image is pinned by digest"
@@ -4569,6 +4707,72 @@ NSFIX
     if [ "$_e9src" = "Basic" ]
     then printf '  ok    sourcing .env truncates the credential at the space, which is why the container is asked\n'
     else printf '  FAIL  sourcing .env truncates the credential at the space, which is why the container is asked\n'; _f=$((_f+1)); fi
+
+    # ---- J-6: the two false-positive classes, pinned ----------------------
+    #
+    # The python is EXTRACTED from this script rather than retyped, so these
+    # fixtures exercise the code the audit actually runs. The B-3 drift
+    # detector above exists because its rule could not be extracted; this one
+    # can, so it is.
+    #
+    # The marker name is assembled for the same reason recorded there: writing
+    # it out would put it in this file a second time and the sed range would
+    # re-open on this very line.
+    _j6m=$(printf 'PY%s' 'J6')
+    _j6src="$_t/j6rule.py"
+    sed -n "/<<'$_j6m'/,/^$_j6m\$/p" "$REPO/scripts/$(basename "$0")" 2>/dev/null \
+        | sed '1d;$d' > "$_j6src"
+    if [ ! -s "$_j6src" ]; then
+        printf '  FAIL  J-6 rule could not be extracted from this script to test\n'; _f=$((_f+1))
+    else
+        _j6run() { printf '%s' "$2" | "$PY" "$_j6src" "$1" "$3" 2>/dev/null; }
+
+        # 1. Wrong package. The range matches, but the advisory is about a
+        #    DEPENDENCY -- this is the real collector/prometheus record.
+        _fx='[{"severity":"high","ghsa_id":"G1","cve_id":"CVE-1","vulnerabilities":[
+              {"package":{"ecosystem":"go","name":"github.com/prometheus/prometheus"},
+               "vulnerable_version_range":"<0.311.3","patched_versions":"0.311.3"}]}]'
+        if [ "$(_j6run 0.139.0 "$_fx" opentelemetry-collector-contrib | cut -f1,2,3)" = "0	0	1" ]
+        then printf '  ok    an advisory about a dependency is not counted against the image\n'
+        else printf '  FAIL  an advisory about a dependency is not counted against the image\n'; _f=$((_f+1)); fi
+
+        # 2. No upper bound, but a fix long behind us. The real redis shape.
+        _fx='[{"severity":"high","ghsa_id":"G2","cve_id":"CVE-2","vulnerabilities":[
+              {"package":{"name":"redis-server"},
+               "vulnerable_version_range":">= 7.0.0","patched_versions":"7.0.12"}]}]'
+        if [ "$(_j6run 8.6.5 "$_fx" redis | cut -f1,2)" = "0	0" ]
+        then printf '  ok    an open-ended range with a fix behind us is discarded\n'
+        else printf '  FAIL  an open-ended range with a fix behind us is discarded\n'; _f=$((_f+1)); fi
+
+        # 3. Open-ended AND unfixed. Must survive: this is CVE-2026-23479.
+        _fx='[{"severity":"high","ghsa_id":"G3","cve_id":"CVE-3","vulnerabilities":[
+              {"package":{"name":"redis-server"},
+               "vulnerable_version_range":">= 7.2","patched_versions":"TBD"}]}]'
+        if [ "$(_j6run 8.6.5 "$_fx" redis | cut -f1,2)" = "0	1" ]
+        then printf '  ok    an advisory with no published fix is reported, not discarded\n'
+        else printf '  FAIL  an advisory with no published fix is reported, not discarded\n'; _f=$((_f+1)); fi
+
+        # 4. A fix exists and we are below it.
+        _fx='[{"severity":"medium","ghsa_id":"G4","cve_id":null,"vulnerabilities":[
+              {"package":{"name":"github.com/caddyserver/caddy/v2"},
+               "vulnerable_version_range":"< v2.11.5","patched_versions":"v.2.11.5"}]}]'
+        if [ "$(_j6run 2.11.4 "$_fx" caddy | cut -f1,2)" = "1	0" ]
+        then printf '  ok    a published fix we are below is separated from one that does not exist\n'
+        else printf '  FAIL  a published fix we are below is separated from one that does not exist\n'; _f=$((_f+1)); fi
+
+        # 5. A withdrawn advisory is not a finding.
+        _fx='[{"severity":"high","ghsa_id":"G5","withdrawn_at":"2026-01-01T00:00:00Z","vulnerabilities":[
+              {"package":{"name":"redis-server"},
+               "vulnerable_version_range":">= 7.2","patched_versions":"TBD"}]}]'
+        if [ "$(_j6run 8.6.5 "$_fx" redis | cut -f1,2)" = "0	0" ]
+        then printf '  ok    a withdrawn advisory is not counted\n'
+        else printf '  FAIL  a withdrawn advisory is not counted\n'; _f=$((_f+1)); fi
+
+        # 6. Unreadable input must say ERR, never zero. UNKNOWN IS NOT PASS.
+        if [ "$(_j6run 8.6.5 'not json at all' redis)" = "ERR" ]
+        then printf '  ok    an unreadable advisory response reads as ERR, not as "nothing found"\n'
+        else printf '  FAIL  an unreadable advisory response reads as ERR, not as "nothing found"\n'; _f=$((_f+1)); fi
+    fi
 
     rm -rf "$_t"
     echo
