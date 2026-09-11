@@ -65,6 +65,41 @@ c_yell()  { printf '\033[33m%s\033[0m\n' "$*"; }
 step()    { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 gw_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$GW_URL" 2>/dev/null || echo 000; }
+gw_cid()  { docker ps -q --filter "label=com.docker.compose.service=${GW_SERVICE}" 2>/dev/null | head -1; }
+
+# Replace the gateway container so it picks up whatever omniroute:base now is.
+#
+# NOT `up -d --force-recreate`. The service sets `container_name: omniroute`
+# (omniroute/docker-compose.yml:81), and force-recreate builds the replacement
+# before discarding the original, so the fixed name collides:
+#
+#   Conflict. The container name "/omniroute" is already in use
+#
+# With a fixed container_name the only route is stop, remove, create. That
+# means the gateway is down between `rm` and `up` — a handful of seconds, and
+# the reason this function reports how long rather than hiding it.
+recreate_gateway() {
+    _rc=0
+    docker compose -f omniroute/docker-compose.yml --profile base stop "$GW_SERVICE" \
+        > /tmp/king-gw-recreate.$$ 2>&1 || _rc=$?
+    docker compose -f omniroute/docker-compose.yml --profile base rm -f "$GW_SERVICE" \
+        >> /tmp/king-gw-recreate.$$ 2>&1 || _rc=$?
+    docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build \
+        --no-deps "$GW_SERVICE" >> /tmp/king-gw-recreate.$$ 2>&1 || _rc=$?
+    tail -4 /tmp/king-gw-recreate.$$ | sed 's/^/    /'
+    rm -f /tmp/king-gw-recreate.$$
+    return "$_rc"
+}
+
+# Wait for the gateway to answer 200. Returns the seconds waited via _waited.
+wait_gateway() {
+    _waited=0
+    while [ "$_waited" -lt 180 ]; do
+        [ "$(gw_code)" = "200" ] && return 0
+        _waited=$((_waited + 3)); sleep 3
+    done
+    return 1
+}
 
 # sha256 of every .so in an image's bin directory, as "<sha>  <name>".
 # node, not sha256sum: node is guaranteed present in this image, coreutils is not.
@@ -189,10 +224,25 @@ EOF
     c_green "  the package's own loader brings it up"
 
     step "4. Rollback point"
+    # Tag what the RUNNING CONTAINER uses, not what omniroute:base points at.
+    # Those differ the moment a previous --apply retagged and then failed to
+    # cut over: the tag is already the patched image, so tagging the tag would
+    # produce a "rollback" that rolls back to the thing being rolled back from.
+    # The container's own image id is the only honest answer to "what is
+    # running right now".
     _stamp=$(date +%Y%m%d-%H%M)
     _roll="omniroute:rollback-$_stamp"
-    docker tag "$BASE_IMAGE" "$_roll" || { c_red "  could not tag"; return 1; }
-    printf '  %s\n' "$_roll"
+    _runimg=$(docker inspect "$(gw_cid)" --format '{{.Image}}' 2>/dev/null || true)
+    if [ -z "$_runimg" ]; then
+        c_yell "  cannot read the running container's image; falling back to $BASE_IMAGE"
+        _runimg="$BASE_IMAGE"
+    fi
+    docker tag "$_runimg" "$_roll" || { c_red "  could not tag"; return 1; }
+    printf '  %s -> %s\n' "$_roll" "$(printf '%s' "$_runimg" | cut -c1-19)"
+    if [ "$(docker inspect -f '{{.Id}}' "$_roll" 2>/dev/null)" = "$(docker inspect -f '{{.Id}}' "$CAND_IMAGE" 2>/dev/null)" ]; then
+        c_red "  the rollback point IS the patched image — refusing, there would be no way back"
+        return 1
+    fi
 
     step "5. Cut over"
     # The container is named `omniroute`; the SERVICE is `omniroute-base`.
@@ -203,37 +253,30 @@ EOF
     #
     # So health is not the test. The test is that the container was REPLACED:
     # capture its id first, and require a different one afterwards.
-    _before=$(docker ps -q --filter "label=com.docker.compose.service=${GW_SERVICE}" | head -1)
+    _before=$(gw_cid)
     printf '  gateway before: HTTP %s (container %s)\n' "$(gw_code)" "${_before:0:12}"
     docker tag "$CAND_IMAGE" "$BASE_IMAGE"
     _crc=0
-    docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build \
-        --no-deps --force-recreate "$GW_SERVICE" > /tmp/king-tls-cutover.$$ 2>&1 || _crc=$?
-    tail -3 /tmp/king-tls-cutover.$$ | sed 's/^/    /'
-    rm -f /tmp/king-tls-cutover.$$
+    recreate_gateway || _crc=$?
     if [ "$_crc" -ne 0 ]; then
-        c_red "  recreate FAILED (exit $_crc) — the gateway still runs the old image"
-        printf '  Nothing was lost: %s still points at the pre-patch image.\n' "$_roll"
+        c_red "  recreate FAILED (exit $_crc)"
+        printf '  roll back with:  ./scripts/king-tls-patch.sh --rollback %s\n' "$_roll"
         return 1
     fi
-    _after=$(docker ps -q --filter "label=com.docker.compose.service=${GW_SERVICE}" | head -1)
+    _after=$(gw_cid)
     if [ -z "$_after" ] || [ "$_after" = "$_before" ]; then
         c_red "  the container was NOT replaced — compose reported success and changed nothing"
         printf '  before %s / after %s\n' "${_before:0:12}" "${_after:0:12}"
+        printf '  roll back with:  ./scripts/king-tls-patch.sh --rollback %s\n' "$_roll"
         return 1
     fi
     printf '  container replaced: %s -> %s\n' "${_before:0:12}" "${_after:0:12}"
-    _i=0
-    while [ "$_i" -lt 60 ]; do
-        [ "$(gw_code)" = "200" ] && break
-        _i=$((_i + 1)); sleep 3
-    done
-    if [ "$(gw_code)" != "200" ]; then
-        c_red "  gateway did NOT come back"
+    if ! wait_gateway; then
+        c_red "  gateway did NOT come back after ${_waited}s"
         printf '  roll back:\n    ./scripts/king-tls-patch.sh --rollback %s\n' "$_roll"
         return 1
     fi
-    c_green "  gateway healthy after $((_i * 3))s"
+    c_green "  gateway healthy after ${_waited}s"
 
     step "6. Prove it on the RUNNING container, not the image"
     _c="$_after"
@@ -265,11 +308,20 @@ do_rollback() {
     [ -n "$_tag" ] || { c_red "  need a tag: --rollback omniroute:rollback-YYYYMMDD-HHMM"; return 1; }
     docker image inspect "$_tag" >/dev/null 2>&1 || { c_red "  no such image: $_tag"; return 1; }
     docker tag "$_tag" "$BASE_IMAGE"
-    docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build \
-        --no-deps --force-recreate "$GW_SERVICE" 2>&1 | tail -3 | sed 's/^/    /'
-    _i=0
-    while [ "$_i" -lt 60 ]; do [ "$(gw_code)" = "200" ] && break; _i=$((_i + 1)); sleep 3; done
-    printf '  gateway: HTTP %s after %ss\n' "$(gw_code)" "$((_i * 3))"
+    _rrc=0
+    recreate_gateway || _rrc=$?
+    if [ "$_rrc" -ne 0 ]; then
+        c_red "  recreate failed (exit $_rrc) — the gateway may be down"
+        printf '  Try by hand:\n    docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build --no-deps %s\n' "$GW_SERVICE"
+        return 1
+    fi
+    if wait_gateway; then
+        c_green "  gateway healthy after ${_waited}s"
+        printf '  running: %s\n' "$(docker exec "$(gw_cid)" sh -c "ls -1 $BIN_DIR" 2>/dev/null | tr '\n' ' ')"
+    else
+        c_red "  gateway did NOT come back after ${_waited}s"
+        return 1
+    fi
 }
 
 case "${1:---verify}" in
