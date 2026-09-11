@@ -4156,15 +4156,37 @@ PYKEYS
     # L-3: the run journal records prompts and errors, and errors quote what
     # failed. A journal that has started capturing credentials is a second
     # copy of them in a file nobody treats as secret.
-    _leak=$(docker exec king-agent-sidecar-http-1 sh -c \
-            "grep -chE '$CREDPAT' /audit/runs.jsonl /audit/vps_exec.log 2>/dev/null | awk '{t+=\$1} END {print t+0}'" \
-            2>/dev/null || true)
-    case "${_leak:-x}" in
-        x|"") chk L-3 UNKNOWN "could not scan the journals" ;;
-        0)    chk L-3 PASS "no credential-shaped string in the journals" ;;
-        *)    chk L-3 FAIL "$_leak credential-shaped string(s) in the journals" \
-                  "a second copy of a secret, in a file nobody treats as one" ;;
-    esac
+    # A zero here used to mean "clean". It also meant "grep could not run": an
+    # invalid pattern makes grep write to stderr and print nothing, `awk
+    # '{t+=$1} END {print t+0}'` turns that into 0, and 0 read as a PASS.
+    # Proven on the live container before this was written — a deliberately
+    # broken pattern produced exactly the same 0 a clean scan does.
+    #
+    # That is the "cannot read becomes zero" fault this file's own header warns
+    # about, sitting in the check that guards credentials, and it had just
+    # become live: the pattern was rewritten today, and a typo in it would have
+    # turned both scanners green rather than red.
+    #
+    # So the scanner proves it can find something first, through the SAME
+    # invocation, against a line built to match. Same structure as E-5 and E-9.
+    _l3can=$(docker exec king-agent-sidecar-http-1 sh -c \
+             "printf 'AP_REDIS_PASSWORD=0123456789abcdef0123456789abcdef\n' | grep -cE '$CREDPAT'" \
+             2>/dev/null | tr -dc '0-9' || true)
+    if [ "${_l3can:-0}" != "1" ]; then
+        chk L-3 UNKNOWN "the credential pattern matched nothing in a line built to match it" \
+            "the scanner cannot produce a finding, so a clean journal proves nothing"
+    else
+        _leak=$(docker exec king-agent-sidecar-http-1 sh -c \
+                "grep -chE '$CREDPAT' /audit/runs.jsonl /audit/vps_exec.log 2>/dev/null | awk '{t+=\$1} END {print t+0}'" \
+                2>/dev/null || true)
+        case "${_leak:-x}" in
+            x|"") chk L-3 UNKNOWN "could not scan the journals" ;;
+            0)    chk L-3 PASS "no credential-shaped string in the journals" \
+                      "the pattern was proven able to match before this zero was believed" ;;
+            *)    chk L-3 FAIL "$_leak credential-shaped string(s) in the journals" \
+                      "a second copy of a secret, in a file nobody treats as one" ;;
+        esac
+    fi
 
     # L-4: nothing rotates these. Recorded as a number so growth is visible in
     # the baseline diff rather than discovered when a disk fills.
@@ -4205,6 +4227,11 @@ PYKEYS
     # file D-7 has just established nothing rotates.
     if ! on_host; then
         chk L-5 SKIP "not on the host"
+    elif [ "$(printf 'AP_REDIS_PASSWORD=0123456789abcdef0123456789abcdef
+'                | grep -cE "$CREDPAT" || true)" != "1" ]; then
+        # Same canary as L-3, for the same reason: a pattern that cannot match
+        # makes every grep below return nothing, and nothing reads as clean.
+        chk L-5 UNKNOWN "the credential pattern matched nothing in a line built to match it"             "the scanner cannot produce a finding, so clean logs prove nothing"
     else
         _hits=""; _scanned=0
         for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
