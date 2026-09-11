@@ -83,23 +83,90 @@ fail_out() {
   exit 1
 }
 
+# _dm_verdict <flow_status> <age_minutes> <max_age>
+#
+# Three states used to print one sentence. "gateway_monitor last ran N minutes
+# ago; it is not running" is true whether the flow was deliberately switched
+# off, never existed in this database, or genuinely stalled — and in two of
+# those three it sends the reader looking for a broken engine.
+#
+# On 2026-09-11 that mattered in practice. The six flows were restored as ROWS
+# into a fresh Neon project and set DISABLED, because Activepieces registers
+# triggers in the Redis queue and restored rows do not re-register. The deadman
+# reported a stall. Nothing had stalled; nothing had been armed.
+#
+# Every non-ENABLED outcome is still a failure — coverage is missing either way
+# — but each names its own cause, and therefore its own fix.
+_dm_verdict() {
+  case "${1:-}" in
+    MISSING)  printf 'missing';    return ;;
+    ENABLED)  ;;
+    '')       printf 'unreadable'; return ;;
+    *)        printf 'disabled';   return ;;
+  esac
+  case "${2:-}" in ''|*[!0-9-]*) printf 'unreadable'; return ;; esac
+  [ "$2" -ge 0 ] || { printf 'never'; return; }
+  [ "$2" -le "${3:-50}" ] || { printf 'stale'; return; }
+  printf 'ok'
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  f=0
+  check() {
+    if [ "$(_dm_verdict "$2" "$3" "$4")" = "$1" ]
+    then printf '  ok    %s\n' "$5"
+    else printf '  FAIL  %s\n' "$5"; f=$((f+1)); fi
+  }
+  echo "monitor-deadman self-test (fixtures only; no database, no network)"
+  check ok         ENABLED  12   50 "an enabled flow that ran 12 minutes ago is healthy"
+  check stale      ENABLED  90   50 "an enabled flow 90 minutes late is a stall"
+  check never      ENABLED  -1   50 "an enabled flow with no run ever recorded is not called a stall"
+  check disabled   DISABLED -1   50 "a DISABLED flow names itself rather than reading as a stall"
+  check disabled   DISABLED 12   50 "a DISABLED flow is still a failure even with a recent run"
+  check missing    MISSING  -1   50 "a flow absent from the database names itself"
+  check unreadable ''       12   50 "an unreadable status is unknown, never a pass"
+  check unreadable ENABLED  ''   50 "an unreadable age is unknown, never a pass"
+  check unreadable ENABLED  abc  50 "a non-numeric age is unknown, never a pass"
+  # The old predicate, pinned: age alone, so every cause printed one sentence.
+  _dm_old() { if [ "${1:-0}" -gt "${2:-50}" ]; then printf 'stale'; else printf 'ok'; fi; }
+  if [ "$(_dm_old 99999 50)" = "stale" ]
+  then printf '  ok    the OLD age-only test called a disabled flow a stall, which is why it was replaced\n'
+  else printf '  FAIL  the OLD age-only test called a disabled flow a stall, which is why it was replaced\n'; f=$((f+1)); fi
+  echo
+  if [ "$f" -eq 0 ]; then green "self-test passed"; exit 0; fi
+  red "$f self-test check(s) failed"; exit 1
+fi
+
 url=$(sed -n 's/^AP_POSTGRES_URL=//p' activepieces/.env 2>/dev/null | tail -1)
 [ -n "$url" ] || fail_out "AP_POSTGRES_URL not found in activepieces/.env; cannot check whether the monitor is alive."
 
-# `created` is quoted because Activepieces uses camelCase column names.
-if ! age=$(docker run --rm "$PSQL_IMAGE" psql "$url" -At -c \
-      "select coalesce(round(extract(epoch from (now() - max(\"created\")))/60), -1)
-       from flow_run where \"flowId\" = '$FLOW_ID' and environment = 'PRODUCTION';" 2>&1); then
-  fail_out "Could not query Postgres for the monitor's last run: $(printf '%s' "$age" | tr '\n' ' ' | cut -c1-160)"
+# One query, two facts. `created` and `flowId` are quoted because Activepieces
+# uses camelCase column names. Scalar subqueries rather than a join, so a flow
+# row that does not exist still returns exactly one row to read.
+q="select coalesce((select status from flow where id='$FLOW_ID'), 'MISSING')
+          || '|' ||
+          coalesce((select round(extract(epoch from (now()-max(\"created\")))/60)
+                    from flow_run
+                    where \"flowId\"='$FLOW_ID' and environment='PRODUCTION')::text, '-1');"
+if ! row=$(docker run --rm "$PSQL_IMAGE" psql "$url" -At -c "$q" 2>&1); then
+  fail_out "Could not query Postgres for the monitor's state: $(printf '%s' "$row" | tr '\n' ' ' | cut -c1-160)"
 fi
 
-age=$(printf '%s' "$age" | tr -dc '0-9-')
-case "$age" in
-  '' | -* ) fail_out "No PRODUCTION run of $FLOW_ID has ever been recorded, or the age was unreadable ('$age')." ;;
+row=$(printf '%s' "$row" | tr -d ' \r\n')
+status=${row%%|*}
+age=${row#*|}
+
+case "$(_dm_verdict "$status" "$age" "$MAX_AGE_MIN")" in
+  ok)
+    green "gateway_monitor ran ${age} minute(s) ago (limit ${MAX_AGE_MIN})." ;;
+  stale)
+    fail_out "gateway_monitor is ENABLED but last ran ${age} minutes ago; the limit is ${MAX_AGE_MIN}. It has stalled." ;;
+  never)
+    fail_out "gateway_monitor is ENABLED but no PRODUCTION run has ever been recorded in this database. The trigger is not armed — publishing the flow in the UI re-registers it." ;;
+  disabled)
+    fail_out "gateway_monitor exists but its status is ${status}, so nothing is scheduled. This is a switch, not a stall: enable the flow in Activepieces to restore coverage." ;;
+  missing)
+    fail_out "gateway_monitor (${FLOW_ID}) does not exist in this database at all. Nothing is watching the gateway." ;;
+  *)
+    fail_out "Could not read the monitor's state (status='${status}' age='${age}')." ;;
 esac
-
-if [ "$age" -gt "$MAX_AGE_MIN" ]; then
-  fail_out "gateway_monitor last ran ${age} minutes ago; the limit is ${MAX_AGE_MIN}. It is not running."
-fi
-
-green "gateway_monitor ran ${age} minute(s) ago (limit ${MAX_AGE_MIN})."

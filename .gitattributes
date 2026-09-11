@@ -1,0 +1,26 @@
+# Shell scripts run on Linux. Check them out with LF on every platform.
+#
+# Without this, core.autocrlf=true gives a Windows working copy CRLF line
+# endings, git normalises them back to LF on commit, and the two are only ever
+# the same by the time they reach the server. On 2026-09-11 that produced a
+# genuinely mixed file: `git checkout -- scripts/monitor-deadman.sh` restored
+# 85 CRLF lines, an edit appended LF ones, and shellcheck caught
+# "SC1017: Literal carriage return" on a script that `bash -n` had just passed.
+#
+# It would have shipped correctly, because git normalises on the way in. That
+# is exactly the problem: what was tested locally was not what would run, and
+# the difference was invisible until a tool that reads bytes said so.
+*.sh    text eol=lf
+*.bash  text eol=lf
+
+# Same reasoning for everything else the containers read verbatim.
+Dockerfile* text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Caddyfile   text eol=lf
+
+# The vendored subtree is left exactly as upstream ships it. CLAUDE.md forbids
+# editing it, and `git add --renormalize .` staged 22 of its files here before
+# this line existed — line endings are an edit like any other, and the next
+# `git subtree pull` would have reverted them silently.
+omniroute/** -text

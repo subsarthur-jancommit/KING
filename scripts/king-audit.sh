@@ -2893,8 +2893,15 @@ dim_G() {
 
     # G-1: a guard is only a guard if it can go red. Every script here that
     # ships a --self-test is asked to prove it still passes.
+    #
+    # The list used to be three names written by hand, so a fourth guard that
+    # gained a --self-test would never have been run by it -- the same
+    # hand-kept-list fault that left E-9 reporting TODO while it passed, and
+    # that implemented() now has a general assertion against. Globbing the
+    # directory and filtering on the flag means the inventory maintains itself:
+    # add the flag, and G-1 finds it.
     _st_ok=""; _st_bad=""
-    for _g in scripts/stax-preflight.sh scripts/local-secret-scan.sh scripts/king-audit.sh; do
+    for _g in scripts/*.sh; do
         [ -x "$_g" ] || continue
         grep -q -- '--self-test' "$_g" 2>/dev/null || continue
         if "$_g" --self-test >/dev/null 2>&1; then _st_ok="$_st_ok $(basename "$_g")"
