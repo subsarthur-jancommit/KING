@@ -1987,17 +1987,44 @@ dim_E() {
         if [ -z "$_gk2" ]; then
             chk E-5 UNKNOWN "no graph key; correctness unverifiable"
         else
-            _hit=$(curl -s -m 60 -X POST http://127.0.0.1:8130/mcp \
-                   -H 'Content-Type: application/json' \
-                   -H 'Accept: application/json, text/event-stream' \
-                   -H "Authorization: Bearer $_gk2" \
-                   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_node\",\"arguments\":{\"label\":\"$(basename "$_newfile")\"}}}" \
-                   2>/dev/null | grep -c "$(basename "$_newfile")" || true)
-            if [ "${_hit:-0}" -gt 0 ]; then
-                chk E-5 PASS "graph knows a file only the newest commit has" "$(basename "$_newfile")"
+            # This grepped the RESPONSE for the filename it had just put in the
+            # REQUEST. The server answers a miss with
+            #
+            #   "No node matching 'king-tls-patch.sh' found."
+            #
+            # so the name is in the reply either way and the count was always
+            # 1. Proven 2026-09-11 with a negative control: a name that has
+            # never existed anywhere scored exactly the same as a real one.
+            # E-5 could not fail, and E-5 is the check that exists BECAUSE a
+            # timestamp can look right while the contents are stale.
+            #
+            # Two changes. The verdict now turns on the server's own miss
+            # marker rather than on an echo, and the probe validates itself
+            # first: a deliberately impossible label must read as a miss. If it
+            # does not, the marker has changed and this reports UNKNOWN instead
+            # of guessing -- a broken instrument must not be allowed to pass
+            # its subject.
+            _gq() {
+                curl -s -m 60 -X POST http://127.0.0.1:8130/mcp \
+                    -H 'Content-Type: application/json' \
+                    -H 'Accept: application/json, text/event-stream' \
+                    -H "Authorization: Bearer $_gk2" \
+                    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_node\",\"arguments\":{\"label\":\"$1\"}}}" \
+                    2>/dev/null
+            }
+            _canary=$(_gq 'king-audit-canary-no-such-node-9f3a1.sh')
+            if ! printf '%s' "$_canary" | grep -qi 'No node matching'; then
+                chk E-5 UNKNOWN "the graph probe cannot tell a miss from a hit" \
+                    "an impossible label did not come back as 'No node matching' — the marker changed; E-5 proves nothing until this is re-read"
             else
-                chk E-5 FAIL "graph does not contain $(basename "$_newfile"), which origin/main added" \
-                    "it will answer confidently about code that no longer looks like this"
+                _resp=$(_gq "$(basename "$_newfile")")
+                if printf '%s' "$_resp" | grep -qi 'No node matching'; then
+                    chk E-5 FAIL "graph does not contain $(basename "$_newfile"), which origin/main added" \
+                        "it will answer confidently about code that no longer looks like this"
+                else
+                    chk E-5 PASS "graph knows a file only the newest commit has" \
+                        "$(basename "$_newfile") — and an impossible label was refused, so the probe can tell them apart"
+                fi
             fi
         fi
     fi
@@ -4181,6 +4208,31 @@ NSFIX
     if [ "$(_d8class "")" = "stranded" ]
     then printf '  ok    an empty restart policy is not read as safe\n'
     else printf '  FAIL  an empty restart policy is not read as safe\n'; _f=$((_f+1)); fi
+
+    # ---- E-5: a probe that cannot tell a miss from a hit ------------------
+    #
+    # The old check grepped the RESPONSE for the filename it had just sent in
+    # the REQUEST, and the server puts the name in its miss message:
+    #   "No node matching 'king-tls-patch.sh' found."
+    # so it scored a hit either way. These are the real server replies.
+    _e5hit='data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"king-tls-patch.sh — file, 41 edges","type":"text"}]}}'
+    _e5miss='data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"No node matching '"'"'king-tls-patch.sh'"'"' found.","type":"text"}]}}'
+
+    _e5verdict() { printf '%s' "$1" | grep -qi 'No node matching' && printf 'miss' || printf 'hit'; }
+
+    if [ "$(_e5verdict "$_e5hit")" = "hit" ]
+    then printf '  ok    a real node reads as a hit\n'
+    else printf '  FAIL  a real node reads as a hit\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e5verdict "$_e5miss")" = "miss" ]
+    then printf '  ok    a miss reads as a miss even though it quotes the name asked for\n'
+    else printf '  FAIL  a miss reads as a miss even though it quotes the name asked for\n'; _f=$((_f+1)); fi
+
+    # The bug itself, pinned so it cannot come back: the old predicate.
+    _e5old() { printf '%s' "$1" | grep -c 'king-tls-patch.sh'; }
+    if [ "$(_e5old "$_e5miss")" -gt 0 ]
+    then printf '  ok    the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'
+    else printf '  FAIL  the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'; _f=$((_f+1)); fi
 
     rm -rf "$_t"
     echo
