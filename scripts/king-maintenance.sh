@@ -227,38 +227,78 @@ do_rebuild() {
     printf '  watching: 3 missed health checks, or MemAvailable < %s MB\n' "$FLOOR_MB"
 
     step "5. Build (this is the long part — 30-90 min on one core)"
-    if docker buildx --builder "$BUILDER" build \
+    # NOT `if docker buildx ... | tail | sed`. A pipeline's exit status is its
+    # LAST command's, so that tested `sed` -- which always succeeds -- and a
+    # failed build fell through to step 6 reporting "the TLS binary is not the
+    # one on record" for an image that had never been built. Measured
+    # 2026-09-11: npm ci died on a transient network error at Dockerfile:111
+    # and the operator was told rebuilding was not the fix. It was.
+    #
+    # The full log goes to a file for the same reason: `tail -20` threw away
+    # the part that said what actually happened.
+    _blog="/tmp/king-build-$(date +%Y%m%d-%H%M%S).log"
+    _brc=0
+    docker buildx --builder "$BUILDER" build \
         -f omniroute/Dockerfile --target runner-base \
         --build-arg "OMNIROUTE_BASE_PATH=" \
         --build-arg "OMNIROUTE_BUILD_MEMORY_MB=${HEAP_MB}" \
-        --load -t omniroute:candidate omniroute/ 2>&1 | tail -20 | sed 's/^/  /'
-    then :; else
-        c_red "  build failed — the running image is untouched"
-        printf '  Turbopack needs ~3.11 GB RSS that no flag bounds; webpack needs ~3.9 GB\n'
-        printf '  of V8 heap. Try KING_BUILD_CAGE_MB=5120, or build on a larger machine\n'
-        printf '  and move the result with docker save + docker load.\n'
+        --load -t omniroute:candidate omniroute/ > "$_blog" 2>&1 || _brc=$?
+    tail -20 "$_blog" | sed 's/^/  /'
+    kill "$WATCHDOG_PID" 2>/dev/null; WATCHDOG_PID=""
+    if [ "$_brc" -ne 0 ]; then
+        c_red "  build FAILED (exit $_brc) — the running image is untouched"
+        printf '  full log: %s\n' "$_blog"
+        # Name the cause rather than guessing, because the two look nothing
+        # alike and the remedies are opposites.
+        if grep -qi 'npm error network\|Temporary failure resolving\|Could not resolve host\|TLS handshake' "$_blog"; then
+            c_yell "  cause: NETWORK, not memory. Nothing is wrong with this host's sizing."
+            printf '  Check and retry: curl -sI https://registry.npmjs.org | head -1\n'
+        elif grep -qi 'ResourceExhausted\|Killed\|heap out of memory\|Cannot allocate' "$_blog"; then
+            c_yell "  cause: MEMORY."
+            printf '  Turbopack needs ~3.11 GB RSS that no flag bounds; webpack needs ~3.9 GB\n'
+            printf '  of V8 heap. Try KING_BUILD_CAGE_MB=5120, or build on a larger machine\n'
+            printf '  and move the result with docker save + docker load.\n'
+        else
+            printf '  cause not recognised — read the log above before assuming it is memory.\n'
+        fi
         return 1
     fi
-    kill "$WATCHDOG_PID" 2>/dev/null; WATCHDOG_PID=""
 
     step "6. Verify the new image BEFORE touching the running one"
     _got=$(docker run --rm --entrypoint node omniroute:candidate -e '
 const fs=require("fs"),c=require("crypto"),d="/app/node_modules/tls-client-node/bin";
 const f=fs.readdirSync(d).filter(x=>x.endsWith(".so"))[0];
 process.stdout.write(c.createHash("sha256").update(fs.readFileSync(d+"/"+f)).digest("hex"));' 2>/dev/null)
+    if [ -z "$_got" ]; then
+        # "could not read it" and "it is the wrong one" are different problems
+        # with opposite remedies, and saying the second when it is the first
+        # sent the operator to scripts/tls-client-pin.txt for a build that had
+        # simply failed. Step 5 now returns before reaching here, but this must
+        # not depend on that.
+        c_red "  could not read the TLS binary out of omniroute:candidate — NOT deploying"
+        printf '  The image may not exist or may not have built. Check the step 5 log.\n'
+        return 1
+    fi
     if [ "$_got" != "$TLS_WANT" ]; then
-        c_red "  the TLS binary is not the one on record — NOT deploying this image"
-        printf '  got      %s\n  expected %s\n' "${_got:-<unreadable>}" "$TLS_WANT"
-        printf '  See scripts/tls-client-pin.txt. Rebuilding is not the fix if this differs.\n'
+        c_red "  the TLS binary is the WRONG ONE — NOT deploying this image"
+        printf '  got      %s\n  expected %s\n' "$_got" "$TLS_WANT"
+        printf '  See scripts/tls-client-pin.txt. A rebuild is not the fix if this differs.\n'
         return 1
     fi
     c_green "  tls-client matches the digest upstream publishes for v1.16.0"
-    if docker run --rm --entrypoint node omniroute:candidate -e '
+    # Same pipeline trap as step 5: capture the status, then print.
+    _lrc=0
+    _lout=$(docker run --rm --entrypoint node omniroute:candidate -e '
 const {ensureNativeBinding}=require("/app/node_modules/tls-client-node/dist/native.js");
-ensureNativeBinding({}).then(b=>{console.log("  loads, exports: "+Object.keys(b).sort().join(", "));process.exit(0)})
- .catch(e=>{console.log("  FAILED: "+e.message);process.exit(1)});' 2>&1 | sed 's/^/  /'
-    then c_green "  the new binary actually loads"
-    else c_red "  the new binary does not load — NOT deploying"; return 1; fi
+ensureNativeBinding({}).then(b=>{console.log("loads, exports: "+Object.keys(b).sort().join(", "));process.exit(0)})
+ .catch(e=>{console.log("FAILED: "+e.message);process.exit(1)});' 2>&1) || _lrc=$?
+    printf '%s\n' "$_lout" | sed 's/^/  /'
+    if [ "$_lrc" -eq 0 ]; then
+        c_green "  the new binary actually loads"
+    else
+        c_red "  the new binary does not load — NOT deploying"
+        return 1
+    fi
 
     step "7. Cut over (downtime is the recreate, ~15s, not the build)"
     docker tag omniroute:candidate omniroute:base
