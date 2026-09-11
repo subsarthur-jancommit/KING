@@ -26,6 +26,26 @@
 #
 # WHAT IS DELIBERATELY NOT
 #
+#   piece_metadata      197 MB of a 210 MB database — Activepieces' cache of
+#     (a TABLE, not      every integration in its registry, 12,216 rows. Schema
+#      a volume)         is kept, rows are not: `--exclude-table-data`.
+#
+#                       Regenerable, and PROVEN so rather than assumed: on
+#                       2026-09-11 the deployment moved to an empty Neon
+#                       project with zero tables, nothing restored this table,
+#                       and Activepieces had refilled all 12,216 rows within
+#                       the hour.
+#
+#                       This one is not a size optimisation, it is the fix for
+#                       an outage. Neon meters egress, every dump pulled the
+#                       whole cache (83 MB compressed), and a daily timer made
+#                       that ~2.5 GB a month. The previous project's transfer
+#                       quota ran out on 2026-09-11, Activepieces could not
+#                       reach its database at all, and the rebuild attempts
+#                       that took six restore points in ninety minutes were
+#                       blamed for it — they were the trigger, not the cause.
+#                       The cause was backing up a cache, daily, over a meter.
+#
 #   king_ollama-models  941 MB, and `ollama pull` reproduces it byte for byte.
 #                       Backing it up would multiply the archive tenfold to
 #                       protect against a download.
@@ -211,7 +231,9 @@ else
     # repo keeps catching, in the one place where the cost is the whole
     # database.
     if docker run --rm -e PGURL -v "$OUT:/dst" "$_dumpimg" \
-         sh -c 'pg_dump "$PGURL" --no-owner --no-privileges -Fc -f /dst/.activepieces.part' \
+         sh -c 'pg_dump "$PGURL" --no-owner --no-privileges \
+                  --exclude-table-data=piece_metadata \
+                  -Fc -f /dst/.activepieces.part' \
          >/dev/null 2>&1 && [ -s "$OUT/.activepieces.part" ]
     then
         mv "$OUT/.activepieces.part" "$OUT/activepieces.dump"
