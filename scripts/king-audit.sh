@@ -2688,17 +2688,36 @@ dim_G() {
     # report is asked to produce its own headline section; an empty or
     # sectionless run means it is reporting on nothing, which is how
     # pool-prove stayed green while proving the wrong model.
+    # The marker has to be the HEADLINE, not a data line.
+    #
+    # alerts-report.sh was matched on "alert(s)", which it prints only when
+    # there ARE alerts. A window with none prints "No alerts recorded in this
+    # window" plus a caveat about when recording began -- the report working
+    # correctly and saying so. Measured 2026-09-11 against the fresh database:
+    # exit 0, headline present, full explanatory text, and G-2 red. A report
+    # that correctly reports nothing is not a silent report, and a check that
+    # cannot tell those apart fails the quiet good outcome forever.
+    #
+    # The script's own exit status is also kept now. It used to be discarded by
+    # the pipe -- `cmd | grep -q` returns grep's status -- so a report that
+    # crashed but happened to print its title first would have passed.
     _mute=""
     for _spec in "scripts/gateway-report.sh|24|provider reliability" \
-                 "scripts/alerts-report.sh|14|alert(s)"; do
+                 "scripts/alerts-report.sh|14|gateway alerts"; do
         _sc=$(printf '%s' "$_spec" | cut -d'|' -f1)
         _ar=$(printf '%s' "$_spec" | cut -d'|' -f2)
         _ex=$(printf '%s' "$_spec" | cut -d'|' -f3)
         [ -x "$_sc" ] || continue
-        timeout 300 "$_sc" "$_ar" 2>/dev/null | grep -qF "$_ex" || _mute="$_mute $(basename "$_sc")"
+        _rout=$(timeout 300 "$_sc" "$_ar" 2>/dev/null)
+        _rrc=$?
+        if [ "$_rrc" -ne 0 ]; then
+            _mute="$_mute $(basename "$_sc")(exit $_rrc)"
+        elif ! printf '%s' "$_rout" | grep -qF "$_ex"; then
+            _mute="$_mute $(basename "$_sc")(no headline)"
+        fi
     done
     if [ -z "$_mute" ]; then
-        chk G-2 PASS "every report produces the section it claims to"
+        chk G-2 PASS "every report exits clean and produces the section it claims to"
     else
         chk G-2 FAIL "report(s) ran but produced nothing they promise" "$_mute"
     fi
