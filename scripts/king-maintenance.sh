@@ -39,13 +39,28 @@ GW_URL="http://127.0.0.1:20128/api/monitoring/health"
 BUILDER="king-maint"
 FREE_SERVICES="activepieces codegraph-serve ollama"   # stopped to make room, restarted after
 CAGE_MB="${KING_BUILD_CAGE_MB:-4608}"
-# V8 heap ceiling, deliberately well BELOW the cage. Attempt 2 on 2026-09-10
-# set a 4096 MB heap inside a 2560 MB cage: V8 grew toward a limit the cgroup
-# could not honour and the kernel killed it. Turbopack then compiles in native
-# Rust memory OUTSIDE this heap (omniroute/Dockerfile:131), so the cage must
-# hold heap + native + node. 2048 leaves ~2.5 GB of a 4608 MB cage for the part
-# no flag can bound -- the part that killed attempts 2, 3 and 4.
-HEAP_MB="${KING_BUILD_HEAP_MB:-2048}"
+# V8 heap ceiling. With webpack this is the REAL bound on the build, not a
+# safety margin: build-next-isolated.mjs:194 records the production pass
+# peaking at ~3.9 GB, and attempt 5 on 2026-09-10 gave a clean "heap out of
+# memory" at 549s with 2560. 4096 covers the documented peak and still leaves
+# ~500 MB of the 4608 MB cage for node itself and the native modules.
+HEAP_MB="${KING_BUILD_HEAP_MB:-4096}"
+
+# Turbopack (1) or webpack (0). DEFAULT 0 ON THIS HOST, and the reason is
+# measured rather than preferred:
+#
+#   cage 3584 MB -> next-build OOM-killed at 3.11 GB   (87% of the cage)
+#   cage 4608 MB -> next-build OOM-killed at 3.99 GB   (87% of the cage)
+#
+# Raising the cage 29% raised its appetite 28%. Turbopack sizes itself to the
+# cgroup limit and then exceeds it, so there is no cage this host can afford
+# that it will not fill -- five attempts, same wall, moved each time.
+#
+# Webpack is bounded by --max-old-space-size, an explicit number rather than
+# whatever it finds. build-next-isolated.mjs:194 puts the production pass at
+# ~3.9 GB, which is why HEAP_MB is 4096 and not the 2560 that gave attempt 5 a
+# clean "heap out of memory" at 549s.
+USE_TURBOPACK="${KING_BUILD_TURBOPACK:-0}"
 FLOOR_MB=400                                    # host MemAvailable abort floor
 TLS_WANT=2ec853496634545e7a7ea028715763948d55bbdd97aca7ecaa9fea8c2ebb08df
 
@@ -236,12 +251,15 @@ do_rebuild() {
     #
     # The full log goes to a file for the same reason: `tail -20` threw away
     # the part that said what actually happened.
+    if [ "$USE_TURBOPACK" = "1" ]; then _bundler=turbopack; else _bundler=webpack; fi
+    printf '  bundler %s, cage %s MB, V8 heap %s MB\n' "$_bundler" "$CAGE_MB" "$HEAP_MB"
     _blog="/tmp/king-build-$(date +%Y%m%d-%H%M%S).log"
     _brc=0
     docker buildx --builder "$BUILDER" build \
         -f omniroute/Dockerfile --target runner-base \
         --build-arg "OMNIROUTE_BASE_PATH=" \
         --build-arg "OMNIROUTE_BUILD_MEMORY_MB=${HEAP_MB}" \
+        --build-arg "OMNIROUTE_USE_TURBOPACK=${USE_TURBOPACK}" \
         --load -t omniroute:candidate omniroute/ > "$_blog" 2>&1 || _brc=$?
     tail -20 "$_blog" | sed 's/^/  /'
     kill "$WATCHDOG_PID" 2>/dev/null; WATCHDOG_PID=""
