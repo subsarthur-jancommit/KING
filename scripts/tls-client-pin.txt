@@ -36,12 +36,21 @@
 #               into the same release at 22:42Z. The break ends, with no change
 #               in this repo and none in tls-client-node.
 #   2026-09-10  five bounded rebuild attempts on this VPS, all failed on
-#               memory. The recorded digest below is therefore what the gateway
-#               SHOULD run, not what it does -- J-4 is red on purpose until a
-#               rebuild happens, the same way D-7 is red for a policy that is
-#               written and not yet in force.
+#               memory.
+#   2026-09-11  three more, also failed. The host cannot build this image while
+#               serving the gateway; see WHY THE REBUILD WAS ABANDONED below.
+#               The gateway was instead cut over to a PATCH LAYER carrying the
+#               digest below -- scripts/king-tls-patch.sh --apply. Container
+#               e482159a1301 -> 963966991bbc, healthy in 6s, 7 API keys intact,
+#               J-4 and J-5 green. CVE-2025-68121 is closed on this deployment.
 #
-# WHY THAT RED IS NOT AN EMERGENCY, MEASURED RATHER THAN ASSUMED.
+# SO WHAT IS RUNNING IS NOT WHAT THE DOCKERFILE BUILDS. omniroute:base is now
+# the 2026-08-27 image plus one layer that replaces this binary. Everything
+# else in it -- including its OS packages -- is still from 2026-08-27. That is
+# the cost of the stopgap and the reason this file says "stopgap": the next
+# real rebuild supersedes it and should simply overwrite omniroute:base.
+#
+# WHY THE PREVIOUS RED WAS NOT AN EMERGENCY, MEASURED RATHER THAN ASSUMED.
 #
 # The .so is loaded lazily, on first use of a provider that does TLS
 # impersonation. omniroute/Dockerfile:101 names them: chatgpt-web, claude-web,
@@ -62,22 +71,36 @@
 # asserted instead of trusted: J-5 goes red the moment one of those five
 # providers is configured while the running binary is still the wrong one.
 #
-# WHAT WAS DELIBERATELY NOT DONE. A patch layer over omniroute:base -- COPY the
-# verified 1.16.0 .so in, delete 1.15.1 -- was prepared and verified (the
-# runtime resolver reads the directory, so it would work). It was not applied.
-# It fixes the artefact rather than the build, leaves a bespoke production image
-# for someone to unwind later, and buys nothing today against code that never
-# runs. The real fix is a rebuild on a host that can hold it, or the upstream
-# ARG in upstream-patches/omniroute-pin-tls-client.patch.
+# WHY THE REBUILD WAS ABANDONED, WITH THE NUMBERS, FOR WHOEVER TRIES NEXT.
 #
-#   Why five attempts failed, for whoever tries next:
-#     turbopack  needs ~3.11 GB RSS and NOTHING bounds it (Dockerfile:131)
-#                -> cgroup OOM at 2560, 3072 and 3584 MB
-#     webpack    needs ~3.9 GB V8 heap (build-next-isolated.mjs:194)
-#                -> clean "heap out of memory" at a 2560 MB ceiling
-#   A build needs ~4.6 GB; this host has ~4.4 GB free while serving ten
-#   containers. omniroute-smoke builds the same commit green on a GitHub
-#   runner, so the Dockerfile is fine and the host is the constraint.
+# On 2026-09-10 this section said a patch layer was "deliberately not done"
+# because it fixes the artefact rather than the build. That reasoning assumed
+# the build was achievable. Eight attempts say it is not, on this host, and a
+# choice between two options only one of which exists is not a choice.
+#
+#   turbopack  SIZES ITSELF TO THE CGROUP and then exceeds it:
+#                cage 3584 MB -> killed at 3.11 GB   (87% of the cage)
+#                cage 4608 MB -> killed at 3.99 GB   (87% of the cage)
+#              Raising the cage 29% raised its appetite 28%. There is no cage
+#              this host can afford that it will not fill.
+#              omniroute/Dockerfile:131 says why: OMNIROUTE_BUILD_MEMORY_MB
+#              caps only the V8 heap, and turbopack compiles in native Rust
+#              memory outside it.
+#   webpack    IS bounded by --max-old-space-size, and needs more than 4096 MB:
+#                "FATAL ERROR: Ineffective mark-compacts near heap limit",
+#                with no kernel OOM at all.
+#              build-next-isolated.mjs:194 raised its own default to 8192 for
+#              this reason, noting 4096 "brushed the ceiling".
+#
+# Swap does not help: V8 throws at its own ceiling rather than spilling, which
+# is why a 3 GB cgroup swap allowance went untouched.
+#
+# This host has ~5.7 GB once activepieces, codegraph-serve and ollama are
+# stopped, and must keep a 1.16 GB gateway alive. omniroute-smoke builds the
+# same commit green on a GitHub runner, so the Dockerfile is fine; the host is
+# the constraint, and the real fixes are a bigger machine, a build moved off
+# this box, or the upstream ARG in
+# upstream-patches/omniroute-pin-tls-client.patch.
 #
 # The upstream release publishes its own digest, so the value below was checked
 # against the source and not merely observed locally:

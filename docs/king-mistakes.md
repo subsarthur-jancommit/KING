@@ -1437,3 +1437,71 @@ Both were found by running the scripts, not by reading them. `shellcheck` does
 not flag this shape, the code reads correctly in English, and the failure is
 invisible until the guarded thing actually fails — which is the one moment
 nobody is watching closely.
+
+---
+
+## 35. Four ways to report a cutover that did not happen
+
+Closing the CVE needed one container replaced. It took four runs, and each
+failure had already been dressed as a success by the time I read it.
+
+**Run 1 — the wrong service name.**
+
+```
+== 5. Cut over
+  gateway before: HTTP 200
+    no such service: omniroute
+  gateway healthy after 0s
+```
+
+`omniroute` is the container_name; `omniroute-base` is the service. The compose
+call failed, and the health loop then passed in *zero seconds* — because the
+old gateway was still up and answering. **Health was never evidence of a
+cutover.** It was evidence that something was serving, which had been true all
+along. The script printed "done".
+
+**Run 2 — the rollback that could not roll back.** Run 1 had already retagged
+`omniroute:base` to the patched image before failing. Step 4 tagged the
+rollback point *from that tag*, so the rollback would have restored the thing
+being rolled back from. A rollback point must come from what the running
+container actually uses, not from a mutable tag that something else already
+moved.
+
+**Run 3 — `--force-recreate` cannot work here.** The service pins
+`container_name: omniroute`, and force-recreate builds the replacement before
+discarding the original, so the fixed name collides. The error names the
+container, which sent me looking at container_name — and that was the wrong
+lead, because:
+
+**Run 4 — I was driving the wrong project all along.**
+
+```
+No stopped containers
+Conflict. The container name "/omniroute" is already in use
+```
+
+The container carries `com.docker.compose.project=king` and
+`config_files=/home/subsa/KING/docker-compose.yml`. I was passing
+`-f omniroute/docker-compose.yml`, so Compose derived the project name from
+*that file's directory*: `omniroute`. Every command ran against an empty
+project. `stop` found nothing, `rm` said "No stopped containers", and `up` then
+tried to create a container whose name project `king` still owned. Three runs
+of symptoms from one wrong flag.
+
+### What actually failed
+
+Not the typo, and not the flag. **The verification was measuring the wrong
+thing, and it was measuring the wrong thing in the direction that produces a
+pass.** "The gateway answers 200" is true before a cutover and after a failed
+one. The property that matters is that the container was *replaced* — capture
+the id first, require a different one after — and then that the running
+container holds the expected binary, as an assertion rather than a printout.
+
+The one check that did work was the one that asked the running container rather
+than the image. It is the only reason run 1 was caught at all, and even then it
+printed the answer and carried on instead of failing.
+
+Both are now assertions. And the rollback hint the script printed was
+hand-written compose that named the container instead of the service — so the
+single command someone would copy while panicking was the one that could not
+work. It prints `--rollback <tag>` now, which is tested code.
