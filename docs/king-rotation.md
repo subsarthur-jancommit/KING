@@ -170,6 +170,7 @@ either reviewed or the audit is red.
 | Tavily API key | passed through chat | earlier session |
 | OpenRouter API key | passed through chat | earlier session |
 | `AP_POSTGRES_URL` (Neon project **ep-lingering-firefly**) | pasted into chat by the operator when moving to a fresh Neon project | 2026-09-11 |
+| Activepieces `mcp_server.token` (`xBV1BLizfp5BTECqSItQU`) | **printed in full to a session transcript** while inspecting a backup: the row was dumped to find the MCP tool wiring, and `token` is one of its columns | 2026-09-11 |
 | `GRAPHIFY_API_KEY` | **printed in full to a session transcript** by a `docker inspect ... \| grep` whose masking pattern did not match what it printed | 2026-09-10 |
 
 The fourth was a deliberate trade, not an accident: on 2026-09-11 the previous
@@ -180,6 +181,26 @@ password inline, and **the old project's URL is equally disclosed and equally
 dead** — the quota that killed it is the reason it was replaced. Both go in the
 same rotation pass. Everything else in Activepieces was intentionally left
 alone until the system is stable.
+
+The fifth is mine, and it is the second time: the same mistake as
+`GRAPHIFY_API_KEY` below, in a different shape. I dumped an `mcp_server` row to
+find out how the restored flows were exposed as MCP tools, and `token` is a
+column of that table — so a query written to answer a wiring question printed a
+credential as a side effect. **A row is not a field. Selecting `*` from a table
+that holds a secret prints the secret**, and the intent of the query does not
+change what lands in the transcript.
+
+Its blast radius is small and that is luck, not care: the token belongs to the
+Activepieces MCP server of the OLD Neon project, which is defunct — its quota
+is exhausted and the deployment no longer points at it. It is listed anyway,
+because "it was probably already dead" is exactly the reasoning that leaves a
+live credential in a log. If that project is ever revived, this token is burnt.
+
+It also settles a design question. The MCP server row was a candidate for
+restoration alongside the flows; it will not be restored, because restoring it
+would put a now-disclosed token back into service. The operator creates a fresh
+MCP server in the Activepieces UI instead, which mints a new token — and has to
+reconfigure the Claude MCP connection regardless, since the URL carries it.
 
 The third one is mine. The command intended to print variable names and mask
 values, and the `sed` that was supposed to redact it matched nothing — so the

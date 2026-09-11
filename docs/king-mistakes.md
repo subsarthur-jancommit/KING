@@ -1505,3 +1505,61 @@ Both are now assertions. And the rollback hint the script printed was
 hand-written compose that named the container instead of the service — so the
 single command someone would copy while panicking was the one that could not
 work. It prints `--rollback <tag>` now, which is tested code.
+
+---
+
+## 36. I found the trigger, wrote it down as the cause, and moved on
+
+Activepieces lost its database on 2026-09-11: Neon refused every connection
+with *"Your project has exceeded the data transfer quota."* I traced it to my
+own `--rebuild` retries — step 0 took a full restore point each time, six of
+them in ninety minutes, ~515 MB of dumps. I fixed that, wrote entry 34's
+companion commit, and considered it explained.
+
+It was not explained. It was **attributed**.
+
+The new project had been live for about an hour when its backup came out at
+**83 MB**. An hour-old database with six flows and one user does not hold
+83 MB. Measuring it:
+
+```
+197 MB  piece_metadata      12,216 rows
+136 kB  project
+104 kB  migrations
+ 96 kB  flow_run
+        total database: 210 MB
+```
+
+`piece_metadata` is Activepieces' cache of every integration in its registry.
+**94% of the database, and every single `pg_dump` pulled all of it, every day,
+across a metered link.** ~2.5 GB a month before anyone runs anything unusual.
+
+So the six retries were the trigger. The cause was a daily backup of a cache,
+and it had been running since the backup script was written. The retries did
+not create the waste; they made a standing one arrive faster.
+
+**Regenerable was provable and I did not think to prove it until now.** The
+move to a fresh project started from zero tables, nothing restored that table,
+and Activepieces had refilled all 12,216 rows within the hour — the strongest
+possible evidence, produced by an accident and sitting unread.
+
+`--exclude-table-data=piece_metadata`: **83 MB → 220 KB**, a 99.7% cut, schema
+retained so a restore still creates the table and the application refills it.
+
+### The habit this is about
+
+The script's header already had a section called **WHAT IS DELIBERATELY NOT**,
+excluding `king_ollama-models` (941 MB, `ollama pull` reproduces it) and
+`king_codegraph-out` (87 MB, rebuilt from the repo). The reasoning was correct
+and the list was written carefully. `piece_metadata` belongs in it and was
+missed for one reason: **it is a table inside a database, and the question had
+been asked about volumes.**
+
+The category that catches most things has an edge, and the thing sitting just
+past the edge is invisible precisely because the category is doing its job
+everywhere else.
+
+And when the outage came, an explanation that fit — my own retries, freshly
+committed, with numbers — arrived before the harder question did. A cause you
+can name and fix in one sitting is the most comfortable place to stop looking,
+which is exactly why it should not be.
