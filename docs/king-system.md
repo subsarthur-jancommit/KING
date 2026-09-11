@@ -2209,7 +2209,7 @@ is worse than one that stops.
 | `agy` subscription risk | Accepted knowingly | Flagged `subscriptionRisk: true` in OmniRoute's own catalog |
 | `agy` agentic loops | **Broken** | Round-two 502 also triggers a cooldown affecting other traffic |
 | Router accuracy | 86% | Good enough to save money, not good enough to be unsupervised on important work |
-| Code graph freshness | Up to a day | Weeks behind would be dangerous |
+| Code graph freshness | Up to a day | Weeks behind would be dangerous. `E-4` enforces this as written since 2026-09-11: it asks whether the refresh indexed the newest commit that existed **when it ran**, so commits landing afterwards are normal drift (counted in `e4_commits_behind`), while a refresh that indexed something older, or has not run in 36h, are two different and separately-named failures. Before that it compared commits for equality and went red on every push — three consecutive baselines carried that red for no fault |
 | ~~`no-think` in `blockedProviders`~~ | **Removed 2026-09-06** | Checked against the vendored registry 2026-09-06: 15 of the 16 entries are real provider ids or aliases and `no-think` is not one — it is a model-id prefix (`NO_THINKING_PREFIX = "no-think/"`). The list is read in exactly one place, `getNoAuthCandidates` in `virtualFactory.ts`, and compared against `providerDef.id` and `.alias`, so the entry can never match. Harmless to remove, and it changes nothing |
 
 ---

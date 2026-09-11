@@ -1719,3 +1719,87 @@ another thing that can be wrong, and in the first of these three it was.
 
 All three are recorded in `docs/king-rotation.md`. The habit this should have
 built after the first one took three.
+
+## 40. Two checks whose categories did not match the world's
+
+### A 502 is not an open door
+
+The audit ran a minute after `codegraph-refresh.sh` recreated
+`codegraph-serve`. Caddy answered 502 while the upstream came back, and the
+security check said:
+
+```
+FAIL  C-5  data endpoint(s) answered without a token
+           /king-codegraph/mcp=502
+```
+
+Nothing had answered. `B-8` made the same claim about the same 502.
+
+Both were written with **two buckets** — the acceptable status codes, and
+everything else — for a world that has **three** states: locked, open, and not
+there. The third fell into the bucket labelled *open*.
+
+This is the worst shape a check can take, and it is worth being precise about
+why rather than calling it a false positive:
+
+- it is wrong about the single thing it is most trusted on;
+- it is red for a cause that recurs on **every** restart, so it is not rare;
+- and those two together train the reader to scroll past the one check that
+  would matter if it were ever right.
+
+One shared predicate now answers with three values. A 5xx or a connection
+failure is `unreachable`: the lock could not be tested, which by this script's
+own header is UNKNOWN and never a pass.
+
+**And the fix nearly introduced something worse.** Rewriting C-5's branches I
+put the unreachable case ahead of the open one and left a placeholder behind
+it:
+
+```sh
+elif [ -n "$_open" ]; then
+    :   # handled below
+elif [ -n "$_c5down" ]; then
+    ...
+```
+
+The open-door finding was now silently dropped — the check could no longer
+report the thing it exists for. `sh -n` was perfectly happy; it is valid shell.
+It was caught by re-reading the resulting structure, which is the only thing
+that would have caught it. Branch ORDER is a claim about priority, and it needs
+stating: an open door outranks an unreachable one, whatever else was down at
+the same moment.
+
+### A check stricter than the rule it enforces
+
+`E-4` compared the graph's commit to `origin/main` for equality. `CLAUDE.md`
+says, in as many words: *"It can be stale by up to a day, which is normal;
+weeks behind is not."*
+
+So the check went red on every commit and stayed red until the 03:12 timer, and
+**three consecutive baselines recorded a red for no fault at all**. A check that
+is red during normal operation is indistinguishable from one that is broken,
+and gets treated the same way.
+
+The obvious relaxation — allow it if `built_at` is under a day — would have
+revived the exact bug the check's own comment describes from 2026-09-08:
+BUILD_INFO said today while the commit was eighteen behind, because graphify
+had built from a stale checkout. An age test passes that with full marks.
+
+Neither equality nor age was the question. The question is:
+
+> **Did the refresh index the newest commit that existed when it ran?**
+
+`git rev-list -1 --before="$built_at" origin/main` answers it exactly, and three
+different failures fall out cleanly instead of one:
+
+| what happened | old verdict | now |
+|---|---|---|
+| commits landed after the refresh | FAIL | PASS, with the count as a metric |
+| the refresh ran and indexed something older | FAIL, same words | FAIL, naming the stale checkout |
+| the refresh has not run at all | FAIL, same words | FAIL, naming the schedule |
+
+**The pattern under both.** Neither check was measuring the wrong thing. Each
+was measuring the right thing into the wrong set of boxes, and a box that does
+not exist has to send its contents somewhere — into `open` for C-5, into
+`stale` for E-4. Ask how many outcomes the world actually has before deciding
+how many the check reports.
