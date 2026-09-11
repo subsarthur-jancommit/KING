@@ -124,7 +124,23 @@ slot is known: it would hold a CA certificate, which is public, but the private
 key that pairs with one would not be.
 
 The Tavily and OpenRouter keys **passed through chat** and should be treated as
-disclosed. They live in the gateway, not in a file here.
+disclosed.
+
+**Correction, 2026-09-11: the OpenRouter key is also in a file here.** This
+section previously said both "live in the gateway, not in a file here". That is
+true of Tavily and false of OpenRouter:
+
+| Variable | Where | Reads it |
+|---|---|---|
+| `openrouter` | `providers.env` (gitignored, mode 600, one variable) | `scripts/pool-register.sh`, via `KEYFILE` |
+
+It is lowercase, which is why nothing caught it: C-9 matched `^[A-Z0-9_]+=`, so
+every lowercase name in a secret file was invisible to the check that exists to
+find exactly this. **Rotating OpenRouter in the gateway UI and stopping there
+leaves the old key on disk**, and the next `pool-register.sh` run registers it
+again — the literal case `king-mistakes.md` 24 describes: a rotation is done
+when everything that read the old credential has been checked, not when the new
+one is accepted.
 
 ### How these three were missed, which matters more than the three
 
