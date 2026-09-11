@@ -758,10 +758,25 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    # on-failure, not unless-stopped: the guard above exits non-zero when the
-    # graph is missing, and `unless-stopped` would turn that into a crashloop
-    # writing log lines forever on a host with 20 GB free.
-    restart: on-failure:3
+    # unless-stopped, and the reason it was NOT is worth keeping because it was
+    # a good reason that expired.
+    #
+    # This was `on-failure:3`: the guard above exits non-zero when the graph is
+    # missing, and unless-stopped would have turned that into a crashloop
+    # writing log lines forever. True when written, and it cost something else
+    # the whole time — `on-failure` restarts only on a NON-ZERO exit, and a
+    # daemon shutdown sends SIGTERM, which this server handles cleanly and
+    # exits 0. So it never came back from a reboot. Measured 2026-09-11: after
+    # a reboot every other container was up and this one sat `exited` with
+    # exit=0 and restarts=0, and /king-codegraph/mcp answered 502.
+    #
+    # The crashloop it was avoiding is now bounded by two things that did not
+    # exist when that comment was written: daemon-wide log rotation
+    # (`max-size: 10m`, `max-file: 3` in /etc/docker/daemon.json, applied
+    # 2026-09-10 and asserted by D-7), which caps the "forever" at 30 MB, and
+    # D-2, which fails on a container that restarts repeatedly. The failure
+    # mode is now visible and bounded; the old one was silent and permanent.
+    restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     # Measured with the real 82 MB graph: 392 MB anon, 717 MB including the

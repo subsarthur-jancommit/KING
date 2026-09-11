@@ -1813,6 +1813,46 @@ dim_D() {
         chk D-6 PASS "root filesystem ${_dpct}% used, ${_dfree} GB free" \
             "${_recl:-0} GB reclaimable build cache is the lever if this tightens"
     fi
+
+    # D-8: a restart policy that cannot survive a clean stop.
+    #
+    # `on-failure` restarts only on a NON-ZERO exit. A daemon shutdown -- a
+    # reboot, a `systemctl restart docker`, an apt upgrade that bounces dockerd
+    # -- sends SIGTERM, and a server that handles it properly exits 0. So an
+    # `on-failure` service comes back from a crash and never from a reboot,
+    # which is the opposite of what "restart policy" suggests.
+    #
+    # Measured 2026-09-11: after a reboot, codegraph-serve sat `exited` with
+    # exit=0 and restarts=0 while every other container was up, and
+    # /king-codegraph/mcp answered 502. It had been that way since it was
+    # written; nothing had rebooted the host to find out.
+    #
+    # This asks the RUNNING containers rather than the compose file, because
+    # compose declares intent and `docker inspect` reports what the daemon
+    # actually applied -- and because the vendored subtree's services are not
+    # in the root file at all.
+    _badpol=""
+    for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
+        _p=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$_c" 2>/dev/null || true)
+        case "$_p" in
+            always|unless-stopped) : ;;
+            # An empty policy is not "nothing to see". Docker returns it for a
+            # container created with no restart policy at all, which comes back
+            # from exactly nothing. Passing on it would be the "could not read
+            # it, so it must be fine" shape this audit keeps finding.
+            '') _badpol="$_badpol $_c(none)" ;;
+            *) _badpol="$_badpol $_c($_p)" ;;
+        esac
+    done
+    if [ -z "$(docker ps -q 2>/dev/null)" ]; then
+        chk D-8 SKIP "no running containers here"
+    elif [ -z "$_badpol" ]; then
+        chk D-8 PASS "every running container has a restart policy that survives a clean stop" \
+            "always or unless-stopped; on-failure only fires on a non-zero exit and a reboot exits 0"
+    else
+        chk D-8 FAIL "restart policy will not bring these back after a reboot" \
+            "$_badpol -- on-failure needs a non-zero exit; SIGTERM handled properly exits 0"
+    fi
 }
 
 # ------------------------------------------------------------- dimension E
@@ -4093,6 +4133,33 @@ NSFIX
     if [ "$(_c9check AP_REDIS_HOST_EXTRA)" = "unaccounted" ]
     then printf '  ok    acknowledging AP_REDIS_HOST does not silently cover AP_REDIS_HOST_EXTRA\n'
     else printf '  FAIL  acknowledging AP_REDIS_HOST does not silently cover AP_REDIS_HOST_EXTRA\n'; _f=$((_f+1)); fi
+
+    # ---- D-8: a restart policy that cannot survive a clean stop -----------
+    #
+    # The trap is that `on-failure` LOOKS like the careful choice. It is the
+    # one policy that cannot bring a service back from a reboot, because a
+    # reboot is a clean stop and a clean stop exits 0.
+    _d8class() {
+        case "$1" in
+            always|unless-stopped) printf 'survives' ;;
+            *) printf 'stranded' ;;
+        esac
+    }
+    for _p in always unless-stopped; do
+        if [ "$(_d8class "$_p")" = "survives" ]
+        then printf '  ok    %s is accepted\n' "$_p"
+        else printf '  FAIL  %s is accepted\n' "$_p"; _f=$((_f+1)); fi
+    done
+    for _p in on-failure on-failure:3 no; do
+        if [ "$(_d8class "$_p")" = "stranded" ]
+        then printf '  ok    %s is reported as unable to survive a reboot\n' "$_p"
+        else printf '  FAIL  %s is reported as unable to survive a reboot\n' "$_p"; _f=$((_f+1)); fi
+    done
+    # The one a careless rewrite makes pass: no policy at all comes back from
+    # nothing, and an empty string is also what a failed inspect returns.
+    if [ "$(_d8class "")" = "stranded" ]
+    then printf '  ok    an empty restart policy is not read as safe\n'
+    else printf '  FAIL  an empty restart policy is not read as safe\n'; _f=$((_f+1)); fi
 
     rm -rf "$_t"
     echo
