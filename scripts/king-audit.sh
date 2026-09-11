@@ -1010,6 +1010,19 @@ print(' '.join(sorted(ps)))" 2>/dev/null || true)
 # `git add -A` from being committed.
 SECRET_FILES=".env omniroute/.env agent-sidecar/.env activepieces/.env providers.env observability/.env .claude/settings.local.json"
 
+# Secret-bearing files that are NOT `.env` files anyone would think to list:
+# created by the container, owned by uid 1000, named nothing like `.env` in
+# most cases. C-7 has always checked their modes. C-9 did not read them at all
+# until 2026-09-11, which meant the variable that decrypts every stored
+# provider credential -- STORAGE_ENCRYPTION_KEY, in omniroute/data/server.env
+# -- was outside the set the rotation-list check compared against.
+#
+# Split in two because one consumer greps them for `VAR=` and one only stats
+# them: storage.sqlite is a database, and grepping a binary for variable names
+# yields nothing while looking like it looked.
+RUNTIME_ENV_FILES="omniroute/data/server.env .pool-prove.env"
+RUNTIME_SECRET_FILES="$RUNTIME_ENV_FILES omniroute/data/storage.sqlite"
+
 dim_C() {
     echo; echo "C  secrets and access"
 
@@ -1159,7 +1172,7 @@ dim_C() {
     # like `.env` in five of six cases. They are also where the key lives NEXT
     # TO the data it encrypts, so the encryption defends against a stolen
     # database file and not against read access to the directory.
-    _runtime_secrets="omniroute/data/server.env omniroute/data/storage.sqlite .pool-prove.env"
+    _runtime_secrets="$RUNTIME_SECRET_FILES"
     _wr=""; _checked=0; _unstat=""
     for _sf in $SECRET_FILES $_runtime_secrets; do
         # `[ -e ]` needs traverse on every parent, so it answers FALSE for a
@@ -1284,29 +1297,84 @@ dim_C() {
     fi
 
     # C-9: a rotation list is only useful if it names everything that exists.
-    if [ -f docs/king-system.md ] || [ -f README.md ]; then
-        _secrets=$(for f in $SECRET_FILES; do
-                     [ -f "$f" ] || continue
-                     grep -oE '^[A-Z0-9_]+=' "$f" 2>/dev/null | tr -d '='
-                   done | sort -u | grep -E 'KEY|TOKEN|SECRET|PASSWORD|DSN|URL' || true)
+    #
+    # This used to select "secret-shaped" variables with the pattern
+    # KEY|TOKEN|SECRET|PASSWORD|DSN|URL and then report how many of THOSE were
+    # mentioned anywhere under docs/. Both halves were wrong.
+    #
+    # The pattern: LANGFUSE_OTLP_AUTH (the Langfuse key pair, 122 chars of
+    # base64), NTFY_ALERT_TOPIC (the unguessable half of an unauthenticated
+    # ntfy topic -- stax-preflight.sh:345 already calls it out) and
+    # MACHINE_ID_SALT (upstream files it under "Security hashing" beside
+    # API_KEY_SECRET) match none of those words. So all three were missing from
+    # the set being tested AND from the count being reported, and C-9 passed
+    # while docs/king-rotation.md was short three credentials. A check that
+    # derives its denominator from the same heuristic as its test cannot fail
+    # on anything that heuristic misses.
+    #
+    # A value-shape heuristic was tried as the replacement and has a different
+    # hole, not a smaller one: it misses LANGFUSE_OTLP_AUTH (its value contains
+    # a space, being a `Basic …` header) and MACHINE_ID_SALT (19 characters).
+    # Two heuristics, two blind spots, no overlap -- so no heuristic.
+    #
+    # The target: "named anywhere under docs/" is not the claim that matters.
+    # A credential mentioned in a README and absent from the rotation list is
+    # exactly the one that gets missed while rotating. Both were true here:
+    # LANGFUSE_OTLP_AUTH was in README.md and docs/integrations/observability.md.
+    #
+    # So: enumerate EVERY variable, and require each to be named in the
+    # rotation document itself or acknowledged in scripts/not-secrets.txt.
+    _rotdoc=docs/king-rotation.md
+    _notsec=scripts/not-secrets.txt
+    if [ ! -f "$_rotdoc" ]; then
+        chk C-9 SKIP "no $_rotdoc to compare the secret files against"
+    else
+        # priv, not plain read: omniroute/data/server.env is mode 600 owned by
+        # uid 1000 and this audit runs as 1001, so a plain `[ -r ]` skips the
+        # file holding STORAGE_ENCRYPTION_KEY and the check then reports on a
+        # set that silently excluded it. Only names are ever extracted; values
+        # never leave the pipeline.
+        _unread=""
+        _allvars=$(for f in $SECRET_FILES $RUNTIME_ENV_FILES; do
+                     [ -e "$f" ] || priv test -e "$f" || continue
+                     { cat "$f" 2>/dev/null || priv cat "$f" 2>/dev/null; } \
+                       | grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' | tr -d '='
+                   done | sort -u)
+        for f in $SECRET_FILES $RUNTIME_ENV_FILES; do
+            { [ -e "$f" ] || priv test -e "$f"; } || continue
+            { cat "$f" >/dev/null 2>&1 || priv cat "$f" >/dev/null 2>&1; } || _unread="$_unread $f"
+        done
+        # Read the acknowledgement file once, stripped, and match whole names.
+        # A substring match here would let ACK of `AP_REDIS_HOST` silently
+        # cover `AP_REDIS_HOST_EXTRA`, which is the same class of error as the
+        # name pattern this check just stopped using.
+        _ack=$(grep -vE '^[[:space:]]*(#|$)' "$_notsec" 2>/dev/null \
+               | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)
         _unlisted=""
-        for _sc in $_secrets; do
-            grep -rq "$_sc" docs/ README.md 2>/dev/null || _unlisted="$_unlisted $_sc"
+        for _sc in $_allvars; do
+            grep -q "$_sc" "$_rotdoc" 2>/dev/null && continue
+            printf '%s\n' "$_ack" | grep -qxF "$_sc" && continue
+            _unlisted="$_unlisted $_sc"
         done
         _n=$(printf '%s' "$_unlisted" | wc -w | tr -d ' ')
-        _found=$(printf '%s' "$_secrets" | wc -w | tr -d ' ')
+        _found=$(printf '%s' "$_allvars" | wc -w | tr -d ' ')
         if [ "${_found:-0}" -eq 0 ]; then
-            # No secret files here means nothing was compared. Passing on an
-            # empty set is how a check reports success for doing nothing.
-            chk C-9 UNKNOWN "no secret files present; the rotation list was compared against nothing"
+            # No readable secret files means nothing was compared. Passing on
+            # an empty set is how a check reports success for doing nothing.
+            chk C-9 UNKNOWN "no readable secret file; the rotation list was compared against nothing"
+        elif [ -n "$_unread" ]; then
+            # A secret file that exists and cannot be read is not a clean set.
+            # Reporting a pass over the files that happened to be readable is
+            # the same shape as C-7 passing over six of eight.
+            chk C-9 UNKNOWN "secret file(s) exist but could not be read, so the comparison is incomplete" \
+                "unreadable:$_unread -- ${_n:-0} unaccounted among the ${_found} that were readable"
         elif [ "${_n:-0}" -eq 0 ]; then
-            chk C-9 PASS "all ${_found} secret-shaped variable(s) are named in the docs"
+            chk C-9 PASS "all ${_found} variable(s) in the secret files are accounted for" \
+                "each is named in $_rotdoc or acknowledged in $_notsec -- no name pattern involved"
         else
-            chk C-9 FAIL "${_n} secret(s) exist but appear in no document" \
-                "$(printf '%s' "$_unlisted" | tr ' ' '\n' | head -5 | tr '\n' ' ')"
+            chk C-9 FAIL "${_n} of ${_found} variable(s) in the secret files are accounted for nowhere" \
+                "$(printf '%s' "$_unlisted" | tr ' ' '\n' | head -6 | tr '\n' ' ')-- add to $_rotdoc if a credential, else $_notsec"
         fi
-    else
-        chk C-9 SKIP "no docs here to compare the rotation list against"
     fi
 
     # Three outcomes, not two. `grep -c` on a MISSING file errors, `|| true`
@@ -3978,6 +4046,53 @@ Calculating upgrade...
     if [ "$(_k6verdict 0 'Inst nothing [1] (2 Ubuntu:24.04/noble-updates [amd64])' enabled enabled 62)" = "clean" ]
     then printf '  ok    no security lines with both units enabled is the only green\n'
     else printf '  FAIL  no security lines with both units enabled is the only green\n'; _f=$((_f+1)); fi
+
+    # ---- C-9: every variable accounted for, with no name pattern -----------
+    #
+    # The old check asked "does this KEY|TOKEN|SECRET|PASSWORD|DSN|URL-shaped
+    # name appear anywhere under docs/". It therefore could not fail on
+    # LANGFUSE_OTLP_AUTH, NTFY_ALERT_TOPIC or MACHINE_ID_SALT, which matched
+    # none of those words and so were missing from both the test and the total.
+    # The fixture pins the replacement predicate and, in the last case, the
+    # substring bug a careless rewrite would reintroduce.
+    cat > "$_t/rot.md" <<'ROTFIX'
+| `API_KEY_SECRET` | `omniroute/.env` | signs issued keys |
+| `LANGFUSE_OTLP_AUTH` | `.env` | the Langfuse key pair |
+ROTFIX
+    cat > "$_t/notsec.txt" <<'NSFIX'
+# a comment
+   AP_REDIS_HOST
+NODE_ENV
+
+NSFIX
+    _c9ack=$(grep -vE '^[[:space:]]*(#|$)' "$_t/notsec.txt" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    _c9check() {  # the check's own predicate
+        grep -q "$1" "$_t/rot.md" 2>/dev/null && { printf 'accounted'; return; }
+        printf '%s\n' "$_c9ack" | grep -qxF "$1" && { printf 'accounted'; return; }
+        printf 'unaccounted'
+    }
+
+    if [ "$(_c9check API_KEY_SECRET)" = "accounted" ]
+    then printf '  ok    a credential named in the rotation doc is accounted for\n'
+    else printf '  FAIL  a credential named in the rotation doc is accounted for\n'; _f=$((_f+1)); fi
+
+    # The one the old pattern could not see: AUTH matches none of its words.
+    if [ "$(_c9check LANGFUSE_OTLP_AUTH)" = "accounted" ]
+    then printf '  ok    a credential whose name matches no secret-word is still checked\n'
+    else printf '  FAIL  a credential whose name matches no secret-word is still checked\n'; _f=$((_f+1)); fi
+
+    if [ "$(_c9check NODE_ENV)" = "accounted" ]
+    then printf '  ok    a config variable acknowledged in not-secrets.txt is accounted for\n'
+    else printf '  FAIL  a config variable acknowledged in not-secrets.txt is accounted for\n'; _f=$((_f+1)); fi
+
+    if [ "$(_c9check NTFY_ALERT_TOPIC)" = "unaccounted" ]
+    then printf '  ok    a variable in neither place is reported, whatever its name looks like\n'
+    else printf '  FAIL  a variable in neither place is reported, whatever its name looks like\n'; _f=$((_f+1)); fi
+
+    # An acknowledgement must cover the name it states and nothing longer.
+    if [ "$(_c9check AP_REDIS_HOST_EXTRA)" = "unaccounted" ]
+    then printf '  ok    acknowledging AP_REDIS_HOST does not silently cover AP_REDIS_HOST_EXTRA\n'
+    else printf '  FAIL  acknowledging AP_REDIS_HOST does not silently cover AP_REDIS_HOST_EXTRA\n'; _f=$((_f+1)); fi
 
     rm -rf "$_t"
     echo

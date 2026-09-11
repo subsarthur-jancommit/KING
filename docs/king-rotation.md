@@ -115,9 +115,37 @@ the provider, then update through the gateway UI.
 | `NTFY_TOKEN` | `.env` | Publishes to the alert topic. A holder can send you notifications, not read them. |
 | `SEARXNG_SECRET` | `.env` | Instance secret for the search service. |
 | `POOL_ALERT_SECRET`, `POOL_ALERT_URL` | `.pool-prove.env` | HMAC secret and webhook for the pool-prove timer. Read via `EnvironmentFile` so the secret never appears in a systemd unit. |
+| `LANGFUSE_OTLP_AUTH` | `.env` | **Added 2026-09-11.** The Langfuse key pair, base64 in an `Authorization: Basic` header, read by `otel-collector` (`docker-compose.yml:74`). A holder can write traces into your Langfuse project and read the project id from the header. Rotate at Langfuse, then re-encode the pair. |
+| `NTFY_ALERT_TOPIC` | `.env` | **Added 2026-09-11.** Not key-shaped, and a credential anyway: `ntfy` topics are unauthenticated by name, so the random topic *is* the access control. `stax-preflight.sh:345` already says it "rides in the URL of every publish; a guessable one" is the whole risk. Rotate it with `NTFY_TOKEN`, and update the Activepieces `gateway_alerts` step that publishes to it. |
+| `MACHINE_ID_SALT` | `omniroute/.env` | **Added 2026-09-11.** Upstream `ARCHITECTURE.md` files it under "Security hashing: `API_KEY_SECRET`, `MACHINE_ID_SALT`" — the same sentence as a key already in Tier 2. Rotating it changes every derived machine id, which is harmless here because nothing pins one. |
+
+`AGENTBRIDGE_UPSTREAM_CA_CERT` (`omniroute/.env`) is **empty** and listed so the
+slot is known: it would hold a CA certificate, which is public, but the private
+key that pairs with one would not be.
 
 The Tavily and OpenRouter keys **passed through chat** and should be treated as
 disclosed. They live in the gateway, not in a file here.
+
+### How these three were missed, which matters more than the three
+
+They were not found by reading the list. They were found by enumerating the
+`.env` files and asking which names the list does not contain — and the reason
+C-9 had been passing is that its own definition of "secret-shaped" was the
+pattern `KEY|TOKEN|SECRET|PASSWORD|DSN|URL`. `AUTH`, `TOPIC` and `SALT` match
+none of it, so all three were excluded from the set C-9 checked *and* from the
+count it reported. **A check that derives its denominator from the same
+heuristic as its test cannot fail on anything the heuristic misses**, and will
+keep reporting a complete list for as long as the gap stays in the blind spot.
+
+A value-shape heuristic was tried as a replacement and has a different hole, not
+a smaller one: it missed `LANGFUSE_OTLP_AUTH` (whose value contains a space,
+because it is a `Basic …` header) and `MACHINE_ID_SALT` (19 characters, under
+any sane length floor). Two heuristics, two blind spots, no overlap.
+
+So C-9 no longer uses a heuristic at all. Every variable in every secret-bearing
+file must be named **in this document** or acknowledged in
+`scripts/not-secrets.txt`. That predicate has no blind spot: a new variable is
+either reviewed or the audit is red.
 
 ### Disclosed, and therefore first in the queue
 
