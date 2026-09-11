@@ -122,6 +122,7 @@ E-5
 E-6
 E-7
 E-8
+E-9
 F-1
 F-2
 F-3
@@ -219,6 +220,7 @@ E-5|code graph correctness: it finds a file only the newest commit has
 E-6|no test rows left in production tables
 E-7|the queue backend answers, and says whether it wants a password
 E-8|spend is observable: what fraction of calls report their tokens
+E-9|traces reach the observability backend, not just the collector
 F-1|every MCP server: tools/list and one real call
 F-2|offered tools vs allowlist vs NEVER_REGISTER
 F-3|reroute status: the eight measured trigger phrases
@@ -1859,6 +1861,35 @@ dim_D() {
 
 # ------------------------------------------------------------- dimension E
 
+# _e9verdict <http_code> <canary_total> <local_completed> <traces_in_window>
+#
+# E-9's judgement, pulled out of the check body so the self-test exercises the
+# SAME code the audit runs. A verdict the test re-implements proves only that
+# two transcriptions agree, which is how E-5 stayed green for a week.
+#
+# The order encodes the rule that check exists to keep: ignorance is not a
+# finding. A backend that refuses the credential has ANSWERED, so that is a
+# failure. A backend that did not answer, or a filter that cannot prove it
+# filters, yields no verdict at all.
+_e9verdict() {
+    case "${1:-}" in
+        200)     ;;
+        401|403) printf 'fail-auth'; return ;;
+        *)       printf 'unknown-api'; return ;;
+    esac
+    case "${2:-}" in ''|*[!0-9]*) printf 'unknown-canary'; return ;; esac
+    [ "$2" -eq 0 ] || { printf 'unknown-canary'; return; }
+    case "${3:-}" in ''|*[!0-9]*) printf 'unknown-api'; return ;; esac
+    case "${4:-}" in ''|*[!0-9]*) printf 'unknown-api'; return ;; esac
+    [ "$3" -gt 0 ] || { printf 'unknown-load'; return; }
+    [ "$4" -gt 0 ] || { printf 'fail-dead'; return; }
+    _e9l=$3; _e9t=$4
+    if [ "$(( _e9t * 100 / _e9l ))" -lt 50 ]
+    then printf 'fail-thin'
+    else printf 'pass'
+    fi
+}
+
 dim_E() {
     echo; echo "E  data and state"
     if ! on_host; then
@@ -2156,6 +2187,128 @@ PYE8
                             "$_probes of $_rows log rows are provider health probes, which carry no tokens by design and are not counted"
                     fi
                 fi ;;
+        esac
+    fi
+
+    # E-9. The tracing pipeline had no check at all, and could not have had a
+    # useful one by looking at the container: otel-collector is distroless, so
+    # it has no shell to ask; it declares no healthcheck, so `docker ps` says
+    # only "Up"; its internal metrics endpoint is not enabled; and its config
+    # sets `logs.level: warn`, so SILENCE IS WHAT BOTH WORKING AND DEAD LOOK
+    # LIKE. That is the shape CLAUDE.md says has bitten this deployment three
+    # times: a component that is fine and a component that is gone are
+    # indistinguishable from the outside.
+    #
+    # So this asks the BACKEND whether the spans arrived, which is the only
+    # place that knows. Measured 2026-09-11 over a 6h window: 84 completed
+    # /v1/chat calls locally, 85 traces in Langfuse. The correlation is real,
+    # not assumed, and that measurement is what licenses the comparison below.
+    #
+    # Three deliberate choices:
+    #
+    # 1. The credential comes from the RUNNING container, never from `.env`.
+    #    Reading it with `. ./.env` truncates at the space in
+    #    `LANGFUSE_OTLP_AUTH=Basic <base64>` and yields the 5-character string
+    #    "Basic", which then 401s -- a broken probe that reads exactly like a
+    #    broken credential. F-10 takes the same stance for the same reason.
+    #
+    # 2. A canary window runs first. `fromTimestamp` in the year 2099 must
+    #    return zero; if it does not, the filter is being ignored and a zero in
+    #    the real window would mean nothing. Same structure as E-5's canary,
+    #    and the same lesson: prove the instrument can say no before believing
+    #    a no.
+    #
+    # 3. 401 is a FAIL, a timeout is UNKNOWN. The backend answering "your
+    #    credential is refused" is a verified defect -- every span is being
+    #    dropped. The backend not answering is ignorance, and ignorance is not
+    #    a finding.
+    #
+    # The bar is 50%, not 95% as in E-8, because this is a LIVENESS check, not
+    # an accounting one: it exists to catch a pipeline that stopped, and the
+    # measured normal is ~100%. Gradual drift is carried by the metric instead,
+    # so the baseline diff shows it.
+    _otel=''
+    on_host && _otel=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \
+                       | grep -F 'opentelemetry-collector' | awk '{print $1}' | head -1)
+    _k9=$(sed -n 's/^OMNIROUTE_MCP_API_KEY=//p' agent-sidecar/.env 2>/dev/null | tail -1)
+    _from9=$(date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true)
+    if ! on_host; then
+        chk E-9 SKIP "not on the host"
+    elif [ -z "$_otel" ]; then
+        chk E-9 SKIP "no collector runs here; the tracing profile is off"
+    elif [ -z "$PY" ] || [ -z "$_k9" ] || [ -z "$_from9" ]; then
+        chk E-9 UNKNOWN "no interpreter, no gateway key, or no GNU date; the backend cannot be asked"
+    else
+        # || true: set -eu is on, and a container that vanishes between the
+        # ps above and this line would otherwise end the whole audit run.
+        _env9=$(docker inspect "$_otel" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)
+        _auth9=$(printf '%s\n' "$_env9" | sed -n 's/^LANGFUSE_OTLP_AUTH=//p' | head -1)
+        _base9=$(printf '%s\n' "$_env9" | sed -n 's/^LANGFUSE_OTLP_ENDPOINT=//p' | head -1)
+        _base9=$(printf '%s' "${_base9:-https://cloud.langfuse.com/api/public/otel}" | sed 's#/api/public/otel$##')
+        _tot9=$(mktemp)
+        cat > "$_tot9" <<'PYE9'
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("ERR"); raise SystemExit(0)
+print((d.get("meta") or {}).get("totalItems", "ERR"))
+PYE9
+        # Two requests: the canary window, then the real one. The HTTP code of
+        # the real one decides between "refused" and "unreachable".
+        _canary9=$(curl -s -m 30 -H "Authorization: $_auth9" \
+                   "$_base9/api/public/traces?limit=1&fromTimestamp=2099-01-01T00:00:00Z" 2>/dev/null \
+                   | "$PY" "$_tot9" 2>/dev/null || true)
+        _body9=$(mktemp)
+        _code9=$(curl -s -o "$_body9" -w '%{http_code}' -m 30 -H "Authorization: $_auth9" \
+                 "$_base9/api/public/traces?limit=1&fromTimestamp=$_from9" 2>/dev/null || true)
+        _tr9=$("$PY" "$_tot9" < "$_body9" 2>/dev/null || true)
+        # The local population is E-8's, deliberately: same definition of an
+        # inference call, so the two checks cannot disagree about what counts.
+        _loc9=$(mktemp)
+        cat > "$_loc9" <<'PYL9'
+import sys, json, os
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print("ERR"); raise SystemExit(0)
+if not isinstance(rows, list):
+    print("ERR"); raise SystemExit(0)
+f = os.environ.get("E9_FROM", "")
+inf = [r for r in rows if str(r.get("path") or "").startswith("/v1/chat")]
+win = [r for r in inf if str(r.get("timestamp") or "") >= f]
+print(sum(1 for r in win if str(r.get("status") or "")[:1] == "2"))
+PYL9
+        _lc9=$(E9_FROM="$_from9" curl -s -m 45 -H "Authorization: Bearer $_k9" \
+               "http://localhost:20128/api/usage/call-logs?limit=1000" 2>/dev/null \
+               | E9_FROM="$_from9" "$PY" "$_loc9" 2>/dev/null || true)
+        rm -f "$_tot9" "$_body9" "$_loc9"
+        case "$(_e9verdict "$_code9" "$_canary9" "$_lc9" "$_tr9")" in
+            fail-auth)
+                chk E-9 FAIL "Langfuse refuses the collector's credential (HTTP $_code9)" \
+                    "every span the gateway emits is being dropped at the last hop, silently" ;;
+            unknown-api)
+                chk E-9 UNKNOWN "the trace backend did not answer (HTTP ${_code9:-none})" \
+                    "not reachable is not the same as not working; nothing is concluded" ;;
+            unknown-canary)
+                chk E-9 UNKNOWN "the trace query cannot tell a window from the whole project" \
+                    "a window in 2099 returned ${_canary9:-?}; a zero in the real window would prove nothing" ;;
+            unknown-load)
+                chk E-9 UNKNOWN "no completed inference call in the last 6h; nothing should have been traced" \
+                    "the pipeline is untested rather than proven, and says so" ;;
+            fail-dead)
+                chk E-9 FAIL "$_lc9 inference call(s) in 6h produced 0 trace(s) at the backend" \
+                    "the collector is Up and silent; silence is what both working and dead look like here" ;;
+            fail-thin)
+                chk E-9 FAIL "$_tr9 trace(s) for $_lc9 completed inference call(s) in 6h" \
+                    "below half; the pipeline is dropping spans rather than forwarding them" ;;
+            pass)
+                metric e9_trace_coverage_pct "$(( _tr9 * 100 / _lc9 ))"
+                chk E-9 PASS "$_tr9 trace(s) reached the backend for $_lc9 inference call(s) in 6h" \
+                    "asked of Langfuse, not of the collector, which has no shell, no healthcheck and logs only warnings" ;;
+            *)
+                chk E-9 UNKNOWN "the trace comparison produced no verdict" \
+                    "code=${_code9:-none} canary=${_canary9:-none} local=${_lc9:-none} traces=${_tr9:-none}" ;;
         esac
     fi
 }
@@ -3738,7 +3891,7 @@ PYKEYS
 # ----------------------------------------------------------------- self-test
 
 self_test() {
-    echo "self-test (fixtures only; no host, no secrets, no network)"
+    echo "self-test (fixtures and this repo; no host, no secrets, no network)"
     if ! pyyaml_ok; then
         c_yell "  no working python3 with pyyaml on this machine"; echo
         echo "  The self-test cannot run, and that is reported rather than passed."
@@ -4043,9 +4196,17 @@ DMHOST
                | grep -oE '"[a-z-]+"' | tr -d '"' | sort | tr '\n' ' ')
     _j5src=$(grep -oE '\(chatgpt-web[a-z/-]*' "$REPO/omniroute/Dockerfile" \
              | tr -d '(' | tr '/' '\n' | sort | tr '\n' ' ')
-    if [ -n "$_j5src" ] && [ "$_j5check" = "$_j5src" ]
+    # Two different things used to print the same sentence: a list that drifted,
+    # and a source that could not be read at all. The second happens whenever
+    # this script runs from outside its repo, and describing it as a mismatch
+    # between two empty strings names the wrong failure.
+    if [ ! -r "$REPO/omniroute/Dockerfile" ]
+    then printf '  FAIL  the J-5 provider list cannot be checked: %s is unreadable\n' "$REPO/omniroute/Dockerfile"
+         printf '        this one fixture reads the repo, so it needs the repo to be there\n'
+         _f=$((_f+1))
+    elif [ -n "$_j5src" ] && [ "$_j5check" = "$_j5src" ]
     then printf '  ok    the J-5 provider list still matches omniroute/Dockerfile\n'
-    else printf '  FAIL  the J-5 provider list still matches omniroute/Dockerfile (check=%s src=%s)\n' "$_j5check" "$_j5src"; _f=$((_f+1)); fi
+    else printf '  FAIL  the J-5 provider list drifted from omniroute/Dockerfile (check=%s src=%s)\n' "$_j5check" "$_j5src"; _f=$((_f+1)); fi
 
     # And the decision table, including the direction a live host cannot be
     # made to demonstrate without configuring a provider on production.
@@ -4085,7 +4246,7 @@ DMHOST
     # The three added on 2026-09-10, which is what exposed the gap. J-4 and
     # J-5 must be declared; D-7b must NOT be, because chk() folds a trailing
     # letter into its base id and no sub-check has ever been manifested.
-    for _need in J-4 J-5; do
+    for _need in J-4 J-5 E-9; do
         if manifest | grep -q "^$_need|"
         then printf '  ok    %s is declared in the manifest\n' "$_need"
         else printf '  FAIL  %s is declared in the manifest\n' "$_need"; _f=$((_f+1)); fi
@@ -4096,11 +4257,25 @@ DMHOST
 
     # implemented() and the manifest must agree, or coverage reports TODO for
     # a check that exists.
-    for _need in J-4 J-5; do
+    for _need in J-4 J-5 E-9; do
         if implemented | grep -qx "$_need"
         then printf '  ok    %s is listed in implemented()\n' "$_need"
         else printf '  FAIL  %s is listed in implemented()\n' "$_need"; _f=$((_f+1)); fi
     done
+
+    # The other direction, and it is general rather than a hand-kept list,
+    # because the hand-kept list above is precisely what went out of date the
+    # moment E-9 was added: the live run reported TODO for a check that had
+    # just passed. A check that is implemented but never manifested is simply
+    # not counted, and nothing else would say so.
+    _unman=$(implemented | while read -r _i; do
+                 manifest | grep -q "^$_i|" || printf '%s ' "$_i"
+             done)
+    if [ -z "$_unman" ]
+    then printf '  ok    every implemented check is declared in the manifest
+'
+    else printf '  FAIL  implemented but not manifested: %s
+' "$_unman"; _f=$((_f+1)); fi
 
     # ---- K-6: "apt could not answer" must never render as "nothing pending" -
     #
@@ -4253,15 +4428,177 @@ NSFIX
     then printf '  ok    the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'
     else printf '  FAIL  the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'; _f=$((_f+1)); fi
 
+    # ---- E-9: a tracing check that must not confuse ignorance with failure --
+    #
+    # otel-collector is distroless (no shell to ask), declares no healthcheck
+    # (docker ps says only "Up"), exposes no metrics endpoint, and logs at
+    # `warn`. Nothing about the CONTAINER separates working from dead, so the
+    # check asks the backend -- and then everything depends on reading its
+    # answer honestly. These pin that reading.
+    if [ "$(_e9verdict 200 0 84 85)" = "pass" ]
+    then printf '  ok    traces matching the local call count read as a pass\n'
+    else printf '  FAIL  traces matching the local call count read as a pass\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e9verdict 200 0 84 0)" = "fail-dead" ]
+    then printf '  ok    calls with zero traces at the backend read as a failure\n'
+    else printf '  FAIL  calls with zero traces at the backend read as a failure\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e9verdict 200 0 84 30)" = "fail-thin" ]
+    then printf '  ok    a pipeline forwarding under half its spans reads as a failure\n'
+    else printf '  FAIL  a pipeline forwarding under half its spans reads as a failure\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e9verdict 200 0 0 0)" = "unknown-load" ]
+    then printf '  ok    no traffic reads as unproven, not as a failure\n'
+    else printf '  FAIL  no traffic reads as unproven, not as a failure\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e9verdict 000 0 84 0)" = "unknown-api" ]
+    then printf '  ok    an unreachable backend reads as ignorance, not as a failure\n'
+    else printf '  FAIL  an unreachable backend reads as ignorance, not as a failure\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e9verdict 401 0 84 0)" = "fail-auth" ]
+    then printf '  ok    a refused credential reads as a failure, because a refusal is an answer\n'
+    else printf '  FAIL  a refused credential reads as a failure, because a refusal is an answer\n'; _f=$((_f+1)); fi
+
+    # The canary, pinned: a window in 2099 that returns rows means the filter is
+    # being ignored, and then a zero in the real window would prove nothing.
+    if [ "$(_e9verdict 200 7 84 0)" = "unknown-canary" ]
+    then printf '  ok    a filter that ignores its window suppresses the verdict\n'
+    else printf '  FAIL  a filter that ignores its window suppresses the verdict\n'; _f=$((_f+1)); fi
+
+    # The bug E-9 is shaped around, RUN rather than described: `.env` holds
+    # `LANGFUSE_OTLP_AUTH=Basic <base64>`, and sourcing that in sh stops at the
+    # space. The result is the 5-character string "Basic", which 401s -- a
+    # broken probe wearing the face of a broken credential. This is why the
+    # check reads the credential from the running container instead.
+    printf 'LANGFUSE_OTLP_AUTH=Basic cGstbGY6c2stbGY=\n' > "$_t/fixture.env"
+    # The fixture is written three lines up, at run time, so there is
+    # nothing on disk for shellcheck to follow.
+    # shellcheck source=/dev/null
+    # The base64 keeps its "=" padding deliberately, and the reason is not the
+    # obvious one. "Basic cGst...=" parses as TWO assignments, so the variable
+    # persists and the truncation is visible. Without the "=" the line is a
+    # command with a PREFIX assignment, which is scoped to that command and
+    # never persists -- the variable would read empty and the fixture would
+    # fail for a reason unrelated to what it tests. Measured both ways: the
+    # mechanism is assignment scope, not errexit. The || true below is
+    # belt-and-braces for set -eu and is not what makes this work.
+    _e9src=$( . "$_t/fixture.env" >/dev/null 2>&1 || true; printf '%s' "${LANGFUSE_OTLP_AUTH:-}" )
+    if [ "$_e9src" = "Basic" ]
+    then printf '  ok    sourcing .env truncates the credential at the space, which is why the container is asked\n'
+    else printf '  FAIL  sourcing .env truncates the credential at the space, which is why the container is asked\n'; _f=$((_f+1)); fi
+
     rm -rf "$_t"
     echo
     if [ "$_f" -eq 0 ]; then c_green "self-test passed"; echo; exit 0; fi
     c_red "$_f self-test check(s) failed"; echo; exit 1
 }
 
+# --------------------------------------------------- positive control (live)
+#
+# `--positive-control` was parsed, set MODE=poscontrol, and then nothing in
+# this script ever read that variable. Running it performed an ordinary audit
+# and exited 0, while the usage block above advertised it as a mode. Proven by
+# behaviour rather than by reading: `--positive-control -d I` and `-d I`
+# produced byte-identical output.
+#
+# An advertised control that does not apply is the exact fault this audit was
+# built to find, and it had been sitting in the audit's own argument parser
+# since the flag was added.
+#
+# What it does now: asks each live instrument to demonstrate it can return a
+# NEGATIVE verdict against the real system. A probe that cannot produce a miss
+# cannot produce a finding either -- that is how E-5 stayed green for a week
+# while the graph it checked indexed nothing.
+#
+# What it deliberately does NOT do: modify anything. No file mode, no firewall
+# rule, no container. Those live perturbations are real positive controls too,
+# but they belong in a hand-run procedure with a rollback written next to them,
+# not in a flag someone might type on a production host.
+#
+# It prints the gap on purpose. Two greens and a stop would read as "the
+# instruments are proven" when only two of them are.
+poscontrol() {
+    echo "positive control (live; every instrument must demonstrate a miss)"
+    c_dim "  nothing is modified: no file mode, no firewall rule, no container"; echo
+    echo
+    if ! on_host; then
+        c_yell "  not on the host: the live instruments are unreachable from here"; echo
+        echo "  This mode has nothing to say off-host, and says so instead of passing."
+        exit 2
+    fi
+    _pf=0
+
+    # E-5 -- the graph must report a miss for a label that cannot exist.
+    _pk=$(sed -n 's/^GRAPHIFY_API_KEY=//p' .env 2>/dev/null | tail -1)
+    if [ -z "$_pk" ]; then
+        printf '  ????  E-5  no graph key here; the probe cannot be exercised\n'
+        _pf=$((_pf+1))
+    else
+        _pr=$(curl -s -m 60 -X POST http://127.0.0.1:8130/mcp \
+                -H 'Content-Type: application/json' \
+                -H 'Accept: application/json, text/event-stream' \
+                -H "Authorization: Bearer $_pk" \
+                -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_node","arguments":{"label":"king-audit-canary-no-such-node-9f3a1.sh"}}}' \
+                2>/dev/null || true)
+        if printf '%s' "$_pr" | grep -qi 'No node matching'; then
+            printf '  ok    E-5  the graph reports a miss for a label that cannot exist\n'
+        else
+            printf '  FAIL  E-5  an impossible label did not come back as a miss\n'
+            printf '        the marker changed; until it is re-read, E-5 cannot tell a hit from a miss\n'
+            _pf=$((_pf+1))
+        fi
+    fi
+
+    # E-9 -- the trace query must return zero for a window that cannot contain
+    # anything. This is what licenses reading a zero in the real window as
+    # "nothing arrived" rather than as "the filter was ignored".
+    _po=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \
+          | grep -F 'opentelemetry-collector' | awk '{print $1}' | head -1)
+    if [ -z "$_po" ]; then
+        printf '  ----  E-9  no collector runs here; nothing to exercise\n'
+    elif [ -z "$PY" ]; then
+        printf '  ????  E-9  no interpreter; the probe cannot be exercised\n'
+        _pf=$((_pf+1))
+    else
+        _pe=$(docker inspect "$_po" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)
+        _pa=$(printf '%s\n' "$_pe" | sed -n 's/^LANGFUSE_OTLP_AUTH=//p' | head -1)
+        _pb=$(printf '%s\n' "$_pe" | sed -n 's/^LANGFUSE_OTLP_ENDPOINT=//p' | head -1)
+        _pb=$(printf '%s' "${_pb:-https://cloud.langfuse.com/api/public/otel}" | sed 's#/api/public/otel$##')
+        _ptf=$(mktemp)
+        cat > "$_ptf" <<'PYPC'
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("ERR"); raise SystemExit(0)
+print((d.get("meta") or {}).get("totalItems", "ERR"))
+PYPC
+        _pn=$(curl -s -m 30 -H "Authorization: $_pa" \
+              "$_pb/api/public/traces?limit=1&fromTimestamp=2099-01-01T00:00:00Z" 2>/dev/null \
+              | "$PY" "$_ptf" 2>/dev/null || true)
+        rm -f "$_ptf"
+        if [ "${_pn:-x}" = "0" ]; then
+            printf '  ok    E-9  the trace query returns zero for a window that cannot contain anything\n'
+        else
+            printf '  FAIL  E-9  a window in 2099 returned %s\n' "${_pn:-nothing}"
+            printf '        the filter is being ignored, so a zero in the real window would prove nothing\n'
+            _pf=$((_pf+1))
+        fi
+    fi
+
+    echo
+    echo "  Two live instruments carry a canary. Every other check on this host is"
+    echo "  proven only by --self-test fixtures, which exercise the predicate but"
+    echo "  never the system it talks to. That gap is stated, not implied."
+    echo
+    if [ "$_pf" -eq 0 ]; then c_green "positive control passed"; echo; exit 0; fi
+    c_red "$_pf instrument(s) could not demonstrate a miss"; echo; exit 1
+}
+
 # ------------------------------------------------------------------- driver
 
 [ "$MODE" = "selftest" ] && self_test
+[ "$MODE" = "poscontrol" ] && poscontrol
 
 echo "king audit — $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 c_dim "  repo $REPO"; echo
