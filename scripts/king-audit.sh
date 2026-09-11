@@ -4244,7 +4244,7 @@ PYKEYS
         done
         if [ -z "$_hits" ]; then
             chk L-5 PASS "no credential-shaped string in $_scanned container log(s)" \
-                "last 4000 lines each; older lines are not covered and nothing rotates them"
+                "the pattern was proven able to match first; last 4000 lines each, older lines are not covered and nothing rotates them"
         else
             chk L-5 FAIL "credential-shaped string(s) in container logs" "$_hits"
         fi
