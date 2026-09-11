@@ -1803,3 +1803,48 @@ was measuring the right thing into the wrong set of boxes, and a box that does
 not exist has to send its contents somewhere — into `open` for C-5, into
 `stale` for E-4. Ask how many outcomes the world actually has before deciding
 how many the check reports.
+
+## 41. The fixtures I invented did not contain the string production has
+
+The credential scanner was too narrow — measured, not guessed: against the
+seven shapes on the rotation list, `L-3`'s pattern caught **one**. The newest
+OpenAI format, `sk-proj-…`, was invisible to it, because the hyphen after
+`proj` breaks `sk-[A-Za-z0-9]{20,}`. So the key style most likely to be in use
+was the one style it could not see.
+
+Widening it was straightforward, and I did it carefully: twenty fixtures, both
+directions, eleven shapes that must be caught and nine benign lines that must
+not — sha256 digests, commit hashes, correlation ids, token counts, prose about
+a password. All twenty green.
+
+Its first run against real logs produced **175 findings, every one of them
+false**. All 175 were `apiKeyId":"0554…` in the gateway's own output: an API
+key *identifier*, not a key. The keyword `apiKey` followed by a wildcard
+`[A-Za-z_]*` had swallowed the `Id`.
+
+Nothing in my nine benign fixtures looked like that, because I wrote them from
+imagination. I thought about what a *credential* looks like and what a *hash*
+looks like, and never about what an *identifier with a credential-shaped name*
+looks like — which is a thing this gateway logs on every single request.
+
+**A fixture set written from imagination tests the shapes you already thought
+of.** That is worth something, but it is not coverage. The twenty cases proved
+the pattern did what I intended; only production could say whether what I
+intended was right. The fix took one live run, and the two `apiKeyId` shapes
+are now fixtures — taken verbatim from the logs that raised the false alarm,
+which is the only way they would ever have got there.
+
+There is a second lesson folded into the first. A scanner that reports 175
+non-events every run stops being read, and this deployment has already lost one
+alerting rule that way — the only CRITICAL it has ever emitted described an
+event no user experienced. **Widening a detector is not free**: precision
+bought at the cost of noise spends the same credibility the detector exists to
+protect.
+
+And the diagnosis itself had a trap worth naming. Finding out *which* strings
+matched meant looking at 175 lines of log that the check had just declared
+credential-shaped. Printing them to find out whether they were credentials
+would have made them credentials in a transcript — entry 39, for the fourth
+time in one day. What answered it instead: a count per pattern alternative,
+then a count per keyword, then the matched substrings with everything after the
+first four characters replaced. Three questions, no values.
