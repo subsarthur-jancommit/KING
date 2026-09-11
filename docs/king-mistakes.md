@@ -1848,3 +1848,54 @@ would have made them credentials in a transcript — entry 39, for the fourth
 time in one day. What answered it instead: a count per pattern alternative,
 then a count per keyword, then the matched substrings with everything after the
 first four characters replaced. Three questions, no values.
+
+## 42. Four inventories written by hand, all of them right on the day they were written
+
+In one afternoon, four checks turned out to be measuring a population someone
+had typed out rather than one the system could be asked for. None of them was
+wrong when it was written. All four had quietly stopped being right.
+
+| Check | The population it claimed | What it actually looked at |
+|---|---|---|
+| `G-1` — guards that pass their own self-test | every guard with a `--self-test` | three script names; **five** carry the flag, and `king-backup.sh`'s had never once been run by it |
+| `J-1` — pinned versions vs latest | "pinned third-party image(s)", plural | one hardcoded image; **five** are pinned, and three of the four it ignored were behind |
+| `G-2` — every report produces the section it claims | reports | two of the **three** `*-report.sh` scripts; the unexamined one reads the agent journal |
+| `A-9` — installed artefacts vs their repo copy | artefacts outside the repo | two paths, correct today, and structurally unable to notice a third |
+
+The shape is identical each time, and it is not carelessness. A list written by
+hand is a **measurement of the moment it was written**. It stays green by
+construction, because the thing it is missing is, by definition, not in it.
+Nothing makes it wrong out loud. `G-1` had been reporting "every guard with a
+self-test passes it" while two guards with self-tests were never invoked — the
+sentence was false and the check had no way to discover that.
+
+The fix in every case was the same, and it is cheap: **let the filesystem or
+the registry decide the population**, and keep the hand-written part only for
+what genuinely cannot be derived.
+
+- `G-1`: `for _g in scripts/*.sh`, filtered on the flag being present.
+- `J-1`: every `image:` in the compose file, with the ones it cannot reach
+  counted and named.
+- `G-2`: `scripts/*-report.sh` decides who is asked; the *headline* each must
+  print stays declared, because that cannot be guessed from a filename — and a
+  report with no declared headline is now named in an UNKNOWN rather than
+  silently absent.
+- `A-9`: `ls king-*` on the host, which upgrades the question from "do the two
+  I know about still match?" to "is anything installed that the repo does not
+  account for?"
+
+Two second-order lessons came out of it.
+
+**Deriving the population sometimes finds a better question.** `A-9` compared
+pairs; deriving the list made "installed with no repo copy at all" expressible,
+and that is the more serious finding — a file nobody can read in a diff cannot
+drift from the repo, it is already adrift.
+
+**A derived population needs its own honesty about coverage.** `J-1` cannot
+reach ghcr.io anonymously and `G-2` cannot invent a headline, so both now print
+what they could not cover. Replacing a hand-kept list with a glob that silently
+drops what it cannot handle just moves the same lie one level down.
+
+The sweep that found the last one is worth keeping: `grep -nE '^\s*for _[a-z]+
+in .*(scripts/|\.sh|\.txt)' | grep -v '\*'` — loops over literal paths, in a
+script whose whole job is to enumerate. It returns nothing now.
