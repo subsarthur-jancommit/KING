@@ -4873,8 +4873,43 @@ PYPC
         fi
     fi
 
+    # J-6 -- the package filter must discard a real advisory list when asked
+    # about a package that cannot exist. This is the live counterpart of the
+    # fixture: it proves the filter is running against the actual API response,
+    # not only against a JSON literal in --self-test.
+    #
+    # A version canary would not work here. There is no version that matches
+    # nothing: redis writes `>= 7.0.0`, so a high one matches, and caddy writes
+    # `< v2.11.5`, so a low one matches. The package NAME is the axis that can
+    # be made impossible.
+    if [ -z "$PY" ]; then
+        printf '  ????  J-6  no interpreter; the advisory filter cannot be exercised\n'
+        _pf=$((_pf+1))
+    else
+        _pm=$(printf 'PY%s' 'J6')
+        _prule=$(mktemp)
+        sed -n "/<<'$_pm'/,/^$_pm\$/p" "$REPO/scripts/$(basename "$0")" 2>/dev/null \
+            | sed '1d;$d' > "$_prule"
+        _pout=$(curl -s -m 30 -H 'Accept: application/vnd.github+json' \
+                 'https://api.github.com/repos/redis/redis/security-advisories?per_page=100' 2>/dev/null \
+                | "$PY" "$_prule" 8.6.5 'king-audit-canary-no-such-package' 2>/dev/null || true)
+        rm -f "$_prule"
+        _pfix=$(printf '%s' "$_pout" | cut -f1); _pnof=$(printf '%s' "$_pout" | cut -f2)
+        _pwrong=$(printf '%s' "$_pout" | cut -f3)
+        if [ "$_pout" = "" ] || [ "$_pout" = "ERR" ]; then
+            printf '  ????  J-6  the advisory source did not answer; the filter is unexercised\n'
+            _pf=$((_pf+1))
+        elif [ "$_pfix" = "0" ] && [ "$_pnof" = "0" ] && [ "${_pwrong:-0}" -gt 0 ]; then
+            printf '  ok    J-6  the package filter discards %s real advisory(s) for a package that cannot exist\n' "$_pwrong"
+        else
+            printf '  FAIL  J-6  an impossible package still scored %s/%s findings\n' "$_pfix" "$_pnof"
+            printf '        the filter is not discriminating; every J-6 result is suspect\n'
+            _pf=$((_pf+1))
+        fi
+    fi
+
     echo
-    echo "  Two live instruments carry a canary. Every other check on this host is"
+    echo "  Three live instruments carry a canary. Every other check on this host is"
     echo "  proven only by --self-test fixtures, which exercise the predicate but"
     echo "  never the system it talks to. That gap is stated, not implied."
     echo
