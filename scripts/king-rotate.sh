@@ -104,19 +104,26 @@ USAGE
 }
 
 do_list() {
-    printf '\n  %-26s %-22s %-12s %s\n' "CREDENTIAL" "FILE" "RISK" "STATUS"
-    printf '  %s\n' "------------------------------------------------------------------------------"
+    printf '\n  %-26s %-26s %-12s %s\n' "CREDENTIAL" "FILE" "RISK" "STATUS"
+    printf '  %s\n' "--------------------------------------------------------------------------------"
     _n=0; _d=0
     for v in $(reg_vars); do
         _n=$((_n + 1))
         f=$(reg_field "$v" 2); r=$(reg_field "$v" 4)
-        if is_done "$v"; then st=$(c_green "done"); _d=$((_d + 1)); else st=$(c_dim "pending"); fi
+        # Pad FIRST, colour SECOND. An escape sequence counts toward printf's
+        # field width but not toward anything the eye sees, so colouring before
+        # padding walks every coloured column left by nine characters.
+        _rp=$(printf '%-12s' "$r")
         case "$r" in
-            destructive) rr=$(c_red "$r") ;;
-            manual)      rr=$(c_yell "$r") ;;
-            *)           rr="$r" ;;
+            destructive) _rp=$(printf '\033[31m%s\033[0m' "$_rp") ;;
+            manual)      _rp=$(printf '\033[33m%s\033[0m' "$_rp") ;;
         esac
-        printf '  %-26s %-22s %-21s %s\n' "$v" "$f" "$rr" "$st"
+        if is_done "$v"; then
+            _sp=$(printf '\033[32m%s\033[0m' "done"); _d=$((_d + 1))
+        else
+            _sp=$(printf '\033[2m%s\033[0m' "pending")
+        fi
+        printf '  %-26s %-26s %s %s\n' "$v" "$f" "$_rp" "$_sp"
     done
     printf '\n  %s of %s recorded as rotated.\n' "$_d" "$_n"
     printf '  Order is deliberate: disclosed credentials first, destructive ones last.\n'
