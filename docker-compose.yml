@@ -506,7 +506,16 @@ services:
       - workflow
 
   caddy:
-    image: caddy:2-alpine
+    # Tag AND digest. `caddy:2-alpine` was a floating tag: it moved to
+    # 2.11.4 on 2026-06-24 and nobody here chose that, which is exactly
+    # what CLAUDE.md's "exact tag or digest" rule exists to stop. B-3 used
+    # to pass it because it only rejected `:latest`.
+    #
+    # The digest below is byte-identical to what was already running, so
+    # this pin changes nothing today and makes the next change a decision.
+    # Patch tags on Docker Hub can be republished, so the digest rides
+    # along with the readable version rather than instead of it.
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     ports:
       # Caddy is the one deliberately public entrypoint added by this
       # profile — it terminates TLS and reverse-proxies internally to

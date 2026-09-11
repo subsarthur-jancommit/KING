@@ -671,9 +671,27 @@ for name, s in sorted(svcs.items()):
         for p in s.get("ports") or []:
             if isinstance(p, str) and not re.match(r'^\$\{[A-Z_]+:-127\.0\.0\.1\}:|^127\.0\.0\.1:', p):
                 print("B2\t%s publishes %s without a loopback bind host" % (name, p))
+    # B-3 used to enforce the LETTER ("never :latest") rather than the rule
+    # CLAUDE.md states: "Pin images to an exact tag or digest." `caddy:2-alpine`
+    # passed it while being a floating major tag -- it moved to 2.11.4 on
+    # 2026-06-24, and nobody on this deployment chose that version. A floating
+    # tag defeats reproducibility in exactly the way `latest` does; the only
+    # difference is that it looks deliberate.
+    #
+    # Locally-built services are exempt on purpose: their tag is a local name
+    # rather than a registry pin, and A-8 already compares them against the
+    # source they were built from. Flagging them here would be a second and
+    # wrong answer to a question already asked properly elsewhere.
     img = s.get("image")
-    if img and (img.endswith(":latest") or ":" not in img.split("/")[-1]):
-        print("B3\t%s image not pinned: %s" % (name, img))
+    if img and not s.get("build"):
+        base = img.split("/")[-1].split("@")[0]
+        tag = base.split(":")[-1] if ":" in base else ""
+        if "@sha256:" in img:
+            pass                                   # a digest cannot move
+        elif not tag or tag == "latest":
+            print("B3\t%s image not pinned: %s" % (name, img))
+        elif not re.match(r'^v?\d+\.\d+\.\d+', tag):
+            print("B3\t%s image tag floats, it is not an exact version: %s" % (name, img))
     if not s.get("profiles"):
         print("B4\t%s has no profiles: — it starts unasked" % name)
 
@@ -3914,6 +3932,19 @@ services:
     mem_limit: 512m
     ports:
       - "9001:9001"
+  float:
+    image: example/float:2-alpine
+    profiles: [demo]
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 0.5
+  built:
+    image: example/built:local
+    build: .
+    profiles: [demo]
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 0.5
 FIX
     cd "$_t"
     _py=$(mktemp)
@@ -3927,7 +3958,21 @@ for name, s in sorted((d.get("services") or {}).items()):
     if s.get("mem_limit") and not s.get("memswap_limit"): out.append("B1 " + name)
     if not s.get("profiles"): out.append("B4 " + name)
     img = s.get("image") or ""
-    if img.endswith(":latest"): out.append("B3 " + name)
+    # This is a COPY of the rule at the top of this script, not the rule
+    # itself: the real one lives inside a heredoc'd python and cannot be
+    # imported from here. A drift assertion below greps the real rule, so the
+    # two cannot silently disagree -- which is the failure this fixture would
+    # otherwise be blind to.
+    img = s.get("image") or ""
+    if img and not s.get("build"):
+        base = img.split("/")[-1].split("@")[0]
+        tag = base.split(":")[-1] if ":" in base else ""
+        if "@sha256:" in img:
+            pass
+        elif not tag or tag == "latest":
+            out.append("B3 " + name)
+        elif not re.match(r'^v?\d+\.\d+\.\d+', tag):
+            out.append("B3 " + name)
     if name != "caddy":
         for p in s.get("ports") or []:
             if isinstance(p, str) and not re.match(r'^\$\{[A-Z_]+:-127\.0\.0\.1\}:|^127\.0\.0\.1:', p):
@@ -3948,6 +3993,44 @@ PYFIX
     _expect_hit  "B1 bad"  "mem_limit without memswap_limit is caught"
     _expect_hit  "B4 bad"  "a service with no profiles: is caught"
     _expect_hit  "B3 bad"  "a :latest image is caught"
+    _expect_hit  "B3 float" "a floating major tag is caught, not just :latest"
+    _expect_miss "B3 good" "an exactly-versioned image is not flagged"
+    _expect_miss "B3 built" "a locally-built image is not judged as a registry pin"
+
+    # The drift detector the comment inside PYFIX promises. The fixture holds a
+    # COPY of B-3's rule because the real one lives inside a heredoc'd python
+    # and cannot be imported from shell. A copy that silently falls behind is
+    # worse than no fixture: it would keep passing while blessing a rule the
+    # audit no longer runs.
+    #
+    # So: every decision line of that rule must appear exactly TWICE in this
+    # file, once in each copy. Edit one and not the other and the count drops
+    # to one, and this fails.
+    # Confined to the two heredocs that hold the rule, because the first
+    # version of this detector counted 3 and not 2: the loop below names those
+    # lines as literals, so the file it was searching now contained the
+    # question it was asking. That is E-5's bug, reproduced inside the guard
+    # written to prevent drift.
+    _b3self="$REPO/scripts/$(basename "$0")"
+    # The marker names are ASSEMBLED rather than written, and that is not
+    # style. Spelling them here put `<<'PY...'` into the file a second time,
+    # sed re-opened both ranges on this very line, each ran to end-of-file, and
+    # the count went from 3 to 4. The search term must not appear in the thing
+    # being searched -- the same trap, now two levels deep in one afternoon.
+    _b3m1=$(printf 'PY%s' 'AUDIT'); _b3m2=$(printf 'PY%s' 'FIX')
+    _b3body=$(sed -n "/<<'$_b3m1'/,/^$_b3m1\$/p;/<<'$_b3m2'/,/^$_b3m2\$/p" "$_b3self" 2>/dev/null)
+    _b3drift=""
+    for _line in 'base = img.split("/")[-1].split("@")[0]' \
+                 'if "@sha256:" in img:' \
+                 'elif not tag or tag == "latest":' \
+                 "elif not re.match(r'^v?"; do
+        _c=$(printf '%s
+' "$_b3body" | grep -cF "$_line" 2>/dev/null || printf '0')
+        [ "$_c" = "2" ] || _b3drift="$_b3drift [$_line -> $_c]"
+    done
+    if [ -z "$_b3drift" ]
+    then printf '  ok    the fixture copy of B-3 still matches the rule it mirrors\n'
+    else printf '  FAIL  the fixture copy of B-3 has drifted from the rule:%s\n' "$_b3drift"; _f=$((_f+1)); fi
     _expect_hit  "B2 bad"  "a port with no loopback bind is caught"
     _expect_miss "B1 good" "a compliant service is not flagged for memswap"
     _expect_miss "B4 good" "a compliant service is not flagged for profiles"
