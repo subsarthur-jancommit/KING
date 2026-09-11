@@ -169,7 +169,17 @@ either reviewed or the audit is red.
 |---|---|---|
 | Tavily API key | passed through chat | earlier session |
 | OpenRouter API key | passed through chat | earlier session |
+| `AP_POSTGRES_URL` (Neon project **ep-lingering-firefly**) | pasted into chat by the operator when moving to a fresh Neon project | 2026-09-11 |
 | `GRAPHIFY_API_KEY` | **printed in full to a session transcript** by a `docker inspect ... \| grep` whose masking pattern did not match what it printed | 2026-09-10 |
+
+The fourth was a deliberate trade, not an accident: on 2026-09-11 the previous
+Neon project's data-transfer quota was exhausted and Activepieces could not
+reach its database at all, so the operator moved to a fresh project and pasted
+the new URL in chat to get the system running again. It carries the database
+password inline, and **the old project's URL is equally disclosed and equally
+dead** — the quota that killed it is the reason it was replaced. Both go in the
+same rotation pass. Everything else in Activepieces was intentionally left
+alone until the system is stable.
 
 The third one is mine. The command intended to print variable names and mask
 values, and the `sed` that was supposed to redact it matched nothing — so the
