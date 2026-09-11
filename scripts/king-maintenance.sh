@@ -180,10 +180,29 @@ do_plan() {
 # ---------------------------------------------------------------- rebuild
 do_rebuild() {
     step "0. Restore point"
-    if [ -x ./scripts/king-backup.sh ]; then
-        ./scripts/king-backup.sh 2>&1 | tail -3 | sed 's/^/  /'
-    else
+    # REUSE a recent one. This took a full backup on every invocation, and a
+    # full backup includes an ~86 MB pg_dump of the Neon database.
+    #
+    # Measured 2026-09-11: six --rebuild attempts in ninety minutes pulled
+    # ~515 MB out of Neon, the project's data-transfer quota was exhausted, and
+    # Activepieces could no longer reach its database at all — it crash-looped
+    # 21 times, each restart spending more of the quota that was already gone.
+    # The rebuild never touched Activepieces; its own restore point took it
+    # down.
+    #
+    # A restore point exists to capture the state before a change. Retrying a
+    # build that changed nothing does not need a new one, and the metered
+    # resource makes taking it actively harmful.
+    _bdir="${KING_BACKUP_DIR:-$HOME/KING-backups}"
+    _recent=$(find "$_bdir" -maxdepth 1 -type d -name '20*' -newermt '-6 hours' 2>/dev/null | sort | tail -1)
+    if [ -n "$_recent" ] && [ -s "$_recent/activepieces.dump" ] && [ "${KING_FORCE_BACKUP:-0}" != "1" ]; then
+        c_green "  reusing the restore point from $(basename "$_recent") (under 6h old)"
+        printf '  A retry does not need a new one, and each costs ~86 MB of Neon transfer.\n'
+        printf '  Force a fresh one with KING_FORCE_BACKUP=1.\n'
+    elif [ ! -x ./scripts/king-backup.sh ]; then
         c_yell "  king-backup.sh not executable — continuing without a fresh restore point"
+    else
+        ./scripts/king-backup.sh 2>&1 | tail -3 | sed 's/^/  /'
     fi
 
     step "1. Tag a rollback for the image that is running now"
