@@ -3017,9 +3017,25 @@ dim_G() {
     # The script's own exit status is also kept now. It used to be discarded by
     # the pipe -- `cmd | grep -q` returns grep's status -- so a report that
     # crashed but happened to print its title first would have passed.
-    _mute=""
+    # The list was TWO entries written by hand, and three report scripts exist:
+    # agent-report.sh had never once been exercised by the check whose entire
+    # subject is whether reports report. Third hand-kept list found stale in one
+    # afternoon, after G-1's guard list and J-1's image list.
+    #
+    # The declared headlines stay, because they are the strong assertion and
+    # cannot be derived. What changes is that the DIRECTORY decides the
+    # population, so a fourth report is named rather than skipped.
+    _mute=""; _undeclared=""
+    for _rs in scripts/*-report.sh; do
+        [ -x "$_rs" ] || continue
+        case "$_rs" in
+            scripts/gateway-report.sh|scripts/alerts-report.sh|scripts/agent-report.sh) : ;;
+            *) _undeclared="$_undeclared $(basename "$_rs")" ;;
+        esac
+    done
     for _spec in "scripts/gateway-report.sh|24|provider reliability" \
-                 "scripts/alerts-report.sh|14|gateway alerts"; do
+                 "scripts/alerts-report.sh|14|gateway alerts" \
+                 "scripts/agent-report.sh|14|agent runs"; do
         _sc=$(printf '%s' "$_spec" | cut -d'|' -f1)
         _ar=$(printf '%s' "$_spec" | cut -d'|' -f2)
         _ex=$(printf '%s' "$_spec" | cut -d'|' -f3)
@@ -3032,10 +3048,14 @@ dim_G() {
             _mute="$_mute $(basename "$_sc")(no headline)"
         fi
     done
-    if [ -z "$_mute" ]; then
-        chk G-2 PASS "every report exits clean and produces the section it claims to"
-    else
+    if [ -n "$_mute" ]; then
         chk G-2 FAIL "report(s) ran but produced nothing they promise" "$_mute"
+    elif [ -n "$_undeclared" ]; then
+        chk G-2 UNKNOWN "report(s) with no declared headline to check:$_undeclared" \
+            "the declared ones all pass; these are unmeasured, and saying so beats a green that covers less than it looks like"
+    else
+        chk G-2 PASS "every report exits clean and produces the section it claims to" \
+            "population taken from scripts/*-report.sh, not from a list"
     fi
 
     # G-5: the alert path, checked without firing one. Sending a real alert to
