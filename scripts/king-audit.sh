@@ -337,6 +337,34 @@ priv() {
 # output. `command -v python3` says yes; running it does nothing. Every check
 # that shelled out to it reported clean, which is the exact shape of failure
 # this audit exists to catch — so the resolver tests execution, not presence.
+# One credential shape, used by both scanners.
+#
+# L-3 and L-5 carried two DIFFERENT patterns for the same question, so they
+# could disagree about the same string, and both were narrow enough to miss
+# most of what this deployment actually holds. Measured 2026-09-11 against the
+# real shapes in the rotation list: the old L-3 pattern caught ONE of seven.
+#
+# What it missed, and each of these is a credential on this host:
+#
+#   sk-proj-...      the modern OpenAI format — the hyphen after `proj` broke
+#                    `sk-[A-Za-z0-9]{20,}`, so the newest key style was the one
+#                    it could not see
+#   sk-lf-... /      Langfuse, hyphenated the same way
+#   pk-lf-...
+#   Basic <base64>   only `Bearer` was listed, and the Langfuse header is Basic
+#   postgres://u:p@  the Neon DSN carries its password inline
+#   48 hex chars     AP_REDIS_PASSWORD has no prefix at all; nothing about the
+#                    string says "secret" except the name in front of it
+#
+# So the last alternative keys off the NAME rather than the value, which is the
+# only thing that distinguishes a 48-character hex password from a sha256
+# digest. Lowercase `token` is deliberately absent from that list: this
+# deployment logs token COUNTS constantly, and `tokens=1234567890123456` would
+# otherwise be a finding. Verified both directions — 11 real credential shapes
+# caught, 9 benign log lines (digests, commit hashes, correlation ids, token
+# counts, prose about a password) not — and the self-test pins every one.
+CREDPAT='sk-[A-Za-z0-9_-]{20,}|pk-lf-[A-Za-z0-9-]{10,}|oma_live_|tk_[A-Za-z0-9]{20,}|(Bearer|Basic) [A-Za-z0-9._=+/-]{20,}|eyJ[A-Za-z0-9_-]{10,}[.][A-Za-z0-9_-]{10,}|postgres(ql)?://[^:@/ ]+:[^@ ]+@|(PASSWORD|SECRET|TOKEN|APIKEY|API_KEY|_KEY|password|secret|apiKey|api_key)[A-Za-z_]*["]?[ ]*[=:][ ]*["]?[A-Za-z0-9+/_-]{16,}'
+
 PY=""
 for _c in python3 python py; do
     if command -v "$_c" >/dev/null 2>&1 && [ "$("$_c" -c 'print(7*6)' 2>/dev/null)" = "42" ]; then
@@ -4118,7 +4146,7 @@ PYKEYS
     # failed. A journal that has started capturing credentials is a second
     # copy of them in a file nobody treats as secret.
     _leak=$(docker exec king-agent-sidecar-http-1 sh -c \
-            "grep -chE 'sk-[A-Za-z0-9]{20,}|oma_live_|tk_[A-Za-z0-9]{20,}|Bearer [A-Za-z0-9._-]{20,}' /audit/runs.jsonl /audit/vps_exec.log 2>/dev/null | awk '{t+=\$1} END {print t+0}'" \
+            "grep -chE '$CREDPAT' /audit/runs.jsonl /audit/vps_exec.log 2>/dev/null | awk '{t+=\$1} END {print t+0}'" \
             2>/dev/null || true)
     case "${_leak:-x}" in
         x|"") chk L-3 UNKNOWN "could not scan the journals" ;;
@@ -4171,7 +4199,7 @@ PYKEYS
         for _c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
             _scanned=$((_scanned + 1))
             _n=$(docker logs --tail 4000 "$_c" 2>&1 \
-                 | grep -cE 'sk-[A-Za-z0-9]{16,}|Bearer [A-Za-z0-9_.-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.' \
+                 | grep -cE "$CREDPAT" \
                  || true)
             case "$_n" in ''|*[!0-9]*) continue ;; esac
             [ "$_n" -gt 0 ] && _hits="$_hits $_c($_n)"
@@ -4961,6 +4989,68 @@ NSFIX
     if [ "$(_doorold 502 '401 403')" = "open" ]
     then printf '  ok    the OLD two-bucket test called a 502 an open door, which is why it was replaced\n'
     else printf '  FAIL  the OLD two-bucket test called a 502 an open door, which is why it was replaced\n'; _f=$((_f+1)); fi
+    # ---- L-3 / L-5: the credential shapes this deployment actually holds ---
+    #
+    # The old L-3 pattern caught ONE of the seven shapes on the rotation list.
+    # `sk-proj-...` — the current OpenAI format — was invisible to it because
+    # the hyphen after `proj` broke `sk-[A-Za-z0-9]{20,}`, so the newest key
+    # style was the one it could not see. L-5 carried a different pattern for
+    # the same question, so the two could disagree about the same string.
+    #
+    # Both directions are pinned. The must-NOT list is the load-bearing half:
+    # a scanner that flags sha256 digests and token counts goes red every run
+    # and stops being read, and this deployment has already learned that from
+    # an alerting rule.
+    _credmiss=0; _credfp=0
+    while IFS='|' read -r _want _line; do
+        [ -n "${_want:-}" ] || continue
+        if printf '%s' "$_line" | grep -qE "$CREDPAT"; then _got=hit; else _got=miss; fi
+        case "${_want}-${_got}" in
+            MUST-miss)   printf '  FAIL  credential shape not caught: %s\n' "$(printf '%s' "$_line" | cut -c1-46)"
+                         _credmiss=$((_credmiss+1)); _f=$((_f+1)) ;;
+            NEVER-hit)   printf '  FAIL  benign line flagged as a credential: %s\n' "$(printf '%s' "$_line" | cut -c1-46)"
+                         _credfp=$((_credfp+1)); _f=$((_f+1)) ;;
+        esac
+    done <<'CREDFIX'
+MUST|sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345
+MUST|Authorization: Bearer oma_live_abcdefghijklmnopqrstuvwx
+MUST|AP_REDIS_PASSWORD=422420d2e96dc64f465ce27c396ed9415361eede86499527
+MUST|postgres://neondb_owner:npg_SomeSecret123@ep-x.neon.tech/db
+MUST|Authorization: Basic cGstbGYtMDBlM2FiY2RlZjpzay1sZi0xMjM0NTY3OA==
+MUST|"secretKey":"sk-lf-1b2c3d4e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"
+MUST|GRAPHIFY_API_KEY=7f3a9b2c4d5e6f708192a3b4c5d6e7f8
+MUST|token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0
+MUST|NTFY_TOKEN=tk_abcdefghijklmnopqrstuvwxyz01
+MUST|{"password": "s3cretValueThatIsLong123"}
+MUST|{"api_key":"abcdef0123456789abcdef"}
+NEVER|sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+NEVER|commit=b28dbafd3c028d1db2c7103e55d7cd523867ff4b
+NEVER|Graph built: 58807 nodes, from b28dbafd.
+NEVER|caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd
+NEVER|correlationId=a1b2c3d4-e5f6-7890-abcd-ef1234567890 duration=1234
+NEVER|the operator rotated the password on 2026-09-11 after the disclosure
+NEVER|model=ollama/qwen2.5:1.5b-instruct-q4_K_M provider=ollama status=200
+NEVER|GET /v1/models 401 12ms ua=curl/8.5.0 ip=10.0.0.4
+NEVER|{"tokens":{"in":1234567890123456,"out":42}}
+NEVER|tokens=1234567890123456 cost=0.008
+CREDFIX
+    if [ "$_credmiss" -eq 0 ]
+    then printf '  ok    all 11 credential shapes on the rotation list are caught\n'
+    else printf '  FAIL  %s credential shape(s) on the rotation list are not caught\n' "$_credmiss"; fi
+    if [ "$_credfp" -eq 0 ]
+    then printf '  ok    digests, commit hashes and token counts are not flagged as credentials\n'
+    else printf '  FAIL  %s benign line(s) flagged; a scanner that cries wolf stops being read\n' "$_credfp"; fi
+
+    # The old L-3 predicate, pinned: it is why this was widened.
+    _credold='sk-[A-Za-z0-9]{20,}|oma_live_|tk_[A-Za-z0-9]{20,}|Bearer [A-Za-z0-9._-]{20,}'
+    if ! printf '%s' 'AP_REDIS_PASSWORD=422420d2e96dc64f465ce27c396ed9415361eede86499527' \
+         | grep -qE "$_credold"
+    then printf '  ok    the OLD pattern missed a 48-char hex password, which is why it was replaced\n'
+    else printf '  FAIL  the OLD pattern missed a 48-char hex password, which is why it was replaced\n'; _f=$((_f+1)); fi
+    if ! printf '%s' 'sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345' | grep -qE "$_credold"
+    then printf '  ok    the OLD pattern missed sk-proj-, the current OpenAI key format\n'
+    else printf '  FAIL  the OLD pattern missed sk-proj-, the current OpenAI key format\n'; _f=$((_f+1)); fi
+
     # ---- J-1: which references can be compared at all ---------------------
     #
     # Only the CLASSIFICATION half is fixtured, and deliberately so: the other
