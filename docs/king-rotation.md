@@ -202,6 +202,23 @@ would put a now-disclosed token back into service. The operator creates a fresh
 MCP server in the Activepieces UI instead, which mints a new token — and has to
 reconfigure the Claude MCP connection regardless, since the URL carries it.
 
+The sixth is mine as well, and it is the third time — the same fault wearing a
+third face. Checking whether `ap-redis` actually requires a password, I ran
+`CONFIG GET requirepass`, and **that command answers the question by returning
+the password**. `AP_REDIS_PASSWORD` is therefore disclosed and needs rotating:
+the value in the root `.env` and Activepieces' own environment, applied by
+recreating both containers in one command so the queue is never pointed at a
+Redis whose password it does not know.
+
+The pattern is now unmistakable across all three: `GRAPHIFY_API_KEY` came from
+a `sed` meant to redact and matching nothing; the `mcp_server` token came from
+selecting a row to read a different column; this came from asking a yes/no
+question with a command that replies with the secret. **A question about a
+credential is not the same as a request for it, and the tooling does not know
+the difference.** The predicate was available and cheaper in each case — here,
+`CONFIG GET requirepass | tail -1 | wc -c` answers "is one set" without
+printing it, and an unauthenticated `PING` failing proves it from outside.
+
 The third one is mine. The command intended to print variable names and mask
 values, and the `sed` that was supposed to redact it matched nothing — so the
 key reached the transcript in plaintext. It authenticates the codegraph MCP

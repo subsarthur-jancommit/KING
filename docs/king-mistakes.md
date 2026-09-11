@@ -1683,3 +1683,39 @@ adding the id. It was asserting the general direction in `--self-test`: every
 implemented check must be declared in the manifest. The hand-kept list is
 precisely the thing that went stale, so a hand-kept list of exceptions to it
 would have gone stale next.
+
+## 39. Three ways to print a secret while asking whether one exists
+
+Three credentials reached a transcript in one session. Not one of the three
+commands was asking for a credential.
+
+| What I wanted to know | What I ran | What it printed |
+|---|---|---|
+| which variables are set | a listing with a `sed` to mask values | `GRAPHIFY_API_KEY`, because the `sed` matched nothing |
+| how the restored flows were exposed as MCP tools | `SELECT *` on `mcp_server` | the `token` column, which is one of the columns |
+| whether `ap-redis` requires a password | `CONFIG GET requirepass` | the password |
+
+The third is the clearest, because the question was a **yes/no** and the answer
+came back as the secret itself. Redis has no "is a password set" command; the
+getter is the only door, and it hands you the value. The intent of the question
+had no bearing on what landed in the log.
+
+**A question about a credential is not a request for one, and no tool knows the
+difference.** Every one of these had a predicate available that answers without
+printing:
+
+```sh
+redis-cli CONFIG GET requirepass | tail -1 | wc -c   # is one set: a number
+redis-cli PING                                       # unauthenticated: fails if set
+psql -c "SELECT token IS NOT NULL FROM mcp_server"    # a boolean, not a column
+env | sed -n 's/^\([A-Z_]*\)=.*/\1/p'                 # names only, by construction
+```
+
+The last one matters most: it is safe *by construction* rather than by a
+redaction step that has to work. A mask that fails still prints; a query that
+never selects the column cannot. **Prefer the predicate that cannot return the
+secret over the command whose output you intend to filter** — the filter is
+another thing that can be wrong, and in the first of these three it was.
+
+All three are recorded in `docs/king-rotation.md`. The habit this should have
+built after the first one took three.

@@ -45,6 +45,35 @@
 #   store of record; `omniroute/data/storage.sqlite` is where anything worth
 #   stealing lives, and that is now mode 600 in a 700 directory.
 #
+# WHAT CHANGED 2026-09-11, and it changes the severity rather than the verdict.
+#
+# `king-audit.sh` J-6 now reads GitHub's published advisories against the
+# versions actually pinned. redis 8.6.5 carries SIX with no fix released, three
+# of them high:
+#
+#   CVE-2026-23479  high    use-after-free in the unblock-client flow,
+#                           "may lead to remote code execution"   patched: TBD
+#   CVE-2025-32023  high    out-of-bounds write in hyperloglog -> RCE
+#   CVE-2025-21605  high    unbounded output-buffer growth -> DoS
+#   CVE-2026-23631, CVE-2025-27151, CVE-2024-51741   medium
+#
+# Every one of them is written "an authenticated user may ...". On a Redis with
+# no password, ANY party that can open the socket is that authenticated user.
+# So the missing `--requirepass` is no longer only lateral-movement hardening:
+# it is the single control between reaching the port and code execution inside
+# that container.
+#
+# The bound above still holds and is what keeps this acknowledged rather than
+# escalated: loopback only, K-3 confirms nothing answers publicly, and the ten
+# containers on that network run first-party code. But the host-side binding is
+# `127.0.0.1:6379:6379`, so every shell account on this VPS can reach it, and
+# there are three. That is the reachable surface, stated plainly.
+#
+# Upgrading does not help: `patched_versions: TBD` on all six. The upstream
+# `--requirepass` patch is the fix, and it is the same patch already prepared.
+# J-6 re-reads the list on every audit, so a release appearing will show as
+# `fix=` instead of `nofix=`.
+#
 # So: real, bounded, and fixable only upstream. It is lateral-movement
 # hardening that is missing, not an open door.
 omniroute-redis
