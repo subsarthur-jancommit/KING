@@ -53,6 +53,9 @@ TLS_SHA="${KING_TLS_SHA256:-2ec853496634545e7a7ea028715763948d55bbdd97aca7ecaa9f
 SRC_DIR="${KING_TLS_DIR:-$HOME/tlsfix}"
 BIN_DIR="/app/node_modules/tls-client-node/bin"
 BASE_IMAGE="omniroute:base"
+# The container is named `omniroute`; the compose SERVICE is `omniroute-base`.
+# Passing the container name gives "no such service" and the command fails.
+GW_SERVICE="${KING_GW_SERVICE:-omniroute-base}"
 CAND_IMAGE="omniroute:tls-${TLS_VER}"
 GW_URL="http://127.0.0.1:20128/api/monitoring/health"
 
@@ -140,7 +143,12 @@ do_apply() {
     # The RUN keeps exactly one binary rather than deleting a named old one:
     # the package's loader reads the DIRECTORY and takes the last match, so a
     # forgotten sibling would silently decide which binary runs.
-    if docker build -f - -t "$CAND_IMAGE" "$SRC_DIR" <<EOF 2>&1 | tail -6 | sed 's/^/    /'
+    # NOT `if docker build ... | tail | sed`. A pipeline returns its LAST
+    # command's status, so that tests `sed` and a failed build reads as a
+    # success. This is the third time that shape has appeared in scripts
+    # written this week; see docs/king-mistakes.md 34.
+    _brc=0
+    docker build -f - -t "$CAND_IMAGE" "$SRC_DIR" > /tmp/king-tls-build.$$ 2>&1 <<EOF || _brc=$?
 FROM ${BASE_IMAGE}
 COPY --chown=node:node ${TLS_FILE} ${BIN_DIR}/${TLS_FILE}
 RUN cd ${BIN_DIR} \\
@@ -148,8 +156,10 @@ RUN cd ${BIN_DIR} \\
  && chmod 755 ${TLS_FILE} \\
  && ls -la ${BIN_DIR}
 EOF
-    then :; else
-        c_red "  build failed"; return 1
+    tail -6 /tmp/king-tls-build.$$ | sed 's/^/    /'
+    rm -f /tmp/king-tls-build.$$
+    if [ "$_brc" -ne 0 ]; then
+        c_red "  build failed (exit $_brc)"; return 1
     fi
     docker image inspect "$CAND_IMAGE" >/dev/null 2>&1 || { c_red "  no image produced"; return 1; }
 
@@ -185,10 +195,34 @@ EOF
     printf '  %s\n' "$_roll"
 
     step "5. Cut over"
-    printf '  gateway before: HTTP %s\n' "$(gw_code)"
+    # The container is named `omniroute`; the SERVICE is `omniroute-base`.
+    # Passing the container name gave "no such service: omniroute", the compose
+    # command failed, and the health loop then passed in 0s -- because the OLD
+    # gateway was still up and answering. A cutover that never happened read as
+    # a cutover that succeeded.
+    #
+    # So health is not the test. The test is that the container was REPLACED:
+    # capture its id first, and require a different one afterwards.
+    _before=$(docker ps -q --filter "label=com.docker.compose.service=${GW_SERVICE}" | head -1)
+    printf '  gateway before: HTTP %s (container %s)\n' "$(gw_code)" "${_before:0:12}"
     docker tag "$CAND_IMAGE" "$BASE_IMAGE"
+    _crc=0
     docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build \
-        --no-deps --force-recreate omniroute 2>&1 | tail -3 | sed 's/^/    /'
+        --no-deps --force-recreate "$GW_SERVICE" > /tmp/king-tls-cutover.$$ 2>&1 || _crc=$?
+    tail -3 /tmp/king-tls-cutover.$$ | sed 's/^/    /'
+    rm -f /tmp/king-tls-cutover.$$
+    if [ "$_crc" -ne 0 ]; then
+        c_red "  recreate FAILED (exit $_crc) — the gateway still runs the old image"
+        printf '  Nothing was lost: %s still points at the pre-patch image.\n' "$_roll"
+        return 1
+    fi
+    _after=$(docker ps -q --filter "label=com.docker.compose.service=${GW_SERVICE}" | head -1)
+    if [ -z "$_after" ] || [ "$_after" = "$_before" ]; then
+        c_red "  the container was NOT replaced — compose reported success and changed nothing"
+        printf '  before %s / after %s\n' "${_before:0:12}" "${_after:0:12}"
+        return 1
+    fi
+    printf '  container replaced: %s -> %s\n' "${_before:0:12}" "${_after:0:12}"
     _i=0
     while [ "$_i" -lt 60 ]; do
         [ "$(gw_code)" = "200" ] && break
@@ -196,21 +230,33 @@ EOF
     done
     if [ "$(gw_code)" != "200" ]; then
         c_red "  gateway did NOT come back"
-        printf '  roll back:\n    docker tag %s %s\n' "$_roll" "$BASE_IMAGE"
-        printf '    docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build --no-deps --force-recreate omniroute\n'
+        printf '  roll back:\n    ./scripts/king-tls-patch.sh --rollback %s\n' "$_roll"
         return 1
     fi
     c_green "  gateway healthy after $((_i * 3))s"
 
     step "6. Prove it on the RUNNING container, not the image"
-    _c=$(docker ps -q --filter "name=^omniroute$" | head -1)
-    docker exec "$_c" sh -c "ls -1 $BIN_DIR" 2>/dev/null | sed 's/^/    /'
+    _c="$_after"
+    _live=$(docker exec "$_c" sh -c "ls -1 $BIN_DIR" 2>/dev/null)
+    printf '%s\n' "$_live" | sed 's/^/    /'
+    # An assertion, not a printout. Step 6 caught the failed cutover above only
+    # because a human read it; now it fails the script.
+    if [ "$_live" != "$TLS_FILE" ]; then
+        c_red "  the running gateway is NOT on $TLS_FILE — patch did not take"
+        printf '  roll back:\n    ./scripts/king-tls-patch.sh --rollback %s\n' "$_roll"
+        return 1
+    fi
     _keys=$(docker exec "$_c" node -e '
 const D=require("better-sqlite3")("/app/data/storage.sqlite",{readonly:true});
 process.stdout.write(String(D.prepare("SELECT COUNT(*) c FROM api_keys").get().c));' 2>/dev/null || echo '?')
     printf '    API keys intact: %s\n' "$_keys"
-    printf '\n  rollback if anything looks wrong:\n    docker tag %s %s && \\\n      docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build --no-deps --force-recreate omniroute\n\n' \
-        "$_roll" "$BASE_IMAGE"
+    if [ "$_keys" != "7" ]; then
+        c_yell "    expected 7 API keys — check before trusting this"
+    fi
+    # Print the script's own rollback, not a hand-written compose line. The
+    # hand-written one named the container instead of the service and would
+    # have failed exactly when it was needed most.
+    printf '\n  rollback if anything looks wrong:\n    ./scripts/king-tls-patch.sh --rollback %s\n\n' "$_roll"
     c_green "  done. Update scripts/tls-client-pin.txt and re-run ./scripts/king-audit.sh -d J"
 }
 
@@ -220,7 +266,7 @@ do_rollback() {
     docker image inspect "$_tag" >/dev/null 2>&1 || { c_red "  no such image: $_tag"; return 1; }
     docker tag "$_tag" "$BASE_IMAGE"
     docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build \
-        --no-deps --force-recreate omniroute 2>&1 | tail -3 | sed 's/^/    /'
+        --no-deps --force-recreate "$GW_SERVICE" 2>&1 | tail -3 | sed 's/^/    /'
     _i=0
     while [ "$_i" -lt 60 ]; do [ "$(gw_code)" = "200" ] && break; _i=$((_i + 1)); sleep 3; done
     printf '  gateway: HTTP %s after %ss\n' "$(gw_code)" "$((_i * 3))"
