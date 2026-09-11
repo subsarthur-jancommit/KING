@@ -61,6 +61,7 @@ HEAP_MB="${KING_BUILD_HEAP_MB:-4096}"
 # ~3.9 GB, which is why HEAP_MB is 4096 and not the 2560 that gave attempt 5 a
 # clean "heap out of memory" at 549s.
 USE_TURBOPACK="${KING_BUILD_TURBOPACK:-0}"
+SWAP_MB="${KING_BUILD_SWAP_MB:-3072}"   # cgroup-only spill; see step 3
 FLOOR_MB=400                                    # host MemAvailable abort floor
 TLS_WANT=2ec853496634545e7a7ea028715763948d55bbdd97aca7ecaa9fea8c2ebb08df
 
@@ -221,9 +222,24 @@ do_rebuild() {
     docker buildx create --name "$BUILDER" --driver docker-container --bootstrap >/dev/null 2>&1 \
         || { c_red "  could not create the buildx builder"; return 1; }
     _bk="buildx_buildkit_${BUILDER}0"
-    docker update --cpus=1.0 --memory="${CAGE_MB}m" --memory-swap="$((CAGE_MB + 1024))m" "$_bk" >/dev/null \
+    # Swap allowance is what turns a hard kill into a slow build. Measured
+    # 2026-09-11: webpack's node-MainThread was killed at 4467 MB RSS inside a
+    # 4608 MB cage -- 370 MB of non-heap memory above a 4096 MB V8 heap. Raising
+    # the cage instead would leave this host under 650 MB while it must keep a
+    # 1.16 GB gateway alive, so the extra room comes from swap, which only the
+    # build's cgroup can touch. The host's own pages are unaffected; the cost is
+    # disk I/O, and the watchdog measures the gateway directly if that bites.
+    docker update --cpus=1.0 --memory="${CAGE_MB}m" \
+        --memory-swap="$((CAGE_MB + SWAP_MB))m" "$_bk" >/dev/null \
         || { c_red "  could not cap $_bk — refusing to build unbounded"; return 1; }
-    printf '  %s capped at %s MB RSS, 1 CPU\n' "$_bk" "$CAGE_MB"
+    printf '  %s capped at %s MB RSS + %s MB swap, 1 CPU\n' "$_bk" "$CAGE_MB" "$SWAP_MB"
+    # Promising swap the host does not have turns a soft landing back into a
+    # hard kill, silently.
+    _swapfree=$(free -m | awk '/Swap:/{print $4}')
+    if [ "${_swapfree:-0}" -lt "$SWAP_MB" ]; then
+        c_yell "  only ${_swapfree:-0} MB of swap free; the cgroup was promised ${SWAP_MB} MB"
+        printf '  The build will be killed rather than slowed if it needs the difference.\n'
+    fi
     printf '  (1 CPU is deliberate: it leaves the other core serving the stack)\n'
 
     step "4. Watchdog"
