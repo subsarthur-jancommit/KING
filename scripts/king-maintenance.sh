@@ -49,6 +49,35 @@ priv() { if sudo -n true 2>/dev/null; then sudo -n "$@"; else "$@"; fi; }
 mem_avail() { awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo; }
 gw_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$GW_URL" 2>/dev/null || echo 000; }
 
+# How much Ollama is holding resident. D-3 counts this as releasable headroom
+# because the codegraph build releases it first, and the same is true here.
+ollama_mb() {
+    _oc=$(docker compose --profile localmodel ps -q ollama 2>/dev/null || true)
+    [ -n "$_oc" ] || { printf '0'; return; }
+    docker stats --no-stream --format '{{.MemUsage}}' "$_oc" 2>/dev/null \
+        | cut -d/ -f1 | awk '/GiB/{printf "%d", $1*1024} /MiB/{printf "%d", $1}'
+}
+
+# Unload every resident model. Lifted from codegraph-refresh.sh rather than
+# rewritten, including the two mistakes it records: the container is
+# `king-ollama-1` and not `ollama`, and `ollama ps` takes no --format flag —
+# an earlier version printed "unloading" while unloading nothing for a day.
+ollama_release() {
+    _oc=$(docker compose --profile localmodel ps -q ollama 2>/dev/null || true)
+    [ -n "$_oc" ] || return 0
+    _raw=$(docker exec "$_oc" ollama ps 2>/dev/null) || return 0
+    _loaded=$(printf '%s\n' "$_raw" | tail -n +2 | grep -c . || true)
+    [ "${_loaded:-0}" -gt 0 ] || { printf '  ollama holds nothing resident\n'; return 0; }
+    printf '  ollama is holding %s model(s); unloading\n' "$_loaded"
+    printf '%s\n' "$_raw" | tail -n +2 | awk 'NF {print $1}' | while read -r m; do
+        docker exec "$_oc" ollama stop "$m" >/dev/null 2>&1 || printf '    could not stop %s\n' "$m"
+    done
+    _still=$(docker exec "$_oc" ollama ps 2>/dev/null | tail -n +2 | grep -c . || true)
+    # Verify rather than assume; the message above was once printed by a
+    # command that did nothing.
+    [ "${_still:-0}" -eq 0 ] && printf '    unloaded\n' || printf '    %s still resident\n' "$_still"
+}
+
 STOPPED=""
 restore_services() {
     [ -n "$STOPPED" ] || return 0
@@ -78,9 +107,11 @@ do_plan() {
         _mb=$(printf '%s' "$_u" | awk '/GiB/{printf "%d", $1*1024} /MiB/{printf "%d", $1}')
         _free=$((_free + ${_mb:-0}))
     done
-    _after=$((_now + _free))
+    _oll=$(ollama_mb)
+    _after=$((_now + _free + ${_oll:-0}))
     printf '\n  MemAvailable now            %s MB\n' "$_now"
     printf '  released by stopping those  %s MB\n' "$_free"
+    printf '  released by unloading ollama %s MB\n' "${_oll:-0}"
     printf '  available to the build      %s MB\n' "$_after"
     printf '  cage this script would set  %s MB   (V8 heap %s MB)\n' "$CAGE_MB" "$HEAP_MB"
     if [ "$_after" -gt $((CAGE_MB + FLOOR_MB)) ]; then
@@ -113,10 +144,18 @@ do_rebuild() {
     printf '  omniroute:rollback-%s\n' "$_stamp"
 
     step "2. Free memory"
+    ollama_release
     for s in $FREE_SERVICES; do
         docker compose stop "$s" >/dev/null 2>&1 && STOPPED="$STOPPED $s"
     done
     printf '  stopped:%s\n  MemAvailable now %s MB\n' "${STOPPED:- nothing}" "$(mem_avail)"
+    _avail=$(mem_avail)
+    if [ "$_avail" -lt $((CAGE_MB + FLOOR_MB)) ]; then
+        c_red "  only ${_avail} MB free; a ${CAGE_MB} MB cage would leave the host under the ${FLOOR_MB} MB floor"
+        printf '  Refusing to start. Lower it: KING_BUILD_CAGE_MB=%s ./scripts/king-maintenance.sh --rebuild\n' \
+            "$((_avail - FLOOR_MB - 200))"
+        return 1
+    fi
 
     step "3. Bounded builder"
     docker buildx rm "$BUILDER" >/dev/null 2>&1
