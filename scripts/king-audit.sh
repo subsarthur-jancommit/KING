@@ -3535,10 +3535,15 @@ PYKEYS
         fi
     fi
 
-    # L-2: documented closed on 2026-08-28 and never re-tested. Activepieces
-    # closes registration by itself after the first account, which is a
-    # behaviour that could change on any upgrade -- so it is tested, not
-    # remembered.
+    # L-2: is public registration closed?
+    #
+    # This said "Activepieces closes registration by itself after the first
+    # account". It does not. Measured 2026-09-11 on a fresh database with an
+    # owner, a platform and a project all present: sign-up still reached
+    # validation. The old deployment only looked closed because its platform
+    # row had been configured by hand, and a rebuild inherits none of that.
+    # Registration is now refused by Caddy (caddy/Caddyfile, the flows site),
+    # which is what this expects to see.
     #
     # IT USED TO POST A COMPLETE SIGN-UP, and the comment excusing that said
     # "the probe uses an .invalid address so a success would create nothing
