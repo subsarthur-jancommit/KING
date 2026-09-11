@@ -113,6 +113,7 @@ D-4
 D-5
 D-6
 D-7
+D-8
 E-1
 E-2
 E-3
@@ -209,6 +210,7 @@ D-4|OOM events in the kernel ring buffer
 D-5|container log sizes, with disk as context
 D-6|reclaimable build cache, idle images, orphan volumes
 D-7|container logs are bounded by a rotation policy
+D-8|restart policies that survive a clean stop, not just a crash
 E-1|every volume: size, contents, and whether anything backs it up
 E-2|external Postgres reachable, and its size
 E-3|journals exist, grow, and are readable
@@ -3536,17 +3538,31 @@ PYKEYS
     # L-2: documented closed on 2026-08-28 and never re-tested. Activepieces
     # closes registration by itself after the first account, which is a
     # behaviour that could change on any upgrade -- so it is tested, not
-    # remembered. The probe uses an .invalid address so a success would create
-    # nothing usable.
+    # remembered.
+    #
+    # IT USED TO POST A COMPLETE SIGN-UP, and the comment excusing that said
+    # "the probe uses an .invalid address so a success would create nothing
+    # usable". That was wrong. On 2026-09-11, against a freshly-created
+    # database with zero accounts, the probe registered
+    # audit-probe@example.invalid as a verified identity -- with the password
+    # that was sitting in this file, in a repository. A read-only check that
+    # writes is not a check; it is a change with an opinion.
+    #
+    # The body is now EMPTY, which cannot create anything, and the status still
+    # answers the question because the two rejections happen at different
+    # layers: registration-closed is refused (403) before the payload is ever
+    # validated, while an open endpoint gets as far as validation and says 400.
+    # Measured on this deployment: open -> 400.
     if have curl; then
         _su=$(curl -s -o /dev/null -w '%{http_code}' -m 25 -X POST \
               "https://flows.arject.co/api/v1/authentication/sign-up" \
-              -H 'Content-Type: application/json' \
-              -d '{"email":"audit-probe@example.invalid","password":"Nx8s2Kd91mQz","firstName":"a","lastName":"b","trackEvents":false,"newsLetter":false}' \
+              -H 'Content-Type: application/json' -d '{}' \
               2>/dev/null || true)
         case "${_su:-000}" in
-            403|401) chk L-2 PASS "Activepieces still refuses a second sign-up" "HTTP $_su" ;;
-            2*)      chk L-2 FAIL "Activepieces ACCEPTED a sign-up" "HTTP $_su — this name is public" ;;
+            403|401) chk L-2 PASS "Activepieces refuses registration" "HTTP $_su — refused before the payload was read" ;;
+            400)     chk L-2 FAIL "Activepieces registration is OPEN" \
+                         "HTTP 400 is the validator, not the door: an empty body got past the auth layer. flows.arject.co is public" ;;
+            2*)      chk L-2 FAIL "the sign-up endpoint accepted an EMPTY body" "HTTP $_su — that should be impossible" ;;
             *)       chk L-2 UNKNOWN "sign-up probe returned $_su" ;;
         esac
     else
