@@ -360,10 +360,21 @@ priv() {
 # only thing that distinguishes a 48-character hex password from a sha256
 # digest. Lowercase `token` is deliberately absent from that list: this
 # deployment logs token COUNTS constantly, and `tokens=1234567890123456` would
-# otherwise be a finding. Verified both directions — 11 real credential shapes
-# caught, 9 benign log lines (digests, commit hashes, correlation ids, token
-# counts, prose about a password) not — and the self-test pins every one.
-CREDPAT='sk-[A-Za-z0-9_-]{20,}|pk-lf-[A-Za-z0-9-]{10,}|oma_live_|tk_[A-Za-z0-9]{20,}|(Bearer|Basic) [A-Za-z0-9._=+/-]{20,}|eyJ[A-Za-z0-9_-]{10,}[.][A-Za-z0-9_-]{10,}|postgres(ql)?://[^:@/ ]+:[^@ ]+@|(PASSWORD|SECRET|TOKEN|APIKEY|API_KEY|_KEY|password|secret|apiKey|api_key)[A-Za-z_]*["]?[ ]*[=:][ ]*["]?[A-Za-z0-9+/_-]{16,}'
+# otherwise be a finding.
+#
+# The keyword may be followed only by `Key` or `_key`, and that restriction was
+# not caution — it was the first live run. A wildcard continuation
+# (`apiKey[A-Za-z_]*`) matched `apiKeyId` and turned up 175 lines in the
+# gateway's own logs, every one of them an API key IDENTIFIER rather than a
+# key. The widened scanner's first act was to cry wolf 175 times, which is the
+# failure this repo has already had once from an alerting rule. Narrow the
+# continuation rather than the keyword list: `secretKey` and `apiKey` still
+# match, `apiKeyId` does not.
+#
+# Verified both directions — 12 real credential shapes caught, 12 benign lines
+# not, the two `apiKeyId` shapes among them taken verbatim from the logs that
+# produced the false alarm — and the self-test pins every one.
+CREDPAT='sk-[A-Za-z0-9_-]{20,}|pk-lf-[A-Za-z0-9-]{10,}|oma_live_|tk_[A-Za-z0-9]{20,}|(Bearer|Basic) [A-Za-z0-9._=+/-]{20,}|eyJ[A-Za-z0-9_-]{10,}[.][A-Za-z0-9_-]{10,}|postgres(ql)?://[^:@/ ]+:[^@ ]+@|(PASSWORD|SECRET|TOKEN|APIKEY|API_KEY|_KEY|password|secret|apiKey|api_key)(Key|_key)?["]?[ ]*[=:][ ]*["]?[A-Za-z0-9+/_-]{16,}'
 
 PY=""
 for _c in python3 python py; do
@@ -5023,6 +5034,9 @@ MUST|token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0
 MUST|NTFY_TOKEN=tk_abcdefghijklmnopqrstuvwxyz01
 MUST|{"password": "s3cretValueThatIsLong123"}
 MUST|{"api_key":"abcdef0123456789abcdef"}
+MUST|{"secretKey":"Zm9vYmFyYmF6cXV4MTIzNDU2"}
+NEVER|"apiKeyId":"0554abcdefghijklmnopqrst","model":"x"
+NEVER|apiKeyName=agent-sidecar-mcp apiKeyId=0554abcdefghijklmnop
 NEVER|sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
 NEVER|commit=b28dbafd3c028d1db2c7103e55d7cd523867ff4b
 NEVER|Graph built: 58807 nodes, from b28dbafd.
@@ -5035,7 +5049,7 @@ NEVER|{"tokens":{"in":1234567890123456,"out":42}}
 NEVER|tokens=1234567890123456 cost=0.008
 CREDFIX
     if [ "$_credmiss" -eq 0 ]
-    then printf '  ok    all 11 credential shapes on the rotation list are caught\n'
+    then printf '  ok    all 12 credential shapes on the rotation list are caught\n'
     else printf '  FAIL  %s credential shape(s) on the rotation list are not caught\n' "$_credmiss"; fi
     if [ "$_credfp" -eq 0 ]
     then printf '  ok    digests, commit hashes and token counts are not flagged as credentials\n'
