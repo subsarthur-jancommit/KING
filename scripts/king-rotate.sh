@@ -47,6 +47,24 @@ c_dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
 # Some targets are owned by the container (uid 1000) while this runs as 1001.
 priv() { if sudo -n true 2>/dev/null; then sudo -n "$@"; else "$@"; fi; }
 
+# Every profile both compose files declare, as a COMPOSE_PROFILES value.
+#
+# Derived, not hardcoded. CLAUDE.md requires every added service to be opt-in
+# via `profiles:`, so the list grows, and a stale hardcoded copy would fail the
+# exact way this exists to prevent: `docker compose up -d activepieces` returns
+# "no such service: omniroute-base" when the profile gating that dependency is
+# not active, and the recreate silently does nothing.
+#
+# Activating a profile only makes a service RESOLVABLE; with `up -d <name>`
+# nothing else is started, and `--no-deps` keeps --force-recreate from reaching
+# through depends_on into the gateway.
+all_profiles() {
+    { grep -A1 'profiles:' docker-compose.yml 2>/dev/null
+      grep -A1 'profiles:' omniroute/docker-compose.yml 2>/dev/null
+    } | grep -oE '^[[:space:]]*-[[:space:]]*[a-z][a-z0-9-]*' \
+      | sed 's/^[[:space:]]*-[[:space:]]*//' | sort -u | tr '\n' ',' | sed 's/,$//'
+}
+
 # ---------------------------------------------------------------- registry
 #
 # var | file | services to recreate | risk | what a holder gets / what breaks
@@ -245,28 +263,70 @@ EOM
     # ---- recreate exactly the services that read it ----
     if [ -n "$s" ]; then
         printf '  recreating: %s\n' "$s"
+        # Two things that are easy to get wrong here and fail quietly.
+        #
+        # COMPOSE_PROFILES: `docker compose up -d activepieces` fails with
+        # "no such service: omniroute-base", because activepieces declares
+        # depends_on on a service the vendored compose gates behind the `base`
+        # profile. Without the profile active Compose cannot resolve it and
+        # refuses the whole command. The list is derived from both compose
+        # files rather than hardcoded, so it cannot drift when a profile is
+        # added.
+        #
+        # --no-deps: without it, --force-recreate reaches through depends_on
+        # and would recreate the gateway while rotating an Activepieces
+        # credential.
+        _rcr=0
         # shellcheck disable=SC2086
-        docker compose up -d --no-build --force-recreate $s 2>&1 | tail -3 | sed 's/^/    /'
+        COMPOSE_PROFILES="$(all_profiles)" \
+            docker compose up -d --no-build --no-deps --force-recreate $s \
+            > /tmp/king-rotate-recreate.$$ 2>&1 || _rcr=$?
+        tail -3 /tmp/king-rotate-recreate.$$ | sed 's/^/    /'
+        rm -f /tmp/king-rotate-recreate.$$
+        if [ "$_rcr" -ne 0 ]; then
+            c_red "  recreate FAILED — the new value is on disk but the service is still running the old one"
+            printf '  Fix the service, then re-run:  ./scripts/king-rotate.sh --plan %s\n' "$v"
+            return 1
+        fi
     fi
 
     # ---- prove it ----
     printf '\n  verifying — a revoked key does not announce itself:\n'
-    if [ -x ./scripts/verify-credentials.sh ]; then
-        if ./scripts/verify-credentials.sh 2>&1 | sed 's/^/    /'; then
-            c_green "  verification passed."
-            printf '%s rotated %s\n' "$v" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE"
-            printf '  recorded in %s\n\n' "$STATE"
-        else
-            c_red "  VERIFICATION FAILED — the old value is still in $bk"
-            printf '  roll back with:\n    cp -p %s %s\n' "$bk" "$f"
-            [ -n "$s" ] && printf '    docker compose up -d --no-build --force-recreate %s\n' "$s"
-            return 1
-        fi
-    else
+    if [ ! -x ./scripts/verify-credentials.sh ]; then
         c_yell "  verify-credentials.sh not executable; rotation NOT recorded."
         printf '  Run it yourself before calling this done.\n'
         return 1
     fi
+    # NOT `if ./scripts/verify-credentials.sh | sed ...`. A pipeline returns
+    # its LAST command's status, so that tested `sed`, which always succeeds —
+    # every rotation would have been recorded as verified no matter what the
+    # verification actually said. The safety net was decorative.
+    _vrc=0
+    _vout=$(./scripts/verify-credentials.sh 2>&1) || _vrc=$?
+    printf '%s\n' "$_vout" | sed 's/^/    /'
+    case "$_vrc" in
+        0)
+            c_green "  verification passed."
+            printf '%s rotated %s\n' "$v" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE"
+            printf '  recorded in %s\n\n' "$STATE"
+            ;;
+        2)
+            # Exit 2 means a service was not answering, so nothing was proved
+            # wrong and nothing was proved right. Telling you to roll back here
+            # would be the wrong remedy for the wrong diagnosis.
+            c_yell "  NOT VERIFIED — a service was not answering. Nothing failed."
+            printf '  Do NOT roll back on this alone. Start the service, then:\n'
+            printf '    ./scripts/verify-credentials.sh\n'
+            printf '  When it passes, record it:  ./scripts/king-rotate.sh --done %s\n\n' "$v"
+            return 1
+            ;;
+        *)
+            c_red "  VERIFICATION FAILED — the old value is still in $bk"
+            printf '  roll back with:\n    cp -p %s %s\n' "$bk" "$f"
+            [ -n "$s" ] && printf '    COMPOSE_PROFILES="%s" docker compose up -d --no-build --no-deps --force-recreate %s\n' "$(all_profiles)" "$s"
+            return 1
+            ;;
+    esac
 }
 
 case "${1:---list}" in

@@ -30,6 +30,15 @@ fail() { red   "  FAIL  $*"; failures=$((failures + 1)); }
 pass() { green "  ok    $*"; }
 skip() { yellow "  skip  $*"; }
 
+# "Could not reach it" is not "the credential is wrong", and saying the second
+# when it is the first sends you to roll back a rotation that was fine.
+# Measured 2026-09-11: with codegraph-serve stopped for a build, this script
+# reported "GRAPHIFY_API_KEY: unexpected 000000" -- curl 000 is no connection
+# at all, not a rejection. Untested is its own outcome, and it still must not
+# read as success: king-rotate.sh records a rotation only on a clean exit.
+untested=0
+unreachable() { yellow "  n/a   $*"; untested=$((untested + 1)); }
+
 # Values are read from the gitignored .env files and never printed. A key that
 # leaks into a terminal during the very operation meant to secure it would be
 # an unusually bad outcome.
@@ -72,6 +81,7 @@ else
   case "$code" in
     200) pass "$admin_var logs in to the management API." ;;
     401) fail "$admin_var is rejected (401). Scripts that log in are broken until it is corrected." ;;
+    000) unreachable "$admin_var: $BASE is not answering — credential untested." ;;
     *) fail "$admin_var: unexpected $code from $BASE/api/auth/login." ;;
   esac
 fi
@@ -88,6 +98,7 @@ else
   case "$code" in
     200) pass "OMNIROUTE_API_KEY answers on /v1/chat/completions." ;;
     401|403) fail "OMNIROUTE_API_KEY rejected ($code) — rotated but not updated here." ;;
+    000) unreachable "OMNIROUTE_API_KEY: $BASE is not answering — credential untested." ;;
     *) fail "OMNIROUTE_API_KEY: unexpected $code from $BASE/v1/chat/completions." ;;
   esac
 fi
@@ -128,6 +139,7 @@ else
   case "$code" in
     200) pass "GRAPHIFY_API_KEY completes an MCP initialize against the code graph." ;;
     401|403) fail "GRAPHIFY_API_KEY rejected ($code)." ;;
+    000) unreachable "GRAPHIFY_API_KEY: $CODEGRAPH is not answering — credential untested (is codegraph-serve running?)." ;;
     *) fail "GRAPHIFY_API_KEY: unexpected $code from $CODEGRAPH/mcp." ;;
   esac
   # This key is now the only thing between a full map of the repository and the
@@ -136,6 +148,7 @@ else
   case "$code" in
     401|403) pass "The code graph rejects a wrong token ($code)." ;;
     200) fail "The code graph ACCEPTED a wrong token — it is effectively public." ;;
+    000) unreachable "the code graph is not answering, so its rejection of a wrong token is untested." ;;
     *) fail "The code graph returned $code to a wrong token; could not confirm it rejects." ;;
   esac
 fi
@@ -154,6 +167,7 @@ else
     400) pass "AGENT_SIDECAR_AUTH_TOKEN accepted (rejected on the empty task, as designed)." ;;
     401) fail "AGENT_SIDECAR_AUTH_TOKEN rejected — Claude's bridge is locked out." ;;
     503) fail "The sidecar reports no token configured; it is refusing every request." ;;
+    000) unreachable "AGENT_SIDECAR_AUTH_TOKEN: $SIDECAR is not answering — credential untested." ;;
     *) fail "AGENT_SIDECAR_AUTH_TOKEN: unexpected $code from $SIDECAR/run." ;;
   esac
 
@@ -162,14 +176,24 @@ else
     -d '{"task":"x"}' || echo 000)
   case "$code" in
     401) pass "A wrong bearer is rejected (401)." ;;
+    000) unreachable "the sidecar is not answering, so its rejection of a wrong bearer is untested." ;;
     *) fail "A wrong bearer returned $code instead of 401." ;;
   esac
 fi
 
 echo
-if [ "$failures" -eq 0 ]; then
+if [ "$failures" -eq 0 ] && [ "$untested" -eq 0 ]; then
   green "all credentials answered."
+elif [ "$failures" -eq 0 ]; then
+  # Exit 2, not 0 and not 1. Nothing was proved wrong, and nothing was proved
+  # right either -- a rotation is not done until the thing that reads the
+  # credential has answered with it. king-rotate.sh treats this as "do not
+  # record", but the operator is told to start the service, not to roll back.
+  yellow "$untested check(s) could not run: a service was not answering."
+  yellow "Nothing failed. Start the service and re-run before calling a rotation done."
+  exit 2
 else
   red "$failures credential check(s) failed."
+  [ "$untested" -gt 0 ] && yellow "$untested more could not run at all."
   exit 1
 fi
