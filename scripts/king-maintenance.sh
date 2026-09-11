@@ -21,7 +21,10 @@
 #   * Watch the gateway from OUTSIDE the build and abort on real symptoms.
 #   * Free the memory first. The build needs ~4.6 GB; this host has ~4.4 GB
 #     free while serving ten containers, which is why every bounded attempt
-#     OOMed. Stopping activepieces and codegraph-serve releases ~1.3 GB.
+#     OOMed. It stops activepieces, codegraph-serve and ollama BY CONTAINER ID
+#     -- `docker compose stop activepieces` fails with "no such service:
+#     omniroute-base", because its depends_on points into the profile-gated
+#     vendored compose, and a stop that fails is memory the build never gets.
 #   * Verify the new image BEFORE touching the running one.
 #
 # If anything fails, the trap restarts whatever this stopped. A failed rebuild
@@ -34,7 +37,7 @@ cd "$REPO" || exit 1
 
 GW_URL="http://127.0.0.1:20128/api/monitoring/health"
 BUILDER="king-maint"
-FREE_SERVICES="activepieces codegraph-serve"   # stopped to make room, restarted after
+FREE_SERVICES="activepieces codegraph-serve ollama"   # stopped to make room, restarted after
 CAGE_MB="${KING_BUILD_CAGE_MB:-4608}"
 HEAP_MB="${KING_BUILD_HEAP_MB:-3584}"
 FLOOR_MB=400                                    # host MemAvailable abort floor
@@ -49,41 +52,39 @@ priv() { if sudo -n true 2>/dev/null; then sudo -n "$@"; else "$@"; fi; }
 mem_avail() { awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo; }
 gw_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$GW_URL" 2>/dev/null || echo 000; }
 
-# How much Ollama is holding resident. D-3 counts this as releasable headroom
-# because the codegraph build releases it first, and the same is true here.
-ollama_mb() {
-    _oc=$(docker compose --profile localmodel ps -q ollama 2>/dev/null || true)
-    [ -n "$_oc" ] || { printf '0'; return; }
-    docker stats --no-stream --format '{{.MemUsage}}' "$_oc" 2>/dev/null \
-        | cut -d/ -f1 | awk '/GiB/{printf "%d", $1*1024} /MiB/{printf "%d", $1}'
+# Resolve a compose service to its running container id BY LABEL.
+#
+# `docker compose stop activepieces` does not work here and the reason is not
+# obvious: activepieces declares `depends_on: [omniroute-base, ap-redis]`, and
+# omniroute-base lives in the INCLUDED vendored compose behind the `base`
+# profile. Without the right --profile flags Compose cannot resolve that
+# dependency and fails the whole command with "no such service: omniroute-base"
+# — so the stop silently did nothing, the memory was never freed, and the
+# build refused to start for lack of room that was actually available.
+# codegraph-serve has no depends_on, which is the only reason it worked and the
+# only reason this looked like it was working at all.
+#
+# The label is what Compose itself stamps on the container, so this needs no
+# profile knowledge and cannot drift when profiles change.
+svc_cid() { docker ps -q --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -1; }
+
+# What stopping that container would actually release, measured now.
+svc_mb() {
+    _c=$(svc_cid "$1")
+    [ -n "$_c" ] || { printf '0'; return; }
+    docker stats --no-stream --format '{{.MemUsage}}' "$_c" 2>/dev/null \
+        | cut -d/ -f1 | awk '/GiB/{printf "%d", $1*1024} /MiB/{printf "%d", $1} /KiB/{printf "0"}'
 }
 
-# Unload every resident model. Lifted from codegraph-refresh.sh rather than
-# rewritten, including the two mistakes it records: the container is
-# `king-ollama-1` and not `ollama`, and `ollama ps` takes no --format flag —
-# an earlier version printed "unloading" while unloading nothing for a day.
-ollama_release() {
-    _oc=$(docker compose --profile localmodel ps -q ollama 2>/dev/null || true)
-    [ -n "$_oc" ] || return 0
-    _raw=$(docker exec "$_oc" ollama ps 2>/dev/null) || return 0
-    _loaded=$(printf '%s\n' "$_raw" | tail -n +2 | grep -c . || true)
-    [ "${_loaded:-0}" -gt 0 ] || { printf '  ollama holds nothing resident\n'; return 0; }
-    printf '  ollama is holding %s model(s); unloading\n' "$_loaded"
-    printf '%s\n' "$_raw" | tail -n +2 | awk 'NF {print $1}' | while read -r m; do
-        docker exec "$_oc" ollama stop "$m" >/dev/null 2>&1 || printf '    could not stop %s\n' "$m"
-    done
-    _still=$(docker exec "$_oc" ollama ps 2>/dev/null | tail -n +2 | grep -c . || true)
-    # Verify rather than assume; the message above was once printed by a
-    # command that did nothing.
-    [ "${_still:-0}" -eq 0 ] && printf '    unloaded\n' || printf '    %s still resident\n' "$_still"
-}
-
-STOPPED=""
+STOPPED=""          # container ids, not service names — see svc_cid
 restore_services() {
     [ -n "$STOPPED" ] || return 0
-    printf '  restarting what this stopped: %s\n' "$STOPPED"
-    # shellcheck disable=SC2086
-    docker compose up -d --no-build $STOPPED >/dev/null 2>&1
+    printf '  restarting what this stopped:'
+    for _c in $STOPPED; do
+        printf ' %s' "$(docker inspect -f '{{.Name}}' "$_c" 2>/dev/null | tr -d /)"
+        docker start "$_c" >/dev/null 2>&1
+    done
+    printf '\n'
     STOPPED=""
 }
 cleanup() {
@@ -100,19 +101,25 @@ do_plan() {
     _now=$(mem_avail)
     _free=0
     for s in $FREE_SERVICES; do
-        _c=$(docker ps --filter "name=$s" --format '{{.Names}}' 2>/dev/null | head -1)
-        [ -n "$_c" ] || continue
-        _u=$(docker stats --no-stream --format '{{.MemUsage}}' "$_c" 2>/dev/null | cut -d/ -f1)
-        printf '  %-24s currently using %s\n' "$_c" "${_u:-?}"
-        _mb=$(printf '%s' "$_u" | awk '/GiB/{printf "%d", $1*1024} /MiB/{printf "%d", $1}')
+        _c=$(svc_cid "$s")
+        if [ -z "$_c" ]; then
+            printf '  %-24s not running — nothing to free\n' "$s"
+            continue
+        fi
+        _mb=$(svc_mb "$s")
+        printf '  %-24s %s MB  (%s)\n' "$s" "${_mb:-0}" \
+            "$(docker inspect -f '{{.Name}}' "$_c" 2>/dev/null | tr -d /)"
         _free=$((_free + ${_mb:-0}))
     done
-    _oll=$(ollama_mb)
-    _after=$((_now + _free + ${_oll:-0}))
+    _after=$((_now + _free))
     printf '\n  MemAvailable now            %s MB\n' "$_now"
     printf '  released by stopping those  %s MB\n' "$_free"
-    printf '  released by unloading ollama %s MB\n' "${_oll:-0}"
     printf '  available to the build      %s MB\n' "$_after"
+    # These are a snapshot. Ollama in particular evicts an idle model on its
+    # own, so a number measured while one was loaded can be 1.3 GB stale by
+    # the time --rebuild runs. Step 2 re-measures after stopping and refuses
+    # on the real figure rather than this one.
+    printf '  %s\n' "(snapshot — --rebuild re-measures after stopping and refuses on the real number)"
     printf '  cage this script would set  %s MB   (V8 heap %s MB)\n' "$CAGE_MB" "$HEAP_MB"
     if [ "$_after" -gt $((CAGE_MB + FLOOR_MB)) ]; then
         c_green "  OK — that leaves $((_after - CAGE_MB)) MB for the host, above the ${FLOOR_MB} MB floor."
@@ -163,12 +170,24 @@ do_rebuild() {
     printf '  omniroute:rollback-%s\n' "$_stamp"
 
     step "2. Free memory"
-    ollama_release
     for s in $FREE_SERVICES; do
-        docker compose stop "$s" >/dev/null 2>&1 && STOPPED="$STOPPED $s"
+        _c=$(svc_cid "$s")
+        if [ -z "$_c" ]; then
+            printf '  %-18s not running\n' "$s"
+            continue
+        fi
+        if docker stop "$_c" >/dev/null 2>&1; then
+            STOPPED="$STOPPED $_c"
+            printf '  %-18s stopped\n' "$s"
+        else
+            # Do not continue quietly. A stop that fails is memory this build
+            # is counting on and will not get.
+            c_red "  $s FAILED to stop — the build would be short its memory"
+            return 1
+        fi
     done
-    printf '  stopped:%s\n  MemAvailable now %s MB\n' "${STOPPED:- nothing}" "$(mem_avail)"
     _avail=$(mem_avail)
+    printf '  MemAvailable now %s MB\n' "$_avail"
     if [ "$_avail" -lt $((CAGE_MB + FLOOR_MB)) ]; then
         c_red "  only ${_avail} MB free; a ${CAGE_MB} MB cage would leave the host under the ${FLOOR_MB} MB floor"
         printf '  Refusing to start. Lower it: KING_BUILD_CAGE_MB=%s ./scripts/king-maintenance.sh --rebuild\n' \
