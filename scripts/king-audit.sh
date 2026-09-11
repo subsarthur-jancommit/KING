@@ -637,15 +637,24 @@ print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$_ctx/${_f#.
     if ! on_host; then
         chk A-9 SKIP "not on the host; installed artefacts unreachable"
     else
-        _drift=""; _unread=""; _pairs=0
-        for _spec in "/usr/local/sbin/king-firewall.sh|scripts/king-firewall.sh" \
-                     "/etc/systemd/system/king-firewall.service|scripts/king-firewall.service"; do
-            _dst=${_spec%%|*}; _src=${_spec##*|}
-            [ -f "$_src" ] || continue
+        # The pair list was written by hand, and it was complete — today. It could
+        # not have said so tomorrow: a second `king-*` artefact installed outside
+        # the repo would simply not appear, and A-9 would stay green while an
+        # unreviewable file ran as root. Same fault as G-1, G-2 and J-1 carried.
+        #
+        # The population is derived from the HOST instead: everything matching
+        # `king-*` in the two places this deployment installs to. An artefact with
+        # no repo copy is now its own finding — it is the more serious one, because
+        # a file nobody can read in a diff cannot drift, it is already adrift.
+        _drift=""; _unread=""; _pairs=0; _orphan=""
+        for _dst in $(priv sh -c 'ls -1 /usr/local/sbin/king-* /etc/systemd/system/king-* 2>/dev/null' || true); do
+            _src="scripts/$(basename "$_dst")"
+            if [ ! -f "$_src" ]; then
+                _orphan="$_orphan $_dst"
+                continue
+            fi
             _pairs=$((_pairs + 1))
-            if ! priv test -e "$_dst"; then
-                _drift="$_drift ${_dst}(absent)"
-            elif priv cmp -s "$_dst" "$_src"; then
+            if priv cmp -s "$_dst" "$_src"; then
                 :
             elif priv test -r "$_dst"; then
                 _drift="$_drift ${_dst}(differs)"
@@ -653,14 +662,18 @@ print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$_ctx/${_f#.
                 _unread="$_unread $_dst"
             fi
         done
-        if [ "$_pairs" -eq 0 ]; then
-            chk A-9 UNKNOWN "no installed artefact could be matched to a repo copy"
+        if [ -n "$_orphan" ]; then
+            chk A-9 FAIL "installed artefact(s) with no copy in the repo:$_orphan" \
+                "a file that cannot be read in a diff cannot drift from the repo; it is already adrift, and it runs as root"
+        elif [ "$_pairs" -eq 0 ]; then
+            chk A-9 UNKNOWN "nothing matching king-* is installed outside the repo" \
+                "either nothing is deployed that way, or this user cannot list those directories"
         elif [ -n "$_unread" ]; then
             chk A-9 UNKNOWN "installed artefact(s) could not be read:$_unread" \
                 "an unreadable file is not a matching one"
         elif [ -z "$_drift" ]; then
             chk A-9 PASS "$_pairs installed artefact(s) match their repo copy" \
-                "compared with sudo, and 'cannot read' is reported apart from 'differs'"
+                "population listed from the host, not from a list in this script; compared with sudo, and 'cannot read' is reported apart from 'differs'"
         else
             chk A-9 FAIL "installed artefact(s) no longer match the repo:$_drift" \
                 "the reviewed copy is not the running one; re-run the install step in the unit's header"
