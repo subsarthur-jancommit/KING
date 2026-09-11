@@ -56,6 +56,13 @@ BASE_IMAGE="omniroute:base"
 # The container is named `omniroute`; the compose SERVICE is `omniroute-base`.
 # Passing the container name gives "no such service" and the command fails.
 GW_SERVICE="${KING_GW_SERVICE:-omniroute-base}"
+# The ROOT compose file, not omniroute/docker-compose.yml. The running
+# container's own com.docker.compose.project.config_files label says
+# /home/subsa/KING/docker-compose.yml, and its project is `king`. Pointing at
+# the vendored file instead gives project `omniroute`, whose stop and rm find
+# nothing ("No stopped containers") and whose up then collides with the
+# container the OTHER project still owns.
+COMPOSE_FILE="${KING_COMPOSE_FILE:-docker-compose.yml}"
 CAND_IMAGE="omniroute:tls-${TLS_VER}"
 GW_URL="http://127.0.0.1:20128/api/monitoring/health"
 
@@ -80,11 +87,11 @@ gw_cid()  { docker ps -q --filter "label=com.docker.compose.service=${GW_SERVICE
 # the reason this function reports how long rather than hiding it.
 recreate_gateway() {
     _rc=0
-    docker compose -f omniroute/docker-compose.yml --profile base stop "$GW_SERVICE" \
+    docker compose -f "$COMPOSE_FILE" --profile base stop "$GW_SERVICE" \
         > /tmp/king-gw-recreate.$$ 2>&1 || _rc=$?
-    docker compose -f omniroute/docker-compose.yml --profile base rm -f "$GW_SERVICE" \
+    docker compose -f "$COMPOSE_FILE" --profile base rm -f "$GW_SERVICE" \
         >> /tmp/king-gw-recreate.$$ 2>&1 || _rc=$?
-    docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build \
+    docker compose -f "$COMPOSE_FILE" --profile base up -d --no-build \
         --no-deps "$GW_SERVICE" >> /tmp/king-gw-recreate.$$ 2>&1 || _rc=$?
     tail -4 /tmp/king-gw-recreate.$$ | sed 's/^/    /'
     rm -f /tmp/king-gw-recreate.$$
@@ -312,7 +319,8 @@ do_rollback() {
     recreate_gateway || _rrc=$?
     if [ "$_rrc" -ne 0 ]; then
         c_red "  recreate failed (exit $_rrc) — the gateway may be down"
-        printf '  Try by hand:\n    docker compose -f omniroute/docker-compose.yml --profile base up -d --no-build --no-deps %s\n' "$GW_SERVICE"
+        printf '  Try by hand:\n    docker compose -f %s --profile base up -d --no-build --no-deps %s\n' \
+            "$COMPOSE_FILE" "$GW_SERVICE"
         return 1
     fi
     if wait_gateway; then
