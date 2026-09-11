@@ -817,7 +817,7 @@ PYAUDIT
             #
             # So the API routes are held to 401 and the rest are reported with
             # their status for a human to judge, rather than guessed at.
-            _bad=""; _info=""
+            _bad=""; _info=""; _down=""
             for _r in $_routes; do
                 # Probe the endpoint the route actually serves, not its root.
                 # `handle_path` strips the prefix, so /king-agent/ reaches the
@@ -831,15 +831,18 @@ PYAUDIT
                      "https://gateway.arject.co${_probe}" 2>/dev/null || echo 000)
                 case "$_r" in
                     */king-agent|*/king-codegraph)
-                        case "$_c" in
-                            401|403) : ;;
-                            *) _bad="$_bad ${_r}=$_c" ;;
+                        case "$(_doorverdict "$_c" '401 403')" in
+                            locked)      : ;;
+                            unreachable) _down="$_down ${_r}=$_c" ;;
+                            *)           _bad="$_bad ${_r}=$_c" ;;
                         esac ;;
                     *) _info="$_info ${_r}=$_c" ;;
                 esac
             done
             if [ -n "$_bad" ]; then
                 chk B-8 FAIL "API route(s) not demanding a token" "$_bad"
+            elif [ -n "$_down" ]; then
+                chk B-8 UNKNOWN "API route(s) unreachable, so the lock could not be tested:$_down"                     "a 5xx is the upstream being absent, not a door standing open"
             elif [ -n "$_info" ]; then
                 chk B-8 PASS "every API route demands a token" \
                     "other route(s), status for review:$_info"
@@ -1158,27 +1161,34 @@ dim_C() {
                   | sed 's|handle_path ||; s|/\*$||' | sort -u || true)
         _n=$(printf '%s' "$_routes" | grep -c . || true)
         metric c5_paths "${_n:-0}"
-        _open=""; _unmapped=""
+        _open=""; _unmapped=""; _c5down=""
         for _r in $_routes; do
             _spec=$(probe_target "$_r")
             _tgt=${_spec%%|*}; _okcodes=${_spec#*|}
             if [ -z "$_tgt" ]; then _unmapped="$_unmapped $_r"; continue; fi
             _code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
                     "https://gateway.arject.co$_tgt" 2>/dev/null || echo 000)
-            case " $_okcodes " in
-                *" $_code "*) : ;;
-                *) _open="$_open $_tgt=$_code" ;;
+            case "$(_doorverdict "$_code" "$_okcodes")" in
+                locked)      : ;;
+                unreachable) _c5down="$_c5down $_tgt=$_code" ;;
+                *)           _open="$_open $_tgt=$_code" ;;
             esac
         done
+        # Order is the argument. An open door outranks an unreachable one:
+        # if anything answered anonymously, that is the finding, whatever else
+        # was down at the same time.
         if [ "${_n:-0}" -eq 0 ]; then
             chk C-5 UNKNOWN "no routes found in the Caddyfile to inventory"
         elif [ -n "$_unmapped" ]; then
             chk C-5 FAIL "route(s) with no declared probe target" \
                 "$_unmapped — add one to probe_target(); an unknown route must not pass by default"
-        elif [ -z "$_open" ]; then
-            chk C-5 PASS "all ${_n} route(s), probed at the endpoint that carries data, deny anonymous access"
-        else
+        elif [ -n "$_open" ]; then
             chk C-5 FAIL "data endpoint(s) answered without a token" "$_open"
+        elif [ -n "$_c5down" ]; then
+            chk C-5 UNKNOWN "route(s) unreachable, so anonymous access could not be tested:$_c5down" \
+                "a 5xx is the upstream being absent; it proves nothing about the lock in either direction"
+        else
+            chk C-5 PASS "all ${_n} route(s), probed at the endpoint that carries data, deny anonymous access"
         fi
     else
         chk C-5 UNKNOWN "curl or Caddyfile unavailable; public surface unmeasurable"
@@ -1891,6 +1901,51 @@ dim_D() {
 # finding. A backend that refuses the credential has ANSWERED, so that is a
 # failure. A backend that did not answer, or a filter that cannot prove it
 # filters, yields no verdict at all.
+# _e4verdict <graph_commit> <origin> <is_ancestor 1|0> <built_at> <newest_then> <age_hours>
+#
+# E-4's decision, separated from the git plumbing that feeds it so --self-test
+# can exercise the real thing. The ORDER is the argument: "is it behind?" is
+# not the question, because being behind is normal and documented. The question
+# is whether the refresh indexed what was available when it ran.
+# _doorverdict <http_code> <acceptable codes, space separated>
+#
+# A locked door, an open door, and a building that is not there are three
+# different findings. B-8 and C-5 had two buckets, so the third landed in the
+# alarming one: when `codegraph-serve` was restarting, Caddy answered 502 and
+# C-5 reported "data endpoint(s) answered without a token". Nothing answered.
+#
+# That is the worst shape a security check can take. It is wrong about the
+# thing it is most trusted on, it is red for a reason that recurs on every
+# restart, and both together teach a reader to scroll past the one check that
+# would matter if it were ever right.
+#
+# 5xx and a connection failure are UNREACHABLE: the lock could not be tested,
+# which by this script's own header is UNKNOWN and never a pass.
+_doorverdict() {
+    _dvc="${1:-000}"
+    case " ${2:-401 403} " in *" $_dvc "*) printf 'locked'; return ;; esac
+    case "$_dvc" in
+        000|5??) printf 'unreachable'; return ;;
+    esac
+    printf 'open'
+}
+
+_e4verdict() {
+    [ -n "${1:-}" ] || { printf 'unknown-noinfo'; return; }
+    [ "$1" = "${2:-}" ] && { printf 'pass-current'; return; }
+    [ "${3:-0}" = "1" ] || { printf 'fail-notancestor'; return; }
+    [ -n "${4:-}" ] || { printf 'unknown-nodate'; return; }
+    [ -n "${5:-}" ] || { printf 'unknown-nowant'; return; }
+    # A refresh that ran and still indexed an older commit built from a stale
+    # checkout. This is the 2026-09-08 fault, and an age test passes it.
+    [ "$1" = "$5" ] || { printf 'fail-stalecheckout'; return; }
+    case "${6:-999}" in ''|*[!0-9]*) printf 'unknown-nodate'; return ;; esac
+    # 36h, not 24: the timer fires at 03:12 with a randomised delay, so merely
+    # late is not the same as never.
+    [ "$6" -le 36 ] || { printf 'fail-schedule'; return; }
+    printf 'pass-drift'
+}
+
 _e9verdict() {
     case "${1:-}" in
         200)     ;;
@@ -1982,27 +2037,69 @@ dim_E() {
         chk E-2 UNKNOWN "no docker to reach Postgres with"
     fi
 
+    # E-4 asked whether the graph's commit EQUALS origin/main, so it went red
+    # on every commit and stayed red until the 03:12 timer. CLAUDE.md says the
+    # opposite in as many words: "It can be stale by up to a day, which is
+    # normal; weeks behind is not." A check that is red during normal operation
+    # is a check people learn to scroll past, and this one had been red in
+    # three consecutive baselines for no fault at all.
+    #
+    # Relaxing it to "built within a day" would have been wrong, and the
+    # comment left here on 2026-09-08 says why: BUILD_INFO said today while the
+    # commit was 18 behind, because graphify had built from a stale checkout.
+    # An age test passes that.
+    #
+    # So the question is neither equality nor age. It is: DID THE REFRESH INDEX
+    # THE NEWEST COMMIT THAT EXISTED WHEN IT RAN? `git rev-list -1
+    # --before=<built_at> origin/main` answers exactly that, and the three
+    # failures then separate cleanly:
+    #
+    #   commits landed after the refresh    -> normal drift, PASS, counted
+    #   the refresh ran and indexed an older commit -> the 2026-09-08 bug, FAIL
+    #   the refresh has not run at all      -> the timer is dead, FAIL
+    #
+    # E-5 still measures CONTENT, because graphify scans the working tree while
+    # BUILD_INFO records HEAD. Reading either alone is the mistake.
     _bi=$(docker exec king-codegraph-serve-1 cat /out/graphify-out/BUILD_INFO 2>/dev/null || true)
     _gc=$(printf '%s' "$_bi" | sed -n 's/^commit=//p' | cut -c1-40)
-    _head=$(git rev-parse HEAD 2>/dev/null || true)
+    _gat=$(printf '%s' "$_bi" | sed -n 's/^built_at=//p' | head -1)
     _origin=$(git rev-parse origin/main 2>/dev/null || true)
-    if [ -z "$_gc" ]; then
-        chk E-4 UNKNOWN "cannot read the graph's BUILD_INFO"
-    elif [ "$_gc" = "$_origin" ]; then
-        chk E-4 PASS "code graph indexes origin/main" "${_gc}"
-    elif [ "$_gc" = "$_head" ]; then
-        # E-4 measures the LABEL; E-5 measures the CONTENT, and they can
-        # disagree. graphify scans the working tree while BUILD_INFO records
-        # HEAD, so a graph built on a host with uncommitted files contains
-        # code its own provenance line does not describe. Observed
-        # 2026-09-08: E-4 said 18 commits behind, E-5 found a file added
-        # after that commit. Neither is wrong; reading either alone is.
-        chk E-4 FAIL "the graph provenance label is behind origin/main (E-5 checks its contents)" \
-            "graph=$(printf '%s' "$_gc" | cut -c1-8) origin=$(printf '%s' "$_origin" | cut -c1-8)"
-    else
-        chk E-4 FAIL "code graph indexes neither HEAD nor origin/main" \
-            "graph=$(printf '%s' "$_gc" | cut -c1-8) head=$(printf '%s' "$_head" | cut -c1-8)"
+    _anc=0; git merge-base --is-ancestor "$_gc" "$_origin" 2>/dev/null && _anc=1
+    _want=''; _behind='?'; _age=''
+    if [ -n "$_gat" ] && [ "$_anc" = "1" ]; then
+        _want=$(git rev-list -1 --before="$_gat" "$_origin" 2>/dev/null || true)
+        _behind=$(git rev-list --count "${_gc}..${_origin}" 2>/dev/null || printf '?')
+        _then=$(date -u -d "$_gat" +%s 2>/dev/null || true)
+        [ -n "$_then" ] && _age=$(( ( $(date -u +%s) - _then ) / 3600 ))
+        case "$_behind" in ''|*[!0-9]*) : ;; *) metric e4_commits_behind "$_behind" ;; esac
     fi
+    case "$(_e4verdict "$_gc" "$_origin" "$_anc" "$_gat" "$_want" "$_age")" in
+        unknown-noinfo)
+            chk E-4 UNKNOWN "cannot read the graph's BUILD_INFO" ;;
+        pass-current)
+            chk E-4 PASS "code graph indexes origin/main" "${_gc}" ;;
+        fail-notancestor)
+            chk E-4 FAIL "the graph indexes a commit that is not on origin/main" \
+                "graph=$(printf '%s' "$_gc" | cut -c1-8) origin=$(printf '%s' "$_origin" | cut -c1-8) — rebased, or built somewhere else" ;;
+        unknown-nodate)
+            chk E-4 UNKNOWN "the graph is behind origin/main and BUILD_INFO carries no usable built_at" \
+                "without a build time, normal drift cannot be told apart from a refresh that stopped" ;;
+        unknown-nowant)
+            chk E-4 UNKNOWN "cannot tell which commit was newest at $_gat" \
+                "graph=$(printf '%s' "$_gc" | cut -c1-8), $_behind behind" ;;
+        fail-stalecheckout)
+            chk E-4 FAIL "the refresh ran at $_gat but indexed an older commit than was available then" \
+                "graph=$(printf '%s' "$_gc" | cut -c1-8) available=$(printf '%s' "$_want" | cut -c1-8) — built from a stale checkout, which a date check would pass" ;;
+        fail-schedule)
+            chk E-4 FAIL "the graph has not been refreshed since $_gat (${_age}h)" \
+                "it indexed the newest commit available then, so the BUILD is fine and the SCHEDULE is not" ;;
+        pass-drift)
+            chk E-4 PASS "code graph is $_behind commit(s) behind origin/main, all of them newer than the refresh" \
+                "built $_gat (${_age}h ago) against $(printf '%s' "$_gc" | cut -c1-8), which was origin/main at that moment" ;;
+        *)
+            chk E-4 UNKNOWN "the graph freshness comparison produced no verdict" \
+                "graph=${_gc:-none} anc=$_anc built_at=${_gat:-none} want=${_want:-none} age=${_age:-none}" ;;
+    esac
 
     # E-5: freshness and correctness are different questions. A BUILD_INFO
     # dated today passes a date check while indexing a tree from last week --
@@ -4708,6 +4805,74 @@ NSFIX
     then printf '  ok    sourcing .env truncates the credential at the space, which is why the container is asked\n'
     else printf '  FAIL  sourcing .env truncates the credential at the space, which is why the container is asked\n'; _f=$((_f+1)); fi
 
+    # ---- E-4: behind is normal; not having refreshed is not ---------------
+    #
+    # The old check compared the graph's commit to origin/main for EQUALITY, so
+    # it went red on every commit and stayed red until the next nightly run.
+    # CLAUDE.md says "stale by up to a day is normal", so the check contradicted
+    # the policy it was enforcing, and three consecutive baselines recorded a
+    # red for no fault.
+    if [ "$(_e4verdict abc abc 1 2026-09-11T03:12:00Z abc 5)" = "pass-current" ]
+    then printf '  ok    a graph at origin/main is current\n'
+    else printf '  FAIL  a graph at origin/main is current\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e4verdict abc zzz 1 2026-09-11T03:12:00Z abc 5)" = "pass-drift" ]
+    then printf '  ok    commits landing after the refresh are normal drift, not a failure\n'
+    else printf '  FAIL  commits landing after the refresh are normal drift, not a failure\n'; _f=$((_f+1)); fi
+
+    # The 2026-09-08 fault: BUILD_INFO said today, the commit was 18 behind.
+    # An age test passes this; asking what was AVAILABLE does not.
+    if [ "$(_e4verdict abc zzz 1 2026-09-11T03:12:00Z def 5)" = "fail-stalecheckout" ]
+    then printf '  ok    a refresh that indexed an older commit than was available is caught\n'
+    else printf '  FAIL  a refresh that indexed an older commit than was available is caught\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e4verdict abc zzz 1 2026-09-09T03:12:00Z abc 50)" = "fail-schedule" ]
+    then printf '  ok    a refresh that has not run in 50h is a schedule failure, not a drift\n'
+    else printf '  FAIL  a refresh that has not run in 50h is a schedule failure, not a drift\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e4verdict abc zzz 0 2026-09-11T03:12:00Z abc 5)" = "fail-notancestor" ]
+    then printf '  ok    a graph commit that is not on origin/main is caught\n'
+    else printf '  FAIL  a graph commit that is not on origin/main is caught\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e4verdict '' zzz 1 2026-09-11T03:12:00Z abc 5)" = "unknown-noinfo" ]
+    then printf '  ok    an unreadable BUILD_INFO is unknown, never a pass\n'
+    else printf '  FAIL  an unreadable BUILD_INFO is unknown, never a pass\n'; _f=$((_f+1)); fi
+
+    if [ "$(_e4verdict abc zzz 1 '' abc 5)" = "unknown-nodate" ]
+    then printf '  ok    a missing build time is unknown, because drift and a dead timer look alike without it\n'
+    else printf '  FAIL  a missing build time is unknown, because drift and a dead timer look alike without it\n'; _f=$((_f+1)); fi
+
+    # The old predicate, pinned so the reason for the change cannot be lost.
+    _e4old() { [ "$1" = "$2" ] && printf 'pass' || printf 'fail'; }
+    if [ "$(_e4old abc zzz)" = "fail" ] && [ "$(_e4verdict abc zzz 1 2026-09-11T03:12:00Z abc 5)" = "pass-drift" ]
+    then printf '  ok    the OLD equality test called normal drift a failure, which is why it was replaced\n'
+    else printf '  FAIL  the OLD equality test called normal drift a failure, which is why it was replaced\n'; _f=$((_f+1)); fi
+
+
+    # ---- C-5 / B-8: a door that is not there is not a door standing open ---
+    #
+    # Both checks bucketed every status that was not 401/403 as "answered
+    # without a token". When codegraph-serve was restarting, Caddy returned 502
+    # and C-5 reported an open data endpoint. Nothing had answered at all.
+    for _dcase in "401|401 403|locked" \
+                  "403|401 403|locked" \
+                  "200|401 403|open" \
+                  "404|401 403|open" \
+                  "502|401 403|unreachable" \
+                  "503|401 403|unreachable" \
+                  "000|401 403|unreachable"; do
+        _dc=${_dcase%%|*}; _drest=${_dcase#*|}; _dok=${_drest%%|*}; _dwant=${_drest#*|}
+        if [ "$(_doorverdict "$_dc" "$_dok")" = "$_dwant" ]
+        then printf '  ok    HTTP %s reads as %s\n' "$_dc" "$_dwant"
+        else printf '  FAIL  HTTP %s reads as %s\n' "$_dc" "$_dwant"; _f=$((_f+1)); fi
+    done
+
+    # The old predicate, pinned: it had two buckets, so 502 landed in the
+    # alarming one.
+    _doorold() { case " $2 " in *" $1 "*) printf 'locked' ;; *) printf 'open' ;; esac; }
+    if [ "$(_doorold 502 '401 403')" = "open" ]
+    then printf '  ok    the OLD two-bucket test called a 502 an open door, which is why it was replaced\n'
+    else printf '  FAIL  the OLD two-bucket test called a 502 an open door, which is why it was replaced\n'; _f=$((_f+1)); fi
     # ---- J-6: the two false-positive classes, pinned ----------------------
     #
     # The python is EXTRACTED from this script rather than retyped, so these
