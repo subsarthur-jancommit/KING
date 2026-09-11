@@ -1378,3 +1378,62 @@ cleaned up, because a twenty-minute exposure that nobody writes down is
 indistinguishable from one that never happened — which is the same reasoning
 that put `GRAPHIFY_API_KEY` in `docs/king-rotation.md` when I printed it to a
 transcript.
+
+---
+
+## 34. Six attempts at one wall that I rebuilt each time
+
+The gateway rebuild OOMed at every cage size I tried. The kernel recorded why,
+and I did not read the two records side by side until the sixth:
+
+```
+cage 3584 MB -> next-build killed at anon-rss 3.11 GB   (87% of the cage)
+cage 4608 MB -> next-build killed at anon-rss 3.99 GB   (87% of the cage)
+```
+
+Raising the cage 29% raised its appetite 28%. **Turbopack sizes itself to the
+limit it finds and then exceeds it**, so those were not six tries at one wall.
+They were six walls, each built where I had just moved it, and every
+"try a bigger cage" — including the one my own script printed as advice — was
+wrong before it was typed.
+
+`omniroute/Dockerfile:131` says this outright: `OMNIROUTE_BUILD_MEMORY_MB` caps
+only the V8 heap, and turbopack compiles in native Rust memory outside it. I
+read that three times across two days and treated it as a caveat about tuning.
+It is not a caveat. **A bound the bounded thing gets to choose is not a bound**,
+and the sentence saying so was in the file the whole time.
+
+What broke the loop was not a new idea. It was putting two kernel logs next to
+each other and dividing.
+
+### The same day, in the script written to prevent this
+
+```sh
+if docker buildx build ... 2>&1 | tail -20 | sed 's/^/  /'; then
+```
+
+A pipeline's exit status is its last command's. That tested `sed`. A failed
+build read as a success, fell through to the verification step, found no image,
+and told the operator:
+
+> the TLS binary is not the one on record — Rebuilding is not the fix if this
+> differs.
+
+Every word wrong, and confidently so. The real cause — a transient npm network
+error — was in the part `tail -20` had thrown away.
+
+The identical bug was in `king-rotate.sh`, guarding something worse:
+
+```sh
+if ./scripts/verify-credentials.sh 2>&1 | sed 's/^/    /'; then
+```
+
+That is the check that decides whether a credential rotation is recorded as
+verified. It would have recorded every rotation as verified, whatever the
+verification said. **The safety net was decorative**, and it was written in the
+same afternoon as the rule it was meant to enforce.
+
+Both were found by running the scripts, not by reading them. `shellcheck` does
+not flag this shape, the code reads correctly in English, and the failure is
+invisible until the guarded thing actually fails — which is the one moment
+nobody is watching closely.
