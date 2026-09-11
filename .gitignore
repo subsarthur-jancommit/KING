@@ -87,6 +87,12 @@ omniroute/plugins/*
 # EnvironmentFile so the secret never lands in a systemd unit.
 /.pool-prove.env
 
+# scripts/king-rotate.sh appends one line per rotation: the credential NAME and
+# a UTC timestamp, never a value. Host-local progress, not repository history —
+# the names are already public in docs/king-rotation.md, so nothing new leaks,
+# but committing it would put a per-machine work log into everyone's diff.
+/.rotation-state
+
 # Berkas kerja sementara yang saya buat di root saat menjalankan probe. Salah
 # satunya pernah ikut ter-commit karena perintah rm-nya dipindah ke latar
 # sebelum sempat jalan.
