@@ -39,7 +39,13 @@ GW_URL="http://127.0.0.1:20128/api/monitoring/health"
 BUILDER="king-maint"
 FREE_SERVICES="activepieces codegraph-serve ollama"   # stopped to make room, restarted after
 CAGE_MB="${KING_BUILD_CAGE_MB:-4608}"
-HEAP_MB="${KING_BUILD_HEAP_MB:-3584}"
+# V8 heap ceiling, deliberately well BELOW the cage. Attempt 2 on 2026-09-10
+# set a 4096 MB heap inside a 2560 MB cage: V8 grew toward a limit the cgroup
+# could not honour and the kernel killed it. Turbopack then compiles in native
+# Rust memory OUTSIDE this heap (omniroute/Dockerfile:131), so the cage must
+# hold heap + native + node. 2048 leaves ~2.5 GB of a 4608 MB cage for the part
+# no flag can bound -- the part that killed attempts 2, 3 and 4.
+HEAP_MB="${KING_BUILD_HEAP_MB:-2048}"
 FLOOR_MB=400                                    # host MemAvailable abort floor
 TLS_WANT=2ec853496634545e7a7ea028715763948d55bbdd97aca7ecaa9fea8c2ebb08df
 
