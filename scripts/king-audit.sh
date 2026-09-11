@@ -3342,29 +3342,110 @@ dim_J() {
     # that is one command from done is how a check becomes decoration.
     #
     # Reported, not judged: "newer exists" is not automatically "upgrade".
+    #
+    # It used to grep for ONE hardcoded image -- `binwiederhier/ntfy` -- and
+    # then report in the plural: "pinned third-party image(s) are at the newest
+    # release". Five registry images are pinned here. It had been green about
+    # four it never looked at, and when it was red it was red about the one
+    # image that matters least. Generalising it immediately surfaced redis
+    # 8.6.5 against 8.8.2 and otel-collector 0.139.0 against 0.160.0, the second
+    # of which carries fixes J-6 reports as still open against us.
+    #
+    # Three pages, because tag listings are ordered by last_updated and
+    # opentelemetry-collector-contrib publishes nightlies constantly: its 40
+    # most recent tags contain no stable release at all, so a single page finds
+    # nothing and would have read as "cannot tell" forever.
+    #
+    # ghcr.io needs a token even for public reads, so those images are counted
+    # as NOT COVERED and said so, rather than quietly not appearing.
     if have curl && [ -n "$PY" ]; then
-        _behind=""
-        _pin=$(grep -oE 'binwiederhier/ntfy:v[0-9.]+' docker-compose.yml 2>/dev/null | head -1)
-        if [ -n "$_pin" ]; then
-            _cur=${_pin##*:}
-            _latest=$(curl -s -m 25 "https://hub.docker.com/v2/repositories/binwiederhier/ntfy/tags/?page_size=20&ordering=last_updated" 2>/dev/null \
-                      | "$PY" -c "
-import json,sys,re
-try: d=json.load(sys.stdin)
-except Exception: print(''); raise SystemExit
-for t in d.get('results') or []:
-    if re.match(r'^v[0-9]+\.[0-9]+\.[0-9]+$', t.get('name','')):
-        print(t['name']); break
-" 2>/dev/null || true)
-            [ -n "$_latest" ] && [ "$_latest" != "$_cur" ] && _behind="$_behind ntfy:$_cur(latest $_latest)"
-        fi
-        if [ -z "$_pin" ]; then
-            chk J-1 UNKNOWN "no pinned third-party image tags found to compare"
-        elif [ -z "$_behind" ]; then
-            chk J-1 PASS "pinned third-party image(s) are at the newest release" "$_pin"
+        _j1py=$(mktemp)
+        cat > "$_j1py" <<'PYJ1'
+import json, re, sys, urllib.request
+
+def get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "king-audit"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode())
+
+def parse(v):
+    m = re.match(r'^v?(\d+(?:\.\d+)*)$', v)
+    return [int(x) for x in m.group(1).split(".")] if m else None
+
+def vcmp(a, b):
+    a, b = a[:], b[:]
+    while len(a) < len(b): a.append(0)
+    while len(b) < len(a): b.append(0)
+    return (a > b) - (a < b)
+
+behind, current, uncovered = [], 0, []
+for line in sys.stdin.read().split():
+    ref = line.strip()
+    if not ref: continue
+    # A tag+digest pin still carries a comparable tag: strip the digest and
+    # read the tag in front of it. Treating `caddy:2.11.4-alpine@sha256:...`
+    # as uncheckable would have penalised the strongest kind of pin there is.
+    ref_notag = ref.split("@")[0]
+    if ":" not in ref_notag.rsplit("/", 1)[-1]:
+        uncovered.append(ref_notag + "|untagged"); continue
+    name, tag = ref_notag.rsplit(":", 1)
+    if name.startswith("ghcr.io/") or name.count("/") > 1:
+        uncovered.append(name + "|not-on-docker-hub"); continue
+    repo = name if "/" in name else "library/" + name
+    # The pinned tag may carry a variant suffix: 8.6.5-alpine.
+    base = tag.split("-")[0]
+    pv = parse(base)
+    if pv is None:
+        uncovered.append(name + "|tag-is-not-a-version"); continue
+    url = "https://hub.docker.com/v2/repositories/%s/tags/?page_size=100&ordering=last_updated" % repo
+    # Keep the tag NAME, not a version rebuilt from its parts. ntfy publishes
+    # both `v2.28` and `v2.28.0`; they compare equal, and printing "latest 2.28"
+    # for a release actually called v2.28.0 is a small lie in a line people act
+    # on. Longer name wins a tie, which is the more specific one.
+    best = None; best_name = ""
+    try:
+        for _ in range(3):
+            d = get(url)
+            for t in d.get("results") or []:
+                nm = t.get("name", "")
+                q = parse(nm)
+                if q and (best is None or vcmp(q, best) > 0 or
+                          (vcmp(q, best) == 0 and len(nm) > len(best_name))):
+                    best, best_name = q, nm
+            url = d.get("next")
+            if not url: break
+    except Exception:
+        uncovered.append(name + "|registry-unreachable"); continue
+    if best is None:
+        uncovered.append(name + "|no-plain-version-tag"); continue
+    if vcmp(pv, best) < 0:
+        behind.append("%s:%s(latest %s)" % (name, base, best_name))
+    else:
+        current += 1
+print("%d\t%s\t%s\t%d" % (current, " ".join(behind) or "-",
+                          " ".join(uncovered) or "-", len(uncovered)))
+PYJ1
+        _j1refs=$(grep -oE '^\s+image: [^[:space:]]+' docker-compose.yml 2>/dev/null \
+                  | sed 's/.*image: //' | grep -v ':local$' | sort -u)
+        _j1out=$(printf '%s\n' "$_j1refs" | "$PY" "$_j1py" 2>/dev/null || true)
+        rm -f "$_j1py"
+        _j1cur=$(printf '%s' "$_j1out" | cut -f1)
+        _behind=$(printf '%s' "$_j1out" | cut -f2)
+        _j1unc=$(printf '%s' "$_j1out" | cut -f3)
+        _j1nunc=$(printf '%s' "$_j1out" | cut -f4)
+        [ "$_behind" = "-" ] && _behind=""
+        [ "$_j1unc" = "-" ] && _j1unc=""
+        if [ -z "$_j1out" ]; then
+            chk J-1 UNKNOWN "the registry comparison produced no result"
+        elif [ -n "$_behind" ]; then
+            chk J-1 UNKNOWN "pinned image(s) behind upstream:" \
+                "$_behind — recorded, not a recommendation; check the changelog before moving. ${_j1cur} at latest, ${_j1nunc:-0} not checkable${_j1unc:+: $_j1unc}"
+        elif [ "${_j1cur:-0}" -eq 0 ]; then
+            chk J-1 UNKNOWN "no pinned image could be compared against its registry" \
+                "${_j1unc:-nothing to compare}"
         else
-            chk J-1 UNKNOWN "pinned image(s) behind upstream" \
-                "$_behind — recorded, not a recommendation; check the changelog before moving"
+            chk J-1 PASS "${_j1cur} pinned image(s) are at the newest release" \
+                "${_j1nunc:-0} not checkable${_j1unc:+: $_j1unc}"
         fi
     else
         chk J-1 UNKNOWN "no curl or interpreter to query the registry with"
@@ -4880,6 +4961,45 @@ NSFIX
     if [ "$(_doorold 502 '401 403')" = "open" ]
     then printf '  ok    the OLD two-bucket test called a 502 an open door, which is why it was replaced\n'
     else printf '  FAIL  the OLD two-bucket test called a 502 an open door, which is why it was replaced\n'; _f=$((_f+1)); fi
+    # ---- J-1: which references can be compared at all ---------------------
+    #
+    # Only the CLASSIFICATION half is fixtured, and deliberately so: the other
+    # half asks a live registry what the newest tag is, and there is no honest
+    # way to assert that offline. J-1's verdict is UNKNOWN-only, so a wrong
+    # answer from the live half cannot turn a run red by itself. This is a
+    # statement of scope, like H-2b, not a gap being papered over.
+    #
+    # These three inputs never reach the network — each is rejected or accepted
+    # before the first request — so the fixture is genuinely offline.
+    _j1m=$(printf 'PY%s' 'J1')
+    _j1src="$_t/j1rule.py"
+    sed -n "/<<'$_j1m'/,/^$_j1m\$/p" "$REPO/scripts/$(basename "$0")" 2>/dev/null \
+        | sed '1d;$d' > "$_j1src"
+    if [ ! -s "$_j1src" ]; then
+        printf '  FAIL  J-1 rule could not be extracted from this script to test\n'; _f=$((_f+1))
+    else
+        _j1got=$(printf 'ghcr.io/x/y:1.0.0\nsome/deep/path/img:1.0.0\nplainimage\n' \
+                 | "$PY" "$_j1src" 2>/dev/null | cut -f3)
+        case "$_j1got" in
+            *ghcr.io/x/y\|not-on-docker-hub*)
+                printf '  ok    a ghcr image is reported as not checkable, not silently skipped\n' ;;
+            *)  printf '  FAIL  a ghcr image is reported as not checkable, not silently skipped\n'; _f=$((_f+1)) ;;
+        esac
+        case "$_j1got" in
+            *plainimage\|untagged*)
+                printf '  ok    an untagged reference is reported as not checkable\n' ;;
+            *)  printf '  FAIL  an untagged reference is reported as not checkable\n'; _f=$((_f+1)) ;;
+        esac
+        # The count must be the number of ENTRIES. It was `wc -w`, which counted
+        # words, and reported "10 not checkable" for three references because
+        # the reasons had spaces in them.
+        _j1n=$(printf 'ghcr.io/x/y:1.0.0\nsome/deep/path/img:1.0.0\nplainimage\n' \
+               | "$PY" "$_j1src" 2>/dev/null | cut -f4)
+        if [ "$_j1n" = "3" ]
+        then printf '  ok    the not-checkable count is entries, not words\n'
+        else printf '  FAIL  the not-checkable count is entries, not words (got %s, want 3)\n' "${_j1n:-none}"; _f=$((_f+1)); fi
+    fi
+
     # ---- J-6: the two false-positive classes, pinned ----------------------
     #
     # The python is EXTRACTED from this script rather than retyped, so these
