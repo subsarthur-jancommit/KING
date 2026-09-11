@@ -124,8 +124,27 @@ do_plan() {
     printf '  gateway right now: HTTP %s\n' "$(gw_code)"
 
     step "Pending security updates"
-    _sec=$(priv sh -c 'apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep -ci "^Inst.*security"' 2>/dev/null || echo 0)
-    printf '  %s security update(s) pending\n' "${_sec:-0}"
+    # NOT `|| echo 0`. That substitutes a plausible answer for a failure, and
+    # it is the exact defect K-6 carried until 2026-09-10: apt with missing
+    # lists exits ZERO and prints a tidy "0 upgraded", so neither the exit
+    # status nor the count distinguishes "nothing pending" from "nothing to
+    # read". G-6 caught this line the first time the audit ran over this file.
+    #
+    # `indextargets` lists the index files apt will actually read: 62 on this
+    # host, 0 when the lists are gone. $(FILENAME) is apt's own format
+    # template, not a shell expansion, so the single quotes are the point.
+    # shellcheck disable=SC2016
+    _idx=$(apt-get indextargets --format '$(FILENAME)' 2>/dev/null | grep -c . || true)
+    _sec_out=$(priv sh -c 'apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null')
+    _sec_rc=$?
+    if [ "$_sec_rc" -ne 0 ] || [ -z "$_sec_out" ]; then
+        c_yell "  apt could not answer (exit $_sec_rc) — that is not the same as zero"
+    elif [ "${_idx:-0}" -eq 0 ]; then
+        c_yell "  apt has no package indexes, so its answer means nothing — run: sudo apt-get update"
+    else
+        _sec=$(printf '%s\n' "$_sec_out" | grep -ci '^Inst.*security' || true)
+        printf '  %s security update(s) pending (from %s index files)\n' "${_sec:-0}" "$_idx"
+    fi
     printf '\n  Nothing above changed anything. Run --rebuild or --os-updates to act.\n\n'
 }
 
