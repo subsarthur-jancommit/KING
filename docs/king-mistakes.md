@@ -1563,3 +1563,123 @@ And when the outage came, an explanation that fit — my own retries, freshly
 committed, with numbers — arrived before the harder question did. A cause you
 can name and fix in one sitting is the most comfortable place to stop looking,
 which is exactly why it should not be.
+
+## 37. Three probes in one hour, each one agreeing with itself
+
+**1. A credential read that truncated at a space.** Checking whether the
+tracing pipeline was alive, I sourced the environment file in `sh`:
+
+```sh
+set -a; . ./.env; set +a
+curl -H "Authorization: $LANGFUSE_OTLP_AUTH" ...   # 401
+```
+
+`.env` holds `LANGFUSE_OTLP_AUTH=Basic <base64>`. Sourcing that in a shell
+stops at the space: the variable becomes the five-character string `Basic`,
+which Langfuse correctly refuses. I had a 401 and a plausible story — the
+collector has been shipping spans to a backend that rejects them, silently,
+for who knows how long — and the story was about my own probe.
+
+What stopped it was asking the shape of the value before trusting the verdict:
+length 5, no `Basic ` prefix, no colon after base64 decoding. Five characters
+is not a credential. Read from the running container instead, the same request
+returned 200 and 1,984 traces.
+
+Compose reads that file verbatim and was never wrong about it. Only `sh` was.
+
+**2. Counting carriage returns with a pattern that matched every line.**
+
+```sh
+grep -c $'\r' scripts/king-audit.sh   # 4708
+wc -l         scripts/king-audit.sh   # 4708
+```
+
+Those two numbers being equal is the whole story: `$'\r'` did not expand, the
+pattern was empty, and an empty pattern matches everything. I was one command
+away from concluding the file had CRLF endings throughout and "fixing" a file
+that was already correct.
+
+**3. Counting them again with a pattern that matched the letter `r`.**
+
+```sh
+od -c file | grep -o '\r' | wc -l    # 8391
+```
+
+`'\r'` reaches grep as `\r`, which in a basic regular expression is an escaped
+`r` — a literal `r`. 8,391 is how many times the letter r appears in the file.
+
+Only on the third attempt did I write the control first: a two-line fixture
+containing exactly one CR, and a second containing none.
+
+```sh
+n() { tr -dc '\r' < "$1" | wc -c; }
+n with_one_cr   # 1
+n with_none     # 0
+n the_real_file # 0
+```
+
+`tr -dc` has no escaping ambiguity and the fixture has a known answer, so the
+zero means something. The file was clean all along, in the working copy, in the
+index, and in `HEAD`.
+
+**The pattern.** Every one of these produced a confident number. Two of them
+produced a number that could only ever have been that number, regardless of the
+file. A measurement with no known-answer case beside it is a guess wearing a
+number, and I ran three of them before writing one down.
+
+This is entry 17 and entry 19 again, in a single afternoon, which is the reason
+to record it rather than a reason not to: the failure is not exotic and it does
+not announce itself. It looks exactly like a result.
+
+## 38. A flag the parser accepted and nothing implemented
+
+`king-audit.sh` documents five modes in its usage block. One of them:
+
+```
+#   ./scripts/king-audit.sh --positive-control
+```
+
+and the parser honours it:
+
+```sh
+--positive-control) MODE="poscontrol" ;;
+```
+
+`MODE` is read in exactly one place in 4,700 lines — `[ "$MODE" = "selftest" ]`.
+Nothing has ever read `poscontrol`. Typing the flag ran an ordinary full audit
+and exited 0, and the exit code was honest about the audit while saying nothing
+about the mode.
+
+I proved it by behaviour rather than by reading, because reading is how it
+survived:
+
+```
+--positive-control -d I   →  1 pass, 2 fail, 0 unknown, 1 skipped
+-d I                      →  1 pass, 2 fail, 0 unknown, 1 skipped
+```
+
+Byte-identical.
+
+**Where it was sitting matters.** This audit was built to find controls that
+are written down and do not apply — `daemon.json` the daemon never loaded, a
+`ufw` that did not cover Docker, a `restart: on-failure` that a clean shutdown
+walks straight past. The same fault was in its own argument parser the entire
+time, advertised in its own `--help`.
+
+It now asks each live instrument to demonstrate a **miss** against the real
+system — the graph must fail to find a label that cannot exist, the trace query
+must return zero for a window in 2099 — and modifies nothing: no file mode, no
+firewall rule, no container. Live perturbations are real positive controls too,
+but they belong in a hand-run procedure with its rollback written beside it,
+not behind a flag someone might type on a production host.
+
+It also prints how many checks carry no canary at all. Two greens and a stop
+would read as *the instruments are proven* when two of them are.
+
+**And it caught an omission in the same change.** E-9 passed live while the
+coverage line reported `TODO E-9`, because `implemented()` is a hand-kept list
+and I had added the check without adding the id. The fix that mattered was not
+adding the id. It was asserting the general direction in `--self-test`: every
+implemented check must be declared in the manifest. The hand-kept list is
+precisely the thing that went stale, so a hand-kept list of exceptions to it
+would have gone stale next.

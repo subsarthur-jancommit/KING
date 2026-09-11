@@ -1992,6 +1992,70 @@ measured is treated as a failure, not a pass.** `check_disk_gb` used to `return
 0` when it could not read the disk. The dead-man switch exits 1 on every
 unmeasurable path.
 
+### The container that cannot be asked, and the check that asks past it — 2026-09-11
+
+Nine of the ten containers report `healthy`. The tenth, `otel-collector`, is
+`Up` and nothing more, and that is not a fault to fix — it declares no
+healthcheck at all. What matters is everything else that is also absent:
+
+- it runs a **distroless** image, so there is no shell to `docker exec` into;
+- its internal metrics endpoint is not enabled, and it publishes no port;
+- its config sets `service.telemetry.logs.level: warn`.
+
+Put together, a collector forwarding every span and a collector dropping every
+span produce **the same output: none**. Thirty minutes of empty logs is what
+both look like. No check in the audit asked the question, and none of them
+could have answered it by looking at the container.
+
+**`E-9` asks Langfuse instead**, because the backend is the only party that
+knows whether the spans arrived. The comparison was measured before it was
+written — over one 6-hour window, 84 completed `/v1/chat` calls in the gateway's
+own call log against 85 traces at Langfuse — so counting one against the other
+is a licensed comparison rather than an assumed one.
+
+Three details are load-bearing, and each one is a mistake made first:
+
+1. **The credential is read from the running container, never from `.env`.**
+   That file holds `LANGFUSE_OTLP_AUTH=Basic <base64>`; sourcing it in `sh`
+   stops at the space and yields the five-character string `Basic`, which
+   Langfuse refuses with a 401 — a broken probe wearing the face of a broken
+   credential. Compose reads the file verbatim and was never wrong about it.
+2. **A canary window runs first.** `fromTimestamp` in the year 2099 must come
+   back empty; if it does not, the filter is being ignored and a zero in the
+   real window would prove nothing. Same structure as `E-5`'s canary.
+3. **A 401 is a failure; a timeout is not.** The backend saying *your
+   credential is refused* is a verified defect — every span is being dropped.
+   The backend not answering is ignorance, and ignorance is not a finding.
+
+The bar is deliberately 50%, not the 95% `E-8` uses for token coverage: this
+answers *is the pipeline alive*, not *is the accounting complete*. Gradual drift
+is carried by the `e9_trace_coverage_pct` metric instead, so it shows up in the
+baseline diff rather than as a threshold nobody tuned.
+
+### `--positive-control` was advertised for months and never implemented
+
+The audit's usage block lists it. The argument parser sets `MODE="poscontrol"`.
+Nothing in 4,700 lines ever read that value — `MODE` is tested in exactly one
+place, for `selftest`. Typing the flag ran an ordinary audit and exited 0.
+
+Proven by behaviour rather than by reading, since reading is how it survived:
+`--positive-control -d I` and `-d I` produced byte-identical output.
+
+It now asks each live instrument to demonstrate a **miss** against the real
+system — the code graph must fail to find a label that cannot exist, the trace
+query must return zero for a window in 2099 — and it **modifies nothing**: no
+file mode, no firewall rule, no container. Live perturbations (`chmod 755` on
+the secret directory, flushing `DOCKER-USER`) are real positive controls too,
+and they stay in hand-run procedures with their rollback written beside them
+rather than behind a flag someone might type on a production host.
+
+```bash
+./scripts/king-audit.sh --positive-control     # on the host; exits 2 off-host
+```
+
+It prints how many checks carry no canary at all. Two greens and a stop would
+read as *the instruments are proven* when only two of them are.
+
 ---
 
 ## 8. Access control
