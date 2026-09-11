@@ -165,15 +165,45 @@
 # a site that simply is not reachable from outside, which is the correct
 # behaviour for someone running base + proxy without the workflow profile.
 {$ACTIVEPIECES_PUBLIC_DOMAIN:activepieces.localhost} {
-	reverse_proxy activepieces:80 {
-		# Flow runs stream progress over websockets, and the worker holds a
-		# long-lived Socket.IO connection. Buffering would stall both.
-		flush_interval -1
+	# Public registration, closed at the edge.
+	#
+	# Activepieces CE 0.88.3 does NOT close sign-up after the first account.
+	# Measured 2026-09-11 against a fresh database: with an owner, a platform
+	# and a project all present, POST /api/v1/authentication/sign-up still
+	# reached validation (HTTP 400) rather than being refused (403). L-2 had
+	# recorded the opposite as settled behaviour since 2026-08-28, and it only
+	# ever looked true because the old database's platform had been configured
+	# by hand.
+	#
+	# The in-app levers do not fit. `enforceAllowedAuthDomains` with
+	# `allowedAuthDomains` set to the operator's domain would admit anyone
+	# holding an address at that provider, and `emailAuthEnabled: false` would
+	# lock the operator out of their own instance.
+	#
+	# So it is closed here, where the control is unambiguous and cannot be
+	# undone by an upgrade rewriting a platform row. Sign-IN is a different
+	# route and is untouched. To add a user later, invite them from the UI, or
+	# delete this block, `docker compose restart caddy`, register, and put it
+	# back.
+	@signup path /api/v1/authentication/sign-up
+	handle @signup {
+		respond 403
+	}
 
-		# Same reasoning as OmniRoute above: one upstream, so a restart has
-		# nowhere to fail over to. Shorter here because a webhook sender is
-		# far less patient than an interactive client.
-		lb_try_duration 10s
-		lb_try_interval 500ms
+	# Everything else in a handle too, matching the gateway block above: mixing
+	# `handle` with a bare directive leaves the ordering to directive
+	# precedence rather than to the order written here.
+	handle {
+		reverse_proxy activepieces:80 {
+			# Flow runs stream progress over websockets, and the worker holds a
+			# long-lived Socket.IO connection. Buffering would stall both.
+			flush_interval -1
+
+			# Same reasoning as OmniRoute above: one upstream, so a restart has
+			# nowhere to fail over to. Shorter here because a webhook sender is
+			# far less patient than an interactive client.
+			lb_try_duration 10s
+			lb_try_interval 500ms
+		}
 	}
 }
