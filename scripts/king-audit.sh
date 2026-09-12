@@ -29,6 +29,7 @@
 #   ./scripts/king-audit.sh --self-test      # fixtures; no host, no secrets
 #   ./scripts/king-audit.sh --positive-control
 #   ./scripts/king-audit.sh --all --baseline # rewrite audit/baseline.json
+#   ./scripts/king-audit.sh --all --delta    # also print what moved since it
 #
 # Exit: 0 all PASS, 1 any FAIL, 2 any UNKNOWN, 3 any planned check not implemented.
 set -eu
@@ -37,6 +38,7 @@ DIMENSIONS="A B C D E F G H I J K L"
 WANT=""
 MODE="run"
 WRITE_BASELINE=0
+DELTA=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -45,6 +47,7 @@ while [ "$#" -gt 0 ]; do
         --self-test)        MODE="selftest" ;;
         --positive-control) MODE="poscontrol" ;;
         --baseline)         WRITE_BASELINE=1 ;;
+        --delta)            DELTA=1 ;;
         -h|--help)          sed -n '2,32p' "$0"; exit 0 ;;
         *)                  echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -277,8 +280,8 @@ MANIFEST
 # ---------------------------------------------------------------- reporting
 
 n_pass=0; n_fail=0; n_unknown=0; n_skip=0; n_todo=0
-FINDINGS=$(mktemp); METRICS=$(mktemp); SEEN=$(mktemp)
-trap 'rm -f "$FINDINGS" "$METRICS" "$SEEN"' EXIT INT TERM
+FINDINGS=$(mktemp); METRICS=$(mktemp); SEEN=$(mktemp); UNKNOWNS=$(mktemp)
+trap 'rm -f "$FINDINGS" "$METRICS" "$SEEN" "$UNKNOWNS"' EXIT INT TERM
 
 c_red()   { printf '\033[31m%s\033[0m' "$*"; }
 c_green() { printf '\033[32m%s\033[0m' "$*"; }
@@ -296,7 +299,13 @@ chk() {
         PASS)    n_pass=$((n_pass+1));    printf '  %s  %-5s %s\n' "$(c_green PASS)" "$_id" "$_t" ;;
         FAIL)    n_fail=$((n_fail+1));    printf '  %s  %-5s %s\n' "$(c_red FAIL)" "$_id" "$_t"
                  printf '%s\t%s\n' "$_id" "$_t" >> "$FINDINGS" ;;
-        UNKNOWN) n_unknown=$((n_unknown+1)); printf '  %s  %-5s %s\n' "$(c_yell 'UNK ')" "$_id" "$_t" ;;
+        UNKNOWN) n_unknown=$((n_unknown+1)); printf '  %s  %-5s %s\n' "$(c_yell 'UNK ')" "$_id" "$_t"
+                 # Recorded like a FAIL, because --delta has to see it. A check
+                 # that stops being able to answer is a regression: B-8 and C-5
+                 # went PASS -> UNKNOWN on 2026-09-12 when codegraph-serve was
+                 # restarting, and only the counts moved. The counts alone do
+                 # not say WHICH, and "which" is the entire message.
+                 printf '%s\t%s\n' "$_id" "$_t" >> "$UNKNOWNS" ;;
         SKIP)    n_skip=$((n_skip+1));    printf '  %s  %-5s %s\n' "$(c_dim 'skip')" "$_id" "$_t" ;;
     esac
     [ -z "$_ev" ] || printf '            %s\n' "$_ev" | head -6
@@ -5885,15 +5894,143 @@ printf '%s not implemented\n' "$(c_yell "$n_todo")"
 
 if [ "$WRITE_BASELINE" = "1" ] && [ -n "$PY" ]; then
     mkdir -p "$(dirname "$BASELINE")"
+    # The baseline now records WHICH checks were red and which could not answer,
+    # not only the numbers. --delta needs the identities: counts tell you
+    # something moved and never which thing, and "which" is the whole message.
     "$PY" -c "
 import json,sys,io,os
 m={}
 for line in io.open(sys.argv[1],encoding='utf-8'):
     k,_,v=line.partition('\t')
     if k.strip(): m[k.strip()]=v.strip()
-json.dump({'metrics':m}, io.open(sys.argv[2],'w',encoding='utf-8'), indent=2, sort_keys=True)
+def ids(p):
+    out=[]
+    try: fh=io.open(p,encoding='utf-8')
+    except IOError: return out
+    for line in fh:
+        i=line.partition('\t')[0].strip()
+        if i: out.append(i)
+    return sorted(set(out))
+json.dump({'metrics':m,'failing':ids(sys.argv[3]),'unknown':ids(sys.argv[4])},
+          io.open(sys.argv[2],'w',encoding='utf-8'), indent=2, sort_keys=True)
 io.open(sys.argv[2],'a',encoding='utf-8').write('\n')
-" "$METRICS" "$BASELINE" && echo "  baseline written to $BASELINE"
+" "$METRICS" "$BASELINE" "$FINDINGS" "$UNKNOWNS" && echo "  baseline written to $BASELINE"
+fi
+
+# ---------------------------------------------------------------------- delta
+#
+# Why this mode exists. This audit was run eight times on 2026-09-12, all of
+# them by hand, and every one of the 104 result lines crossed a context window.
+# On a timer it would be worse: an audit that pushes 104 lines every night is an
+# audit nobody opens by the third night, and the one night it matters looks
+# exactly like the sixty that did not.
+#
+# So the nightly message is the DIFFERENCE against a committed baseline.
+#
+# What counts as a difference, and what deliberately does not:
+#
+#   a check that is newly red                     -> report
+#   a check that was red and is not               -> report, briefly; good news
+#                                                    that arrives is what makes
+#                                                    the bad news believable
+#   a check that newly cannot answer              -> report. B-8 and C-5 went
+#                                                    PASS -> UNKNOWN today while
+#                                                    codegraph-serve restarted,
+#                                                    and only the totals moved
+#   a metric that CROSSED ZERO, either way        -> report. 0 -> n is a state
+#                                                    change: a violation that
+#                                                    did not exist, an override
+#                                                    that had never happened
+#   a metric that merely drifted                  -> SILENT, on purpose
+#
+# That last line is the one worth defending. `d3_mem_available_mb` moved 33% in
+# four hours today with nothing wrong, so a percentage trigger would either be
+# set loose enough to miss a disk filling or tight enough to fire most nights.
+# A per-metric threshold table would fix that and would be a hand-kept inventory
+# — the exact fault G-1, G-2, J-1 and A-9 were all found committing. Crossing
+# zero needs no table and means the same thing for every metric here.
+#
+# It never WRITES the baseline. A timer that rewrites its own baseline erases
+# the evidence of the shift it exists to report, and would go quiet permanently
+# after the first bad night by adopting it as normal. Moving the baseline is a
+# commit, with a message saying why.
+if [ "$DELTA" = "1" ]; then
+    if [ -z "$PY" ] || [ ! -f "$BASELINE" ]; then
+        echo
+        echo "delta: no baseline at $BASELINE (or no interpreter), so there is"
+        echo "nothing to compare against. This is not 'no changes'."
+        [ -n "$KING_AUDIT_DELTA_OUT" ] && : > "$KING_AUDIT_DELTA_OUT"
+    else
+        _dout=$(FINDINGS="$FINDINGS" UNKNOWNS="$UNKNOWNS" METRICS="$METRICS" \
+                BASEFILE="$BASELINE" "$PY" -c '
+import io, json, os
+
+def ids(p):
+    out = {}
+    try:
+        fh = io.open(p, encoding="utf-8")
+    except IOError:
+        return out
+    for line in fh:
+        i, _, t = line.partition("\t")
+        if i.strip():
+            out[i.strip()] = t.strip()
+    return out
+
+base = json.load(io.open(os.environ["BASEFILE"], encoding="utf-8"))
+was_fail = set(base.get("failing") or [])
+was_unk = set(base.get("unknown") or [])
+bm = base.get("metrics") or {}
+
+now_fail = ids(os.environ["FINDINGS"])
+now_unk = ids(os.environ["UNKNOWNS"])
+
+m = {}
+for line in io.open(os.environ["METRICS"], encoding="utf-8"):
+    k, _, v = line.partition("\t")
+    if k.strip():
+        m[k.strip()] = v.strip()
+
+def num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+lines = []
+for i in sorted(set(now_fail) - was_fail):
+    lines.append("NEW FAIL   %-5s %s" % (i, now_fail[i]))
+for i in sorted(was_fail - set(now_fail)):
+    lines.append("cleared    %-5s was failing in the baseline" % i)
+for i in sorted(set(now_unk) - was_unk):
+    lines.append("NEW UNK    %-5s %s" % (i, now_unk[i]))
+for i in sorted(was_unk - set(now_unk)):
+    lines.append("answers    %-5s could not answer in the baseline" % i)
+
+for k in sorted(set(bm) | set(m)):
+    a, b = num(bm.get(k)), num(m.get(k))
+    if a is None or b is None:
+        if k not in bm:
+            lines.append("new metric %s = %s" % (k, m.get(k)))
+        elif k not in m:
+            lines.append("gone       %s (was %s)" % (k, bm.get(k)))
+        continue
+    if (a == 0) != (b == 0):
+        lines.append("crossed 0  %-28s %s -> %s" % (k, bm.get(k), m.get(k)))
+
+print("\n".join(lines))
+' 2>/dev/null || true)
+        echo
+        if [ -z "$_dout" ]; then
+            echo "delta: nothing changed against $BASELINE"
+        else
+            echo "delta against $BASELINE"
+            printf '%s\n' "$_dout" | sed 's/^/  /'
+        fi
+        if [ -n "$KING_AUDIT_DELTA_OUT" ]; then
+            printf '%s' "$_dout" > "$KING_AUDIT_DELTA_OUT"
+        fi
+    fi
 fi
 
 [ "$n_fail" -gt 0 ] && exit 1

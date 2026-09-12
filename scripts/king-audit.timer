@@ -1,0 +1,28 @@
+[Unit]
+Description=Nightly audit, reporting only what moved since the committed baseline
+Documentation=file:%h/KING/docs/king-system.md
+
+[Timer]
+# 03:41, which is off every quarter-hour the other timers use. The audit sends
+# real requests through the gateway and to two model providers, and a burst of
+# that traffic landing inside monitor-deadman's 15-minute window would move the
+# very error ratio the monitor is judging. It also sits clear of
+# codegraph-refresh so the two are never contending for the same memory — D-3
+# exists because that build has a floor and the host has 7.8 GB.
+OnCalendar=*-*-* 03:41:00
+
+# A missed run must catch up. The machine having been off is not evidence that
+# nothing drifted while it was, and skipping in silence turns a nightly audit
+# into an occasional one without ever saying so.
+Persistent=true
+
+# Nothing here is time-critical, and a 1-minute accuracy wakes the machine for
+# no reason.
+AccuracySec=5min
+
+# After a reboot, Persistent=true catches up every missed run at once. Without
+# this the audit's provider probes would stampede alongside pool-prove's.
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

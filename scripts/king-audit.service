@@ -1,0 +1,51 @@
+# Nightly audit. Paired with king-audit.timer.
+#
+# The gap it closes: the audit was run eight times on 2026-09-12, every one of
+# them by hand, and every one of its 104 result lines crossed a context window.
+# Something that only runs when someone remembers is not a guard; it is a habit,
+# and habits are the first thing to go in a busy week.
+#
+# It reports the DELTA, never the whole audit. An audit that pushes 104 lines
+# every night is one nobody opens by the third night, and then the night it
+# matters looks exactly like the sixty that did not. `--delta` writes only what
+# moved against audit/baseline.json: newly red checks, checks that went quiet,
+# checks that recovered, and metrics that crossed zero. Drift is deliberately
+# silent — see the long comment in king-audit.sh.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/king-audit.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now king-audit.timer
+#   sudo loginctl enable-linger "$USER"     # already set for monitor-deadman
+#
+# When the audit finds something, the unit still succeeds and the NOTIFICATION
+# carries the news. That is deliberate: a failed unit is the right signal for
+# "the audit could not run", and conflating it with "the audit ran and found a
+# problem" means `systemctl --user --failed` can no longer tell you which.
+#
+#   journalctl --user -u king-audit -n 200     # the full run, every night
+#   systemctl --user --failed                  # the audit itself is broken
+
+[Unit]
+Description=Run the KING audit and report only what changed
+Documentation=file:%h/KING/docs/king-system.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/KING
+
+# NTFY_ALERT_TOPIC, so the delta reaches a phone rather than only journalctl.
+# Through an EnvironmentFile for the same reason pool-prove uses one: the topic
+# is a capability URL and belongs in a gitignored 0600 file beside every other
+# secret, not copied into ~/.config/systemd/user/. The leading `-` makes it
+# optional — a host without it still audits, it just cannot push.
+EnvironmentFile=-%h/KING/.king-audit.env
+
+ExecStart=%h/KING/scripts/king-audit-run.sh
+
+# The audit sends real completions to providers and walks every container, and
+# the slowest single check is the routing-vocabulary probe with its own 900s
+# timeout.
+TimeoutStartSec=45min
+Nice=10
