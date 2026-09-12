@@ -163,6 +163,25 @@ file must be named **in this document** or acknowledged in
 `scripts/not-secrets.txt`. That predicate has no blind spot: a new variable is
 either reviewed or the audit is red.
 
+### Rotated at Neon, then disclosed again — 2026-09-12
+
+The password WAS changed in the Neon console at about 00:40, which is what took
+Activepieces down: `activepieces/.env` still held the old one, the container
+went unhealthy, and `E-2`/`D-2` went red. Diagnosed from the error rather than
+guessed — `password authentication failed for user 'neondb_owner'`, with DNS
+resolving and 5432 open, which rules out suspend, quota and network.
+
+The new URL was then pasted into chat so the file could be brought in line, and
+that is the part worth recording. **Rotating and then pasting the new value
+moves the exposure rather than closing it.** The old URL is now dead — verified
+by offering it to Neon, which refused it — and the new one is in a transcript.
+
+The rotation record is corrected to `pending` for the second time in one night,
+for the same reason both times: `--list` reports whether the VALUE CHANGED, and
+what matters is whether the value is SECRET. Ending the rotation by typing the
+value at the script's hidden prompt costs the same thirty seconds and leaves
+nothing behind.
+
 ### Disclosed a second time, and deferred deliberately — 2026-09-12
 
 `AP_POSTGRES_URL` was pasted into chat again, and the operator has chosen to
