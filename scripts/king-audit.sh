@@ -5955,11 +5955,30 @@ fi
 # after the first bad night by adopting it as normal. Moving the baseline is a
 # commit, with a message saying why.
 if [ "$DELTA" = "1" ]; then
+    # A partial run cannot be diffed against a full baseline, and the failure is
+    # not subtle: `-d G --delta` reported k7_cert_days, l1_keys and
+    # l4_journal_lines as "gone" because dimensions K and L never ran. Not
+    # measured is not removed, and every check in an unrun dimension would
+    # likewise read as having recovered. Refusing beats answering wrongly --
+    # the same rule the UNKNOWN verdict exists to enforce.
+    # `tr` rather than an unquoted expansion. Both need splitting on spaces, and
+    # leaving them bare to get it is the construct shellcheck flags as SC2086 —
+    # CI runs shellcheck with no flags, so "I meant that" is not an argument
+    # available here, and a glob character in a dimension list would splat.
+    _dsorted=$(printf '%s' "$WANT" | tr ' ' '\n' | grep -v '^$' | sort -u | tr -d '\n')
+    _dall=$(printf '%s' "$DIMENSIONS" | tr ' ' '\n' | grep -v '^$' | sort -u | tr -d '\n')
     if [ -z "$PY" ] || [ ! -f "$BASELINE" ]; then
         echo
         echo "delta: no baseline at $BASELINE (or no interpreter), so there is"
         echo "nothing to compare against. This is not 'no changes'."
-        [ -n "$KING_AUDIT_DELTA_OUT" ] && : > "$KING_AUDIT_DELTA_OUT"
+        if [ -n "${KING_AUDIT_DELTA_OUT:-}" ]; then : > "$KING_AUDIT_DELTA_OUT"; fi
+    elif [ "$_dsorted" != "$_dall" ]; then
+        echo
+        echo "delta: this run covered only $(printf '%s' "$WANT" | tr -s ' ' | sed 's/^ //;s/ $//'), and the baseline covers"
+        echo "every dimension. Checks that never ran would read as recovered and"
+        echo "metrics that were never measured would read as gone, so no delta"
+        echo "is produced. Use --all --delta."
+        if [ -n "${KING_AUDIT_DELTA_OUT:-}" ]; then : > "$KING_AUDIT_DELTA_OUT"; fi
     else
         _dout=$(FINDINGS="$FINDINGS" UNKNOWNS="$UNKNOWNS" METRICS="$METRICS" \
                 BASEFILE="$BASELINE" "$PY" -c '
@@ -6027,7 +6046,7 @@ print("\n".join(lines))
             echo "delta against $BASELINE"
             printf '%s\n' "$_dout" | sed 's/^/  /'
         fi
-        if [ -n "$KING_AUDIT_DELTA_OUT" ]; then
+        if [ -n "${KING_AUDIT_DELTA_OUT:-}" ]; then
             printf '%s' "$_dout" > "$KING_AUDIT_DELTA_OUT"
         fi
     fi
