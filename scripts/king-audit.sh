@@ -2679,28 +2679,53 @@ PYMCP
     elif [ -z "$_f6m" ] || [ -z "$_f6k" ]; then
         chk F-6b UNKNOWN "no local model name or no gateway key; the path cannot be asked"
     else
-        _f6ask() {
-            curl -s -o /dev/null -w '%{http_code}' -m 90 \
-                -X POST http://localhost:20128/v1/chat/completions \
-                -H "Authorization: Bearer $_f6k" -H 'Content-Type: application/json' \
-                -d "{\"model\":\"ollama/$1\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}],\"max_tokens\":4}" \
-                2>/dev/null || printf '000'
-        }
-        # The canary, same idea as E-5 and E-9: a model that cannot exist must
-        # be refused, or a refusal of the real one proves nothing.
-        _f6can=$(_f6ask 'king-audit-canary-no-such-model-9f3a1')
-        if [ "$_f6can" = "200" ]; then
-            chk F-6b UNKNOWN "the gateway answered 200 for a model that cannot exist" \
-                "it cannot tell a served model from an unserved one, so neither can this check"
+        # THE CANARY MUST NOT BE AN INFERENCE REQUEST.
+        #
+        # The first version asked the gateway for a model that cannot exist, on
+        # the same reasoning as E-5 and E-9: prove the instrument can say no.
+        # It can — and doing so tripped the gateway's per-provider failure
+        # tracking. Measured 2026-09-12: the canary put `ollama-local` into a
+        # one-minute backoff, and the very next real request came back with the
+        # CANARY's 404 cached against it:
+        #
+        #   [ollama/qwen2.5:1.5b-...] [404]: model
+        #   'king-audit-canary-no-such-model-9f3a1' not found (reset after 1m)
+        #
+        # The instrument broke the thing it was measuring, and then reported the
+        # breakage as the subject's fault. This repo already had that shape
+        # written down for `agy`: a failed round two triggers a cooldown that
+        # affects other traffic.
+        #
+        # So the canary reads the CATALOGUE instead. /v1/models is free, has no
+        # side effect, and still discriminates: an impossible name must be
+        # ABSENT from it, or the list is not a list. Only then is one real
+        # request sent, and only ever for the configured model.
+        _f6cat=$(curl -s -m 45 http://localhost:20128/v1/models \
+                 -H "Authorization: Bearer $_f6k" 2>/dev/null \
+                 | "$PY" -c 'import sys,json
+try: d=json.load(sys.stdin)
+except Exception: raise SystemExit
+print("\n".join(str(m.get("id","")) for m in d.get("data",[])))' 2>/dev/null || true)
+        if [ -z "$_f6cat" ]; then
+            chk F-6b UNKNOWN "the gateway did not return a model catalogue" \
+                "not reachable is not the same as not serving"
+        elif printf '%s\n' "$_f6cat" | grep -qx 'ollama/king-audit-canary-no-such-model-9f3a1'; then
+            chk F-6b UNKNOWN "the catalogue contains a model that cannot exist" \
+                "it is not a list of what is served, so its silence about a real model would mean nothing"
+        elif ! printf '%s\n' "$_f6cat" | grep -qx "ollama/$_f6m"; then
+            chk F-6b FAIL "the gateway's catalogue does not contain ollama/$_f6m" \
+                "compose pulls this model and the gateway has never been told about it — run scripts/localmodel-register.sh"
         else
-            _f6got=$(_f6ask "$_f6m")
+            _f6got=$(curl -s -o /dev/null -w '%{http_code}' -m 90 \
+                     -X POST http://localhost:20128/v1/chat/completions \
+                     -H "Authorization: Bearer $_f6k" -H 'Content-Type: application/json' \
+                     -d "{\"model\":\"ollama/$_f6m\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}],\"max_tokens\":4}" \
+                     2>/dev/null || printf '000')
             case "$_f6got" in
                 200) chk F-6b PASS "the gateway reaches the local model" \
-                         "ollama/$_f6m answered 200; an impossible name was refused with $_f6can" ;;
-                404) chk F-6b FAIL "the gateway does not serve ollama/$_f6m" \
-                         "compose pulls this model and the gateway has never been told about it — re-run scripts/localmodel-register.sh" ;;
-                *)   chk F-6b FAIL "the gateway answered $_f6got for ollama/$_f6m" \
-                         "the local model is pulled but unreachable through the gateway" ;;
+                         "ollama/$_f6m is in the catalogue and answered 200; the catalogue was proven to exclude an impossible name first" ;;
+                *)   chk F-6b FAIL "ollama/$_f6m is advertised but answered $_f6got" \
+                         "the catalogue and the connection disagree; the model is pulled and the route does not work" ;;
             esac
         fi
     fi
