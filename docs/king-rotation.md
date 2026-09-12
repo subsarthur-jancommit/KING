@@ -163,6 +163,26 @@ file must be named **in this document** or acknowledged in
 `scripts/not-secrets.txt`. That predicate has no blind spot: a new variable is
 either reviewed or the audit is red.
 
+### Disclosed a second time, and deferred deliberately — 2026-09-12
+
+`AP_POSTGRES_URL` was pasted into chat again, and the operator has chosen to
+defer rotating it until after the current round of testing. That is their call
+and it is recorded rather than argued.
+
+Two things worth writing down so the same exchange does not repeat:
+
+**It was not needed.** Every query run against that database in that session
+read the DSN from `activepieces/.env` on the VPS, which is where it already
+lives. Pasting it added exposure without adding capability — and the exposure
+is the whole of it: host, database, user, and password inline, on a Neon
+instance whose 5432 answers from the public internet.
+
+**Deferring is a real decision with a real shape.** Until it is rotated, anyone
+holding either transcript has full read/write on the workflow database from
+anywhere. Not the gateway, not the host — the database that holds every flow,
+connection and run. `./scripts/king-rotate.sh AP_POSTGRES_URL` after changing
+the password in the Neon console; the script handles the rest.
+
 ### A rotation that changed the value and not the exposure — 2026-09-12
 
 `.rotation-state` recorded `AP_POSTGRES_URL rotated 2026-09-11T08:07:48Z`, and

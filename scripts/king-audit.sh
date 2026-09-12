@@ -1368,7 +1368,24 @@ dim_C() {
             chk C-2 UNKNOWN "the history search cannot match a quantifier" \
                 "a pattern known to be present returned nothing; a clean result here would prove nothing"
         else
+            # Both sides are expanded to FULL sha before comparing. The first
+            # version matched the acknowledgement file line-for-line against
+            # `git log --format=%h`, and %h is the ABBREVIATED sha, whose length
+            # git picks from the object count -- 8 characters on the machine the
+            # file was written on, 7 on the host that runs the audit. The file
+            # was correct and the check called every entry in it unacknowledged.
+            #
+            # Worse, the self-test PINNED that behaviour: it asserted a whole-
+            # line match so "a prefix of a sha does not count". True, and the
+            # wrong invariant -- an abbreviation is not a prefix to be rejected,
+            # it is the same commit spelled shorter.
             _ack=scripts/history-known-strings.txt
+            _ackfull=""
+            while IFS= read -r _l; do
+                case "$_l" in ''|\#*) continue ;; esac
+                _fl=$(git rev-parse "$(printf '%s' "$_l" | tr -d '[:space:]')" 2>/dev/null || true)
+                [ -n "$_fl" ] && _ackfull="$_ackfull $_fl"
+            done < "$_ack" 2>/dev/null
             _hist=""; _seen=0
             for _pat in 'sk-[A-Za-z0-9_-]{24,}' 'pk-lf-[A-Za-z0-9-]{10,}' \
                         'oma_live_[A-Za-z0-9]{16,}' 'tk_[A-Za-z0-9]{20,}' \
@@ -1379,7 +1396,8 @@ dim_C() {
                 for _c in $(git log --all --format='%h' -S"$_pat" --pickaxe-regex \
                             -- . ':(exclude)omniroute' 2>/dev/null); do
                     _seen=$((_seen + 1))
-                    grep -qE "^[[:space:]]*${_c}[[:space:]]*$" "$_ack" 2>/dev/null && continue
+                    _cf=$(git rev-parse "$_c" 2>/dev/null || printf '%s' "$_c")
+                    case " $_ackfull " in *" $_cf "*) continue ;; esac
                     case " $_hist " in *" $_c "*) : ;; *) _hist="$_hist $_c" ;; esac
                 done
             done
@@ -5120,14 +5138,21 @@ NSFIX
     then printf '  ok    a BRE quantifier matches NOTHING under ERE, which is why C-2 never fired\n'
     else printf '  FAIL  a BRE quantifier matches NOTHING under ERE, which is why C-2 never fired\n'; _f=$((_f+1)); fi
 
-    # The acknowledgement file has to be matched whole-line, or a short sha
-    # would be "acknowledged" by any longer one that contains it.
-    _c2ack="$_t/ack.txt"
-    printf '# comment\n\nda98876c\n7333fe50\n' > "$_c2ack"
-    if grep -qE '^[[:space:]]*da98876c[[:space:]]*$' "$_c2ack" \
-       && ! grep -qE '^[[:space:]]*da98876[[:space:]]*$' "$_c2ack"
-    then printf '  ok    an acknowledged sha matches whole-line, a prefix of one does not\n'
-    else printf '  FAIL  an acknowledged sha matches whole-line, a prefix of one does not\n'; _f=$((_f+1)); fi
+    # This fixture used to assert a WHOLE-LINE match, so "a prefix of a sha does
+    # not count". True as stated, and the wrong invariant. `git log --format=%h`
+    # returns an ABBREVIATION whose length git picks from the object count: 8
+    # characters on the machine the acknowledgement file was written on, 7 on
+    # the host that runs the audit. The file was correct and C-2 called all ten
+    # of its entries unacknowledged.
+    #
+    # An abbreviation is not a prefix to be rejected; it is the same commit
+    # spelled shorter. Both sides go through `git rev-parse` now, so what this
+    # has to pin is that two spellings of one commit compare equal.
+    _c2a=$(git rev-parse da98876c 2>/dev/null || true)
+    _c2b=$(git rev-parse da98876 2>/dev/null || true)
+    if [ -n "$_c2a" ] && [ "$_c2a" = "$_c2b" ]
+    then printf '  ok    two abbreviations of one commit resolve to the same sha\n'
+    else printf '  FAIL  two abbreviations of one commit resolve to the same sha\n'; _f=$((_f+1)); fi
 
     # ---- L-3 / L-5: the credential shapes this deployment actually holds ---
     #

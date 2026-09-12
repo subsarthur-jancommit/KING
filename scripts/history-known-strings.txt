@@ -58,3 +58,14 @@ dc4a7d40
 b511473a
 dae274d0
 f0e9c3de
+
+# --- COMMITS THAT CARRY THE SCANNER'S OWN PATTERNS ------------------------
+#
+# C-2 searches for credential SHAPES, and the patterns that describe those
+# shapes are themselves credential-shaped. Any commit that edits them matches.
+# That is inherent and rare — it happens when the scanner changes, not when a
+# secret appears — so those commits are acknowledged like any other, by being
+# read first.
+#
+# 3befe71f  added this file and C-2's nine ERE patterns
+3befe71f
