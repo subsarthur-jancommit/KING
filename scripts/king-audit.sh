@@ -130,6 +130,7 @@ F-4
 F-5
 F-6
 F-6b
+F-6c
 F-7
 F-8
 F-9
@@ -230,6 +231,7 @@ F-4|model_overridden in the recent run journal
 F-5|per-provider failure rate, and what reached the caller
 F-6|the local model answers, and answers from this host
 F-6b|the gateway can reach the local model, which F-6 deliberately does not ask
+F-6c|every local model the gateway advertises is one the container actually holds
 F-7|flow mirror parses and exports what its tests import
 F-8|every destructive tool the servers offer is blocked from the agent
 F-9|every tool that can reach the network is acknowledged
@@ -2550,6 +2552,39 @@ PYL9
 
 # ------------------------------------------------------------- dimension F
 
+# _f6cphantom <advertised> <held> <acknowledged>
+#
+# F-6c's judgement, separated from the two HTTP calls that feed it so the
+# self-test exercises the real thing. All three arguments are newline-separated
+# lists: advertised and acknowledged carry the gateway's provider prefix
+# (`ollama/x`, `ollama-local/x`), held carries the bare names the container
+# reports. Prints the advertised names that are neither held nor acknowledged.
+#
+# Why a check that F-6b does not already cover. F-6b asks whether ONE name --
+# the one in .env -- is registered and answers. The fault that actually happened
+# was wider than that: the gateway advertised a model nobody had pulled, for six
+# days, while every other check stayed green. Change OLLAMA_MODEL and re-register
+# and F-6b goes green on the new name while the old one keeps being advertised;
+# only a comparison of the two POPULATIONS sees that.
+#
+# Both sides are derived, neither is typed. Four checks in this file were found
+# measuring hand-written inventories that were correct on the day they were
+# written -- G-1, G-2, J-1 and A-9. The acknowledgement file is the one hand-kept
+# list here, and it is deliberately the short side: it holds what cannot be
+# fixed, not what is currently true.
+_f6cphantom() {
+    printf '%s\n' "$1" | while IFS= read -r _fa; do
+        [ -n "$_fa" ] || continue
+        # Strip the provider prefix only, not every segment: Ollama names may
+        # themselves contain slashes (hf.co/user/model), and eating those would
+        # make an unheld model look held.
+        _fbare=${_fa#*/}
+        printf '%s\n' "$2" | grep -qxF "$_fbare" && continue
+        printf '%s\n' "$3" | grep -qxF "$_fa" && continue
+        printf '%s\n' "$_fa"
+    done
+}
+
 dim_F() {
     echo; echo "F  the agentic layer"
     if ! on_host; then
@@ -2748,6 +2783,63 @@ PYMCP
                 *)   chk F-6b FAIL "ollama/$_f6m is registered but answered $_f6got" \
                          "the registration and the connection disagree; the model is pulled and the route does not work" ;;
             esac
+        fi
+    fi
+
+    # F-6c: the other direction. F-6b asks whether the ONE configured model is
+    # served; this asks whether anything ELSE is advertised that cannot be.
+    #
+    # That is the shape the real fault had. For six days the gateway advertised
+    # `qwen2.5:3b`, which had never been pulled, and every check stayed green:
+    # F-6 avoids the gateway by design, and F-6b did not exist. A caller reading
+    # /v1/models was being told about capacity that was not there.
+    #
+    # Both populations are derived on the spot — what the gateway lists, and
+    # what the container reports holding — so neither can go stale the way a
+    # typed list does. `scripts/gateway-phantom-models.txt` is the exception and
+    # holds only what cannot be fixed from this repo, each line with its reason.
+    _f6cid=$(docker compose --profile localmodel ps -q ollama 2>/dev/null || true)
+    if ! on_host; then
+        chk F-6c SKIP "not on the host"
+    elif [ -z "$_f6k" ] || [ -z "$PY" ]; then
+        chk F-6c UNKNOWN "no gateway key or no interpreter; the catalogue cannot be read"
+    elif [ -z "$_f6cid" ]; then
+        chk F-6c SKIP "localmodel profile not running"
+    else
+        _f6cip=$(docker inspect "$_f6cid" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' 2>/dev/null | awk '{print $1}')
+        _f6cadv=$(curl -s -m 45 http://localhost:20128/v1/models \
+                  -H "Authorization: Bearer $_f6k" 2>/dev/null \
+                  | "$PY" -c 'import sys,json
+try: d=json.load(sys.stdin)
+except Exception: raise SystemExit
+for m in d.get("data",[]):
+    i=str(m.get("id",""))
+    if i.split("/",1)[0] in ("ollama","ollama-local"): print(i)' 2>/dev/null || true)
+        _f6cheld=$(curl -s -m 30 "http://$_f6cip:11434/api/tags" 2>/dev/null \
+                   | "$PY" -c 'import sys,json
+try: d=json.load(sys.stdin)
+except Exception: raise SystemExit
+for m in d.get("models",[]): print(str(m.get("name","")))' 2>/dev/null || true)
+        if [ -z "$_f6cadv" ] || [ -z "$_f6cheld" ]; then
+            # Either side empty means the comparison was never made. An empty
+            # advertised list would otherwise read as "no phantoms", which is
+            # the reassuring answer and the wrong one.
+            chk F-6c UNKNOWN "one side of the comparison did not answer" \
+                "advertised and held must BOTH be read, or agreement proves nothing"
+        else
+            _f6cack=$(grep -v '^[[:space:]]*#' scripts/gateway-phantom-models.txt 2>/dev/null | grep -v '^[[:space:]]*$' || true)
+            _f6cbad=$(_f6cphantom "$_f6cadv" "$_f6cheld" "$_f6cack")
+            _f6cn=$(printf '%s\n' "$_f6cadv" | grep -c . || true)
+            metric f6c_advertised "$_f6cn"
+            metric f6c_held "$(printf '%s\n' "$_f6cheld" | grep -c . || true)"
+            metric f6c_unacknowledged "$(printf '%s' "$_f6cbad" | grep -c . || true)"
+            if [ -z "$_f6cbad" ]; then
+                chk F-6c PASS "every local model the gateway advertises is one the container holds" \
+                    "$_f6cn advertised, compared against the container's own tag list; acknowledged exceptions in scripts/gateway-phantom-models.txt"
+            else
+                chk F-6c FAIL "the gateway advertises local model(s) the container does not hold" \
+                    "$(printf '%s' "$_f6cbad" | tr '\n' ' ') — either pull them, drop the registration, or acknowledge them in scripts/gateway-phantom-models.txt with a reason"
+            fi
         fi
     fi
 
@@ -5091,6 +5183,48 @@ NSFIX
     if [ "$(_e5old "$_e5miss")" -gt 0 ]
     then printf '  ok    the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'
     else printf '  FAIL  the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'; _f=$((_f+1)); fi
+
+    # ---- F-6c: advertised local models against the ones actually held -------
+    #
+    # The fault this pins ran for six days in the real system: the gateway
+    # advertised a model nobody had pulled. The predicate compares two derived
+    # populations, so these fixtures are about the comparison, not the lists.
+    if [ "$(_f6cphantom 'ollama/a' 'a' '')" = "" ]
+    then printf '  ok    a model that is advertised and held is not a finding\n'
+    else printf '  FAIL  a model that is advertised and held is not a finding\n'; _f=$((_f+1)); fi
+
+    # The positive control. A predicate that could only ever return nothing
+    # would pass every other fixture here and be worth exactly nothing --
+    # E-5 stayed green for a week on that shape.
+    if [ "$(_f6cphantom 'ollama/king-audit-canary-no-such-model-9f3a1' 'a' '')" \
+         = "ollama/king-audit-canary-no-such-model-9f3a1" ]
+    then printf '  ok    a model advertised but not held IS reported\n'
+    else printf '  FAIL  a model advertised but not held IS reported\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f6cphantom 'ollama-local/b' 'a' 'ollama-local/b')" = "" ]
+    then printf '  ok    an acknowledged phantom is not reported again\n'
+    else printf '  FAIL  an acknowledged phantom is not reported again\n'; _f=$((_f+1)); fi
+
+    # Acknowledging one name must not acknowledge its neighbours. A substring
+    # match here would silently forgive the second, which is how an exception
+    # file turns into a blanket.
+    if [ "$(_f6cphantom 'ollama-local/b
+ollama-local/bb' 'a' 'ollama-local/b')" = "ollama-local/bb" ]
+    then printf '  ok    acknowledging one name does not acknowledge a longer one\n'
+    else printf '  FAIL  acknowledging one name does not acknowledge a longer one\n'; _f=$((_f+1)); fi
+
+    # Ollama names may contain slashes. Stripping every segment instead of the
+    # provider prefix would turn hf.co/u/m into m and match nothing correctly.
+    if [ "$(_f6cphantom 'ollama/hf.co/u/m' 'hf.co/u/m' '')" = "" ]
+    then printf '  ok    a held model whose own name contains a slash is not a finding\n'
+    else printf '  FAIL  a held model whose own name contains a slash is not a finding\n'; _f=$((_f+1)); fi
+
+    # Both real names today: one held, three acknowledged, nothing reported.
+    if [ "$(_f6cphantom 'ollama/qwen2.5:1.5b-instruct-q4_K_M
+ollama-local/qwen2.5:1.5b-instruct-q4_K_M
+ollama-local/embeddinggemma' 'qwen2.5:1.5b-instruct-q4_K_M' 'ollama-local/embeddinggemma')" = "" ]
+    then printf '  ok    both prefixes of one held model, plus an acknowledged phantom, are clean\n'
+    else printf '  FAIL  both prefixes of one held model, plus an acknowledged phantom, are clean\n'; _f=$((_f+1)); fi
 
     # ---- E-9: a tracing check that must not confuse ignorance with failure --
     #

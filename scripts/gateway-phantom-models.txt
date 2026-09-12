@@ -1,0 +1,38 @@
+# Local models the gateway advertises that the Ollama container does not hold,
+# and that are acknowledged rather than reported by F-6c.
+#
+# One line per fully-qualified model id, exactly as /v1/models prints it.
+#
+# Acknowledging one is a claim with a cost: F-6c will never tell you about it
+# again. Only add a name that CANNOT be fixed from this repo, and write down
+# why, so the next reader can re-test the claim instead of inheriting it.
+#
+# ---------------------------------------------------------------------------
+# The three below are upstream's static defaults, declared in
+# omniroute/open-sse/config/embeddingRegistry.ts under the "ollama-local"
+# provider. Its own comment states the design: "Ollama exposes its own model
+# catalog, but these common embedding models are useful defaults for model
+# selection and validation." They are defaults, not a reading of the container.
+#
+# Why they are not fixed instead of acknowledged: that file is inside the
+# vendored `omniroute/` subtree. CLAUDE.md forbids editing it, because the next
+# `git subtree pull` silently reverts any edit — and forbids reaching for a
+# compose override as the workaround, because the root compose must not
+# redeclare a service the subtree already defines. No per-model disable exists
+# on the gateway's own API surface. Same class as the content-based reroute:
+# real, understood, and not fixable from this repo.
+#
+# Measured 2026-09-12, which is what makes this bounded rather than ignored:
+# Ollama held exactly one model, the gateway advertised four ollama-local/*
+# names, and across the last 1000 call-log rows NOTHING had ever requested an
+# embedding model from ollama-local — 539 rows mentioned ollama, 0 mentioned
+# embed. They are advertised and inert. Re-run that query before assuming it
+# is still true; inert is a measurement, not a property.
+#
+# Their baseUrl compounds it: "http://localhost:11434/v1/embeddings" resolves
+# inside the GATEWAY container, where nothing listens on 11434. Ollama is a
+# different container. So a request for one of these fails to connect rather
+# than reaching the wrong model — loud, not silent.
+ollama-local/embeddinggemma
+ollama-local/nomic-embed-text
+ollama-local/bge-m3

@@ -2001,3 +2001,51 @@ again, and knowing it is written down four entries above did not stop me.
 
 The linter is now installed on the VPS, so `shellcheck scripts/*.sh` — the exact
 command CI runs, no flags — can be answered before a push instead of after one.
+
+---
+
+## 45. The gateway advertised three models that could not exist, and that was upstream's design
+
+Found 2026-09-12, while closing the plan item that said to remove them.
+
+The gateway lists `ollama-local/embeddinggemma`, `ollama-local/nomic-embed-text`
+and `ollama-local/bge-m3`. The container holds one model, `qwen2.5:1.5b-instruct-q4_K_M`,
+and has never held any of those three. Two reads settle it with no request sent:
+Ollama's own tag list has one entry, the gateway's catalogue has four
+`ollama-local/*` entries.
+
+They are not a registration mistake. They are declared statically in
+`omniroute/open-sse/config/embeddingRegistry.ts`, and upstream's comment states
+the design plainly: Ollama exposes its own catalog, but these common embedding
+models are *useful defaults for model selection and validation*. A default is
+not a reading of the container, and once it is served through `/v1/models` a
+caller cannot tell the difference.
+
+**So it cannot be fixed from here**, and that is the entry. `omniroute/` is a
+vendored subtree; CLAUDE.md forbids editing it because the next `git subtree
+pull` reverts the edit silently, and forbids reaching for a compose override
+because the root compose must not redeclare what the subtree defines. The
+gateway exposes no per-model disable. Same class as the content-based reroute:
+real, understood, out of reach.
+
+**What was done instead, and why it is not the same as ignoring it.** The three
+names are written down in `scripts/gateway-phantom-models.txt` with the reason
+and the measurement, and `F-6c` reports any local model the gateway advertises
+that the container does not hold and that is not on that list. Bounded: across
+the last 1000 call-log rows, 539 mentioned ollama and **0** mentioned an
+embedding model, so nothing has ever asked for one. Their `baseUrl` is
+`http://localhost:11434` resolved inside the *gateway* container, where nothing
+listens — so a request would fail to connect rather than reach a wrong model.
+
+**The check is the real output here.** `F-6b` asks whether the one model named
+in `.env` is registered and answers. The fault that actually happened was wider:
+for six days the gateway advertised `qwen2.5:3b`, which had never been pulled,
+and nothing noticed. Change `OLLAMA_MODEL`, re-register, and `F-6b` goes green
+on the new name while the old one keeps being advertised — only comparing the
+two POPULATIONS sees that. Both sides are derived on the spot. The
+acknowledgement file is the one hand-kept list, and it is deliberately the short
+side: it holds what cannot be fixed, never what is currently true.
+
+Proven red against the live system, not only against fixtures: emptying the
+acknowledgement file made `F-6c` name all three, and restoring it made it green
+again.
