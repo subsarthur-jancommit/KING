@@ -1899,3 +1899,57 @@ drops what it cannot handle just moves the same lie one level down.
 The sweep that found the last one is worth keeping: `grep -nE '^\s*for _[a-z]+
 in .*(scripts/|\.sh|\.txt)' | grep -v '\*'` — loops over literal paths, in a
 script whose whole job is to enumerate. It returns nothing now.
+
+## 43. The canary broke the thing it was measuring, and then blamed it
+
+Three checks in this audit carry a canary, and the reasoning behind them is
+sound enough that it has its own entry: **an instrument that cannot say no
+cannot be believed when it says yes.** `E-5` asks the code graph for a label
+that cannot exist. `E-9` asks Langfuse for a window in the year 2099. `L-3`
+pushes a line built to match through the same grep before believing a zero.
+
+So when `F-6b` needed to prove that a 404 from the gateway meant something, the
+pattern was obvious: ask for a model that cannot exist first.
+
+It worked, in the sense that the impossible model was refused. It also did
+this:
+
+```
+Asking qwen2.5:1.5b-instruct-q4_K_M through the gateway …
+{"error":{"message":"[ollama/qwen2.5:1.5b-instruct-q4_K_M] [404]:
+ model 'king-audit-canary-no-such-model-9f3a1' not found (reset after 1m)"}}
+```
+
+Read the two names in that one message. The **request** was for the real model.
+The **error** is the canary's. The canary had tripped the gateway's per-provider
+failure tracking, `ollama-local` went into a one-minute backoff, and the next
+real request inherited the cached failure.
+
+So the instrument broke its subject, and then reported the breakage as the
+subject's fault. If I had not recognised the canary's own name in that error, I
+would have concluded the registration had failed and gone looking for a bug that
+was not there.
+
+**The distinction the other three canaries hide.** E-5 reads a graph, E-9 reads
+a trace store, L-3 greps a file — all of them *read*. `F-6b`'s canary was an
+inference request, and an inference request is not a read. It is an attempt that
+can fail, and a gateway that tracks failures is doing its job when it records
+one. The pattern was never "ask for something impossible"; it was "ask a
+question that cannot change the answer."
+
+`F-6b` now reads the **catalogue**. `/v1/models` is free, has no side effect,
+and still discriminates: an impossible name must be ABSENT from it, or the list
+is not a list. Only after that does one real request go out, and only ever for
+the model actually configured.
+
+And the split improved the diagnosis, which is the part worth keeping. "Not in
+the catalogue" means the gateway was never told. "In the catalogue but not
+answering" means the catalogue and the connection disagree. The version that
+sent a doomed request reported both as 404, which is how the original fault hid
+for as long as it did.
+
+**This repo had the shape written down already.** `docs/king-system.md` records
+that a failed round two on `agy` triggers a cooldown affecting other traffic.
+The same mechanism, on a different provider, reached by a check built to be
+careful. Knowing that a system has failure-tracking is not the same as
+remembering it while writing the thing that will trip it.
