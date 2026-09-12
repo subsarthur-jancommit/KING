@@ -829,6 +829,7 @@ Three MCP servers, two of which already existed and had never been switched on.
 | `https://gateway.arject.co/api/mcp/stream` | **110** | OmniRoute's own control plane — routing, quota, cost, cache, skills, memory, `best_combo_for_task`, `explain_route` |
 | `https://gateway.arject.co/king-agent/mcp` | **4** | `run_agent`, `ask_model`, `vps_status`, `vps_exec` |
 | `https://gateway.arject.co/king-codegraph/mcp` | **10** | codegraph — `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs` |
+| `https://flows.arject.co/mcp` | **4** | Activepieces — `search_web`, `review_code`, `web_research`, `ask_free_model`. OAuth, not a bearer header; the tools ARE the flows whose trigger is `piece-mcp` |
 
 ### Connecting
 
@@ -848,6 +849,39 @@ claude mcp add --transport http omniroute \
   https://gateway.arject.co/api/mcp/stream \
   --header "Authorization: Bearer $OMNIROUTE_MANAGE_KEY"
 ```
+
+
+**Activepieces is the fourth, and it connects differently — no token at all:**
+
+```bash
+claude mcp add --transport http activepieces https://flows.arject.co/mcp
+```
+
+Then, in an INTERACTIVE session, `/mcp` → `activepieces` → Authenticate. A
+browser opens `https://flows.arject.co/mcp-authorize`, you approve, and the
+token is held by the OAuth flow rather than written into a config file. A
+non-interactive session cannot complete this and will report the server as
+requiring authentication.
+
+The URL is not guessed. It is what the Activepieces UI itself builds, read out
+of the running frontend bundle:
+
+```js
+t = `${PUBLIC_URL.replace(/\/$/,"")}/mcp`
+n = { mcpServers: { activepieces: { url: t } } }
+```
+
+Verified live: `/mcp` answers `401` with
+`Www-Authenticate: Bearer resource_metadata=…`, which is the MCP OAuth
+challenge, and both `/.well-known/oauth-authorization-server` and
+`/.well-known/oauth-protected-resource` answer 200.
+
+**The tools are the flows.** Any flow whose trigger is `@activepieces/piece-mcp`
+is exposed on that server automatically — the bundle says so in as many words,
+"Trigger are exposed as tools on this server". So `mcp_tool` being empty in the
+database is not a missing attachment; nothing has to be attached. Enabling the
+flow is the whole of it. Four are live: `search_web`, `review_code`,
+`web_research`, `ask_free_model`.
 
 Both tokens live in gitignored files on the VPS — `agent-sidecar/.env` and the
 OmniRoute key list. Never put them in a committed `.mcp.json`.
