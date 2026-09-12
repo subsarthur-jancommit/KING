@@ -30,15 +30,45 @@ rc=$?
 
 cat "$OUT"
 
-if [ -n "${NTFY_ALERT_TOPIC:-}" ] && [ -s "$DELTA" ]; then
-    # Best-effort. A push that fails must not turn a completed audit into a
-    # failed unit, because `systemctl --user --failed` is the signal for "the
-    # audit could not run" and overloading it costs more than it saves.
-    curl -s -m 30 \
+# The topic is a bare NAME, not a URL, and the first version of this posted to
+# it as though it were one — so the very first real run printed "the delta could
+# not be pushed" with no further detail. Both halves of that were wrong: the URL
+# and the diagnosis. `NTFY_ALERT_TOPIC` is the unguessable half of an
+# unauthenticated topic (see king-rotate.sh), and publishing also wants
+# `NTFY_TOKEN`, exactly as G-5 and every other alerting path here use them.
+#
+# Read from .env with sed, like king-audit.sh itself does, and never by sourcing
+# it: `. ./.env` is what truncates `LANGFUSE_OTLP_AUTH=Basic <base64>` at the
+# space. An environment variable, if the unit sets one, wins over the file.
+NTFY_BASE="${NTFY_BASE_URL:-https://gateway.arject.co/king-ntfy}"
+topic="${NTFY_ALERT_TOPIC:-}"
+[ -n "$topic" ] || topic=$(sed -n 's/^NTFY_ALERT_TOPIC=//p' .env 2>/dev/null | tail -1)
+token="${NTFY_TOKEN:-}"
+[ -n "$token" ] || token=$(sed -n 's/^NTFY_TOKEN=//p' .env 2>/dev/null | tail -1)
+
+if [ -n "$topic" ] && [ -s "$DELTA" ]; then
+    case "$topic" in
+        http://*|https://*) url="$topic" ;;
+        *)                  url="$NTFY_BASE/$topic" ;;
+    esac
+    # The HTTP code, not just success or failure. "Refused" and "unreachable"
+    # are different faults with different fixes, and a message that says only
+    # "could not push" sends the reader to look at the wrong one — which is the
+    # distinction _doorverdict and the UNKNOWN verdict exist to keep.
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+        -H "Authorization: Bearer $token" \
         -H 'Title: KING audit: something moved' \
         -H 'Priority: high' \
-        --data-binary @"$DELTA" "$NTFY_ALERT_TOPIC" >/dev/null 2>&1 \
-        || echo "king-audit-run: the delta could not be pushed to ntfy" >&2
+        --data-binary @"$DELTA" "$url" 2>/dev/null || echo 000)
+    case "$code" in
+        200) : ;;
+        000) echo "king-audit-run: ntfy at $NTFY_BASE did not answer; the delta was not delivered" >&2 ;;
+        *)   echo "king-audit-run: ntfy refused the delta with HTTP $code" >&2 ;;
+    esac
+    # Deliberately not fatal either way. `systemctl --user --failed` is the
+    # signal for "the audit could not run", and overloading it with "the audit
+    # ran and the phone did not hear about it" costs more than it saves. The
+    # journal above still has the whole run.
 fi
 
 # 3 means the audit is incomplete — a planned check never ran, or one ran that
