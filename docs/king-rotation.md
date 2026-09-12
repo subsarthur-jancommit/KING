@@ -163,6 +163,39 @@ file must be named **in this document** or acknowledged in
 `scripts/not-secrets.txt`. That predicate has no blind spot: a new variable is
 either reviewed or the audit is red.
 
+### A fourth shape: the step settings carried the bearer — 2026-09-12
+
+`flow-search` is disclosed. Diagnosing why an MCP tool call returned nothing, I
+read a flow step's settings to find which URL it uses. The step is an HTTP
+request, and an HTTP request's settings carry its `Authorization` header.
+
+**This repo had already written the hazard down.** `docs/king-system.md` says
+the `flows/` mirror excludes each step's `input` block *because it holds the
+monitor's bearer token and the webhook HMAC secret*. The danger was documented,
+the mitigation was in place for the mirror, and I walked into it from the other
+direction — through the API instead of the file.
+
+Fourth shape of one fault, after a `sed` that did not redact, a `SELECT *` on a
+table with a token column, and a getter asked a yes/no question. The pattern is
+not "be careful with credentials". It is: **any object that CONTAINS a
+credential prints it when you ask the object about something else.** A row, an
+environment, a config, a step.
+
+Blast radius, measured rather than assumed:
+
+    /v1/search            200   works
+    /v1/chat/completions  503   refused — no model access
+    /api/keys             403   no manage scope
+    /v1/models            200   catalogue only
+
+So a holder can spend Tavily credit at $0.008 a search and read the model list.
+Nothing else. That is bounded, and it is not nothing: `king-roadmap.md` lists
+Tavily credit as finite with no fallback by design.
+
+Rotating it means updating every flow step that carries it — the search step of
+`search_web` and `web_research` at least — so it is a UI pass, not a script
+one. `king-rotate.sh` does not own this key; the gateway mints it.
+
 ### Rotated at Neon, then disclosed again — 2026-09-12
 
 The password WAS changed in the Neon console at about 00:40, which is what took
