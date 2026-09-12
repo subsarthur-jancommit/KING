@@ -778,6 +778,45 @@ which is the finding that matters: **at 1.5B the ceiling is the model, not the
 wording.** Further gains need a larger decision model or constrained decoding,
 not another prompt edit.
 
+### The code graph, measured against the grep it is supposed to replace
+
+Registered as an MCP server on 2026-09-12 — `codegraph` and `king-agent`, both
+`✔ Connected`, both at `--scope user` so neither key touches the tracked
+`.mcp.json`. Until that day the graph had been **live on the gateway and
+reachable from no client**, so for eight days this repo documented a capability
+that every session answered with `grep` instead. That gap is the reason
+`CLAUDE.md` now carries a one-command verification line.
+
+The claim worth testing was "prefer it over grep". Four real symbols, the same
+question of each — *what touches this?*
+
+| symbol | `grep -rn` | `get_neighbors`, full | at a 600-token budget |
+|---|---|---|---|
+| `_McpAuthMiddleware` | 171 ch, 2 lines | 463 ch, 4 edges | 463, complete |
+| `run_agent` | 1971 ch, 18 lines | 741 ch, 7 edges | 741, complete |
+| `select_agent_tools` | 2395 ch, 21 lines | 16 edges | 1970, **states it cut 1** |
+| `load_settings` | 5503 ch, 60 lines | 5219 ch, 48 edges | 2031, **states it cut 31** |
+
+**The flattering reading is not the true one.** On a rare symbol grep wins
+outright. At full fidelity on a common symbol the graph is roughly the size of
+the grep it replaces. What it actually buys is two things grep cannot do: every
+edge is **typed and directional** — `calls`, `imports`, `contains`,
+`references`, with `-->` and `<--` — where a grep hit for a definition, a call,
+a test and a comment are indistinguishable strings; and the answer is
+**bounded with its omission stated**. Asking for 600 tokens returns the 17 most
+relevant of 48 edges and says 31 were cut. Grep offers all 60 lines or a
+narrower pattern that drops the one that mattered without mentioning it.
+
+**`query_graph` does not work on this repo, and the reason is structural.** A
+broad question — "which file defines the agent sidecar's HTTP routes and mounts
+the MCP app?" — returned 352 nodes, nearly all from the vendored `omniroute/`
+subtree, and `agent-sidecar/src/agent_sidecar/server.py` was not among the top
+35. Of 59,809 indexed nodes the large majority are vendored, so a relevance
+search over the whole graph is a search of upstream's code. Start from a symbol
+name instead. The same question cost six tool calls by hand, three of which
+returned nothing because the directory layout was guessed wrong — so the honest
+comparison is not *graph versus grep* but *knowing a symbol name versus not*.
+
 ---
 
 ## 5. Workflows and agentic patterns

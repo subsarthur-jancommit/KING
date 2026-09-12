@@ -54,12 +54,42 @@ profile mounts the whole repo, so anything secret must also be shadowed with
 **Live since 2026-09-04**, and no longer behind an SSH tunnel:
 
 ```
-claude mcp add --transport http codegraph   https://gateway.arject.co/king-codegraph/mcp   --header "Authorization: Bearer ${GRAPHIFY_API_KEY}"
+claude mcp add --transport http --scope user codegraph https://gateway.arject.co/king-codegraph/mcp --header "Authorization: Bearer ${GRAPHIFY_API_KEY}"
 ```
 
-Ten tools, refreshed daily by a systemd timer. Prefer it over grep for
-"what calls this" and "if I change this, what breaks" — `get_neighbors` answers
-in one call what a recursive grep answers wrongly.
+**`--scope user` is not optional.** Without it the server lands in `.mcp.json`,
+which is tracked, and the key is committed. User scope writes to `~/.claude.json`
+instead, outside the repo. The same applies to `king-agent`, registered the same
+way against `https://gateway.arject.co/king-agent/mcp` with
+`AGENT_SIDECAR_AUTH_TOKEN`.
+
+**Verify rather than believe it:** `claude mcp list` must show both as
+`✔ Connected`. This section claimed codegraph was live from 2026-09-04, and it
+was — on the gateway. It had never been registered as an MCP server on any
+client, so for eight days every structure question in every session was answered
+with `grep` while this file said otherwise. A capability that exists and a
+capability that is reachable are different claims, and only one of them is
+checkable in one command. Registered for real on 2026-09-12.
+
+Ten tools, refreshed daily by a systemd timer. Which one to reach for is
+measured, not assumed (2026-09-12, numbers in `docs/king-system.md` §4):
+
+- **`get_neighbors` on a symbol you can name — yes.** Exact `file:line`, callers
+  and callees, and every edge typed (`calls`, `imports`, `contains`,
+  `references`). A grep returns a flat list where a definition, a call, a test
+  and a comment all look alike.
+- **It is not automatically cheaper.** On a rare symbol grep wins outright — 171
+  characters against 463 for `_McpAuthMiddleware`. On a common one the graph at
+  full fidelity is about the same size as grep (5219 against 5503 for
+  `load_settings`) and better shaped. The saving comes from `token_budget`: ask
+  for 600 tokens and it returns the 17 most relevant of 48 edges **and says it
+  cut 31**. Grep has no such mode — all 60 lines, or narrow the pattern and
+  silently risk missing the one that mattered.
+- **`query_graph` is swamped here — don't reach for it.** A broad question
+  ("which file defines the sidecar's HTTP routes?") returned 352 nodes, almost
+  all from the vendored `omniroute/` subtree, and the answer was not among the
+  top 35. The graph indexes 59,809 nodes and most of them are not ours. Start
+  from a symbol with `get_neighbors` or `get_node`.
 
 It can be stale by up to a day, which is normal; weeks behind is not. Check
 with `graph_stats`, refresh with `scripts/codegraph-refresh.sh`. A confident
