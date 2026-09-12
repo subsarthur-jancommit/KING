@@ -3,13 +3,25 @@ Description=Nightly audit, reporting only what moved since the committed baselin
 Documentation=file:%h/KING/docs/king-system.md
 
 [Timer]
-# 03:41, which is off every quarter-hour the other timers use. The audit sends
-# real requests through the gateway and to two model providers, and a burst of
-# that traffic landing inside monitor-deadman's 15-minute window would move the
-# very error ratio the monitor is judging. It also sits clear of
-# codegraph-refresh so the two are never contending for the same memory — D-3
-# exists because that build has a floor and the host has 7.8 GB.
-OnCalendar=*-*-* 03:41:00
+# 05:11, and the time was chosen by watching it go wrong rather than by taste.
+#
+# The first draft said 03:41. `codegraph-refresh` runs at 03:00 and FINISHES by
+# recreating `codegraph-serve`, so an audit landing in that window gets a 502
+# from Caddy — measured 2026-09-12, B-8 and C-5 both went PASS -> UNKNOWN for
+# exactly that reason, twice in one afternoon. They are right to: `_doorverdict`
+# reads a 5xx as unreachable rather than as an open door, which is the correct
+# verdict and a useless 03:41 notification. A nightly report that cries wolf
+# about the host's own housekeeping is a nightly report nobody opens.
+#
+# So it sits after everything: codegraph-refresh 03:00, pool-prove Sun 04:17,
+# king-backup 04:30. AFTER the refresh is deliberate rather than incidental —
+# E-4 and E-5 judge how fresh the graph is, and asking before the refresh would
+# report yesterday's answer every single night.
+#
+# Off every quarter-hour too, because monitor-deadman runs at :07 :22 :37 :52
+# and this sends real completions through the gateway; a burst of that inside
+# the monitor's window moves the very error ratio the monitor is judging.
+OnCalendar=*-*-* 05:11:00
 
 # A missed run must catch up. The machine having been off is not evidence that
 # nothing drifted while it was, and skipping in silence turns a nightly audit

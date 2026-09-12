@@ -30,6 +30,7 @@
 #   ./scripts/king-audit.sh --positive-control
 #   ./scripts/king-audit.sh --all --baseline # rewrite audit/baseline.json
 #   ./scripts/king-audit.sh --all --delta    # also print what moved since it
+#   ./scripts/king-audit.sh --all --delta-metrics  # and every metric that moved
 #
 # Exit: 0 all PASS, 1 any FAIL, 2 any UNKNOWN, 3 any planned check not implemented.
 set -eu
@@ -39,6 +40,7 @@ WANT=""
 MODE="run"
 WRITE_BASELINE=0
 DELTA=0
+DELTA_METRICS=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -48,6 +50,7 @@ while [ "$#" -gt 0 ]; do
         --positive-control) MODE="poscontrol" ;;
         --baseline)         WRITE_BASELINE=1 ;;
         --delta)            DELTA=1 ;;
+        --delta-metrics)    DELTA=1; DELTA_METRICS=1 ;;
         -h|--help)          sed -n '2,32p' "$0"; exit 0 ;;
         *)                  echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -5937,18 +5940,33 @@ fi
 #                                                    PASS -> UNKNOWN today while
 #                                                    codegraph-serve restarted,
 #                                                    and only the totals moved
-#   a metric that CROSSED ZERO, either way        -> report. 0 -> n is a state
-#                                                    change: a violation that
-#                                                    did not exist, an override
-#                                                    that had never happened
-#   a metric that merely drifted                  -> SILENT, on purpose
+#   a metric, of any kind                         -> SILENT, unless asked for
+#                                                    with --delta-metrics
 #
-# That last line is the one worth defending. `d3_mem_available_mb` moved 33% in
-# four hours today with nothing wrong, so a percentage trigger would either be
-# set loose enough to miss a disk filling or tight enough to fire most nights.
-# A per-metric threshold table would fix that and would be a hand-kept inventory
-# — the exact fault G-1, G-2, J-1 and A-9 were all found committing. Crossing
-# zero needs no table and means the same thing for every metric here.
+# That last line changed after being measured, and the measurement is the
+# argument. The first version also reported metrics that CROSSED ZERO, on the
+# reasoning that 0 -> n is a state change rather than drift. The very first
+# clean-tree run produced `crossed 0  e4_commits_behind  0 -> 1` — which is a
+# commit having landed, something this repo's own documentation calls normal.
+# On an active project that line fires nearly every night, and a nightly report
+# with a line nobody acts on is a nightly report nobody opens.
+#
+# Then the stronger reason: EVERY metric here whose crossing zero would matter
+# is already carried by a check that goes red. f4_overridden -> F-4 FAIL.
+# b1_violations -> B-1. c2_history_hits -> C-2. f6c_unacknowledged -> F-6c.
+# d1_swapping -> D-1. b9_undocumented -> B-9. The checks are where the
+# thresholds live, and they were written by someone deciding what the number
+# means. A metric that moved while no check noticed is a metric no check thought
+# worth noticing, and the nightly push is not the place to second-guess that.
+#
+# Percentage drift was never an option either: `d3_mem_available_mb` moved 33%
+# in four hours today with nothing wrong, so a percentage trigger is either
+# loose enough to miss a disk filling or tight enough to fire most nights. A
+# per-metric threshold table would fix it and would be a hand-kept inventory —
+# the exact fault G-1, G-2, J-1 and A-9 were each caught committing.
+#
+# Metrics still matter to a HUMAN reading a diff, which is why --delta-metrics
+# exists. They are just not what wakes a phone at 03:41.
 #
 # It never WRITES the baseline. A timer that rewrites its own baseline erases
 # the evidence of the shift it exists to report, and would go quiet permanently
@@ -5981,6 +5999,7 @@ if [ "$DELTA" = "1" ]; then
         if [ -n "${KING_AUDIT_DELTA_OUT:-}" ]; then : > "$KING_AUDIT_DELTA_OUT"; fi
     else
         _dout=$(FINDINGS="$FINDINGS" UNKNOWNS="$UNKNOWNS" METRICS="$METRICS" \
+                DELTA_METRICS="$DELTA_METRICS" \
                 BASEFILE="$BASELINE" "$PY" -c '
 import io, json, os
 
@@ -6026,16 +6045,17 @@ for i in sorted(set(now_unk) - was_unk):
 for i in sorted(was_unk - set(now_unk)):
     lines.append("answers    %-5s could not answer in the baseline" % i)
 
-for k in sorted(set(bm) | set(m)):
-    a, b = num(bm.get(k)), num(m.get(k))
-    if a is None or b is None:
-        if k not in bm:
-            lines.append("new metric %s = %s" % (k, m.get(k)))
-        elif k not in m:
-            lines.append("gone       %s (was %s)" % (k, bm.get(k)))
-        continue
-    if (a == 0) != (b == 0):
-        lines.append("crossed 0  %-28s %s -> %s" % (k, bm.get(k), m.get(k)))
+if os.environ.get("DELTA_METRICS") == "1":
+    for k in sorted(set(bm) | set(m)):
+        a, b = num(bm.get(k)), num(m.get(k))
+        if a is None or b is None:
+            if k not in bm:
+                lines.append("new metric %s = %s" % (k, m.get(k)))
+            elif k not in m:
+                lines.append("gone       %s (was %s)" % (k, bm.get(k)))
+            continue
+        if a != b:
+            lines.append("metric     %-28s %s -> %s" % (k, bm.get(k), m.get(k)))
 
 print("\n".join(lines))
 ' 2>/dev/null || true)
