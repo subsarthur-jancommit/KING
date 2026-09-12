@@ -534,7 +534,11 @@ runs only in CI, and is described in the workflow section above.
 `local-router.sh` chooses which ladder a task deserves using the local model;
 it is retired from the live decision path, since Claude now picks directly, and
 is kept because its scored eval is the record of what that routing actually
-achieved — 86% over 15 cases, and the four prompt versions that did worse.
+achieved — 86% over 15 cases, and the four prompt versions that did worse. As
+of 2026-09-12 it reaches the model at the container's own address rather than
+through the gateway, and refuses to report a score at all if anything else
+answers: for six days it had been asking the gateway for the local model and
+being served by a paid one, scoring 100% and measuring the wrong thing.
 
 Two things they share, and both are deliberate. **No script reports success it
 did not measure** — a saved connection that answers nothing has bitten this

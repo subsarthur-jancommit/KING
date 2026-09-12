@@ -1953,3 +1953,51 @@ that a failed round two on `agy` triggers a cooldown affecting other traffic.
 The same mechanism, on a different provider, reached by a check built to be
 careful. Knowing that a system has failure-tracking is not the same as
 remembering it while writing the thing that will trip it.
+
+---
+
+## 44. A dependency check that asked whether the name resolved, not whether it ran
+
+Found 2026-09-12, in code I had written minutes earlier, by running it.
+
+The rewritten `local-router.sh` guards its Python block:
+
+    command -v python3 >/dev/null 2>&1 || { red "python3 is required."; exit 1; }
+
+On the Windows machine this session runs from, `command -v python3` succeeds. It
+resolves to `…/WindowsApps/python3`, a Microsoft Store stub that prints an advert
+about installing Python and exits **49**. So the guard passed, the heredoc was
+fed to a program that is not an interpreter, and the script exited 49 having
+printed nothing at all. Not an error message, not a wrong answer — silence and a
+number nobody would recognise.
+
+**The whole point of `--self-test` is to run with no network and no Docker**, so
+it can be run anywhere. The first place I ran it was the one place the guard was
+wrong, which is luck, not method.
+
+**The same mistake this file is mostly about.** `command -v` asks the artefact —
+does this NAME resolve on PATH. What was needed was the system question: does
+this interpreter RUN. They differ exactly when something occupies the name
+without doing the job, which is not an exotic case; it is the default on Windows
+and it is every broken symlink, every shim, every wrapper that needs a licence
+server. The fix is a line shorter to read and strictly stronger:
+
+    if ! python3 -c "" >/dev/null 2>&1; then
+      red "python3 is required, and the python3 on PATH here does not run."
+      exit 1
+    fi
+
+**And then I made the twin of it in the same hour.** Checking whether the VPS
+had `shellcheck`:
+
+    command -v shellcheck >/dev/null && shellcheck /tmp/lr.sh; echo "rc=$?"
+
+`command -v` failed, `&&` short-circuited, `shellcheck` never ran, and `$?` was
+the *failed lookup's* status — `rc=1`. I had asked "did the linter pass" and been
+handed "the linter is missing", wearing the same clothes as a real lint failure.
+One character of luck away from reading it as a clean run. `if …; then … else
+echo "NO shellcheck"; fi` said it plainly. This is entry 5's exit-status trap
+again, and knowing it is written down four entries above did not stop me.
+
+The linter is now installed on the VPS, so `shellcheck scripts/*.sh` — the exact
+command CI runs, no flags — can be answered before a push instead of after one.
