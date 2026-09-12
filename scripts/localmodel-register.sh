@@ -25,7 +25,26 @@ cd "$(dirname "$0")/.."
 
 BASE="${OMNIROUTE_BASE_URL:-http://localhost:20128}"
 MODEL="${OLLAMA_MODEL:-$(sed -n 's/^OLLAMA_MODEL=//p' .env 2>/dev/null | tail -1)}"
-MODEL="${MODEL:-qwen2.5:3b-instruct-q4_K_M}"
+# No second default here, and the reason is not style.
+#
+# This line read `qwen2.5:3b-instruct-q4_K_M` while docker-compose.yml pulled
+# `qwen2.5:1.5b-instruct-q4_K_M`. Two defaults, in two files, that nothing
+# compared. The register script therefore told the gateway about a model Ollama
+# did not have, and the model Ollama DID have was never registered — so the
+# gateway answered 404 for `ollama/qwen2.5:3b-...` (not pulled) AND for
+# `ollama/qwen2.5:1.5b-...` (not registered). Measured 2026-09-12: zero ollama
+# rows in the last 1000 gateway call-log entries, and F-6 green throughout
+# because it deliberately tests the container directly and never the gateway.
+#
+# compose is what actually PULLS the model, so compose decides which one exists.
+# Reading its default here means the two cannot disagree again.
+MODEL="${MODEL:-$(sed -n 's/.*OLLAMA_MODEL:-\([^}]*\)}.*/\1/p' docker-compose.yml | head -1)}"
+if [ -z "$MODEL" ]; then
+  red "No OLLAMA_MODEL in .env and none derivable from docker-compose.yml."
+  red "Registering a guessed name is how the gateway came to advertise a model"
+  red "that does not exist. Set OLLAMA_MODEL and re-run."
+  exit 1
+fi
 OLLAMA_URL="${OLLAMA_INTERNAL_URL:-http://ollama:11434/v1}"
 
 red()    { printf '\033[31m%s\033[0m\n' "$*"; }

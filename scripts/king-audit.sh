@@ -129,6 +129,7 @@ F-3
 F-4
 F-5
 F-6
+F-6b
 F-7
 F-8
 F-9
@@ -228,6 +229,7 @@ F-3|reroute status: the eight measured trigger phrases
 F-4|model_overridden in the recent run journal
 F-5|per-provider failure rate, and what reached the caller
 F-6|the local model answers, and answers from this host
+F-6b|the gateway can reach the local model, which F-6 deliberately does not ask
 F-7|flow mirror parses and exports what its tests import
 F-8|every destructive tool the servers offer is blocked from the agent
 F-9|every tool that can reach the network is acknowledged
@@ -2654,6 +2656,53 @@ PYMCP
         fi
     else
         chk F-6 SKIP "localmodel profile not running"
+    fi
+
+    # F-6b. F-6 asks whether the local model answers with NO gateway on the
+    # path, and is right to: the gateway is allowed to reroute, so routing
+    # through it cannot prove a local-only guarantee.
+    #
+    # Nothing asked the opposite question, and on 2026-09-12 the answer was 404
+    # for every local model name — including the one Ollama actually held.
+    # `localmodel-register.sh` defaulted to `qwen2.5:3b-instruct-q4_K_M` while
+    # compose pulled `qwen2.5:1.5b-...`, so the gateway advertised a model that
+    # did not exist and never learned about the one that did. Zero ollama rows
+    # in the last 1000 call-log entries, and F-6 green the whole time, because
+    # a check that deliberately avoids the gateway cannot see the gateway break.
+    #
+    # Two checks, two questions: F-6 guards the guarantee, F-6b guards the path.
+    _f6m=$(sed -n 's/^OLLAMA_MODEL=//p' .env 2>/dev/null | tail -1)
+    [ -n "$_f6m" ] || _f6m=$(sed -n 's/.*OLLAMA_MODEL:-\([^}]*\)}.*/\1/p' docker-compose.yml 2>/dev/null | head -1)
+    _f6k=$(sed -n 's/^OMNIROUTE_API_KEY=//p' agent-sidecar/.env 2>/dev/null | tail -1)
+    if ! on_host; then
+        chk F-6b SKIP "not on the host"
+    elif [ -z "$_f6m" ] || [ -z "$_f6k" ]; then
+        chk F-6b UNKNOWN "no local model name or no gateway key; the path cannot be asked"
+    else
+        _f6ask() {
+            curl -s -o /dev/null -w '%{http_code}' -m 90 \
+                -X POST http://localhost:20128/v1/chat/completions \
+                -H "Authorization: Bearer $_f6k" -H 'Content-Type: application/json' \
+                -d "{\"model\":\"ollama/$1\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}],\"max_tokens\":4}" \
+                2>/dev/null || printf '000'
+        }
+        # The canary, same idea as E-5 and E-9: a model that cannot exist must
+        # be refused, or a refusal of the real one proves nothing.
+        _f6can=$(_f6ask 'king-audit-canary-no-such-model-9f3a1')
+        if [ "$_f6can" = "200" ]; then
+            chk F-6b UNKNOWN "the gateway answered 200 for a model that cannot exist" \
+                "it cannot tell a served model from an unserved one, so neither can this check"
+        else
+            _f6got=$(_f6ask "$_f6m")
+            case "$_f6got" in
+                200) chk F-6b PASS "the gateway reaches the local model" \
+                         "ollama/$_f6m answered 200; an impossible name was refused with $_f6can" ;;
+                404) chk F-6b FAIL "the gateway does not serve ollama/$_f6m" \
+                         "compose pulls this model and the gateway has never been told about it — re-run scripts/localmodel-register.sh" ;;
+                *)   chk F-6b FAIL "the gateway answered $_f6got for ollama/$_f6m" \
+                         "the local model is pulled but unreachable through the gateway" ;;
+            esac
+        fi
     fi
 
     # F-3: the trigger vocabulary, which lives in the vendored subtree and can
