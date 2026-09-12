@@ -2098,3 +2098,59 @@ status has bitten this repo it has been the same error: assuming a status
 belongs to the command I was thinking about. In a pipeline it belongs to the
 last stage. Behind `&&` it belongs to whichever side ran. Here, under `set -e`,
 there is no status to belong to anyone, because the shell is already gone.
+
+---
+
+## 47. Fifteen fixtures, a canary, a doctored live payload — and the check could not fire
+
+Found 2026-09-12, by a real fault happening while the instrument watched.
+
+`trace-report.sh` was built to catch the 2026-09-06 fault: a caller asking for
+the local model and a paid provider answering. The traces looked like they held
+both halves on one row:
+
+    name  = "chat ollama/qwen2.5:1.5b-instruct-q4_K_M"   what was asked for
+    model = "qwen2.5:1.5b-instruct-q4_K_M"               what served it
+
+It passed fifteen fixtures. It had a canary — a predicate that could only ever
+return "no escape" would have failed it. It was proven red against a **real**
+payload of 247 rows with one row doctored. That is more verification than
+anything else built this week.
+
+Then a genuine reroute happened. An agent run asked for
+`ollama/qwen2.5:1.5b-instruct-q4_K_M` and `claude-sonnet-4-6` served it,
+`degraded: true`. `F-4` caught it out of the agent journal. `trace-report.sh`,
+run minutes later over a window containing that very call, printed:
+
+    local work that left the host: 0
+
+**The span is written after the gateway has decided.** Both fields describe the
+destination; neither describes the request. `gen_ai.request.model` — the
+attribute whose NAME says "request" — also carries the post-reroute model. A
+rerouted call arrives as a perfectly consistent
+`chat antigravity/claude-sonnet-4-6` -> `claude-sonnet-4-6`. The two fields
+cannot disagree for the one case the check existed to catch.
+
+**So the canary was sound and the fixtures were fiction.** I wrote rows where
+name and model disagreed, and the gateway does not emit that shape. Even the
+"real payload" test was me editing a real row INTO the invented shape and
+confirming the code noticed. Every one of those tests measured the predicate.
+None asked whether the world can produce its input.
+
+That is the sharpest version of this file's whole subject. A canary proves the
+instrument can say no. It says nothing about whether the thing you are
+measuring can ever present the case that makes it say no. Both questions have
+to be asked, and only the second one requires looking at the system.
+
+**What the traces actually support**, measured over 487 generations rather than
+assumed. `gen_ai.system` takes three values: `direct` (served as addressed),
+`auto` (the gateway's router chose), and `priority` (a combo ladder — the caller
+naming a route). The report now counts those, because they are true, and states
+plainly in its own output that it is NOT a list of diverted calls and that F-4
+is the detector for that.
+
+**And `priority` is the same lesson twice in one hour.** It does not appear in a
+300-row sample; it showed up only when the window widened to 487. Fixtures
+written from the first sample would have been invented again, one sample later.
+The fixtures now carry the distribution the gateway emits, and the header
+records the sample size so the next reader knows what they are trusting.
