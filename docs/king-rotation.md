@@ -163,6 +163,27 @@ file must be named **in this document** or acknowledged in
 `scripts/not-secrets.txt`. That predicate has no blind spot: a new variable is
 either reviewed or the audit is red.
 
+### A rotation that changed the value and not the exposure — 2026-09-12
+
+`.rotation-state` recorded `AP_POSTGRES_URL rotated 2026-09-11T08:07:48Z`, and
+`--list` therefore showed it **done**. Both were true and neither was useful:
+the value did change that morning, because the operator moved to a fresh Neon
+project — and then pasted the NEW URL into chat to get the system running.
+
+So the credential with the largest blast radius on this page was recorded as
+handled while its live value sat in a transcript. Verified 2026-09-12: the
+active host is `ep-lingering-firefly`, the same project named in the table
+below, and Neon's port 5432 answers from the public internet.
+
+The record is corrected to `pending`. **A rotation is done when the new value is
+secret, not when the old one stopped being used** — which is `king-mistakes.md`
+24 arriving from a direction it had not been read from before.
+
+`AP_REDIS_PASSWORD` is the one genuine `done` on this page. Rotated 2026-09-12
+after it was committed to a public repository in a self-test fixture; verified
+by pulling the old value back out of that commit and offering it to Redis,
+which answered `WRONGPASS`.
+
 ### Disclosed, and therefore first in the queue
 
 | Credential | How | Date |
