@@ -2049,3 +2049,52 @@ side: it holds what cannot be fixed, never what is currently true.
 Proven red against the live system, not only against fixtures: emptying the
 acknowledgement file made `F-6c` name all three, and restoring it made it green
 again.
+
+---
+
+## 46. Letting a report exit non-zero killed the audit at the line before the check that reads it
+
+Found 2026-09-12, by running the red path instead of reasoning about it.
+
+`trace-report.sh` exits 1 when it finds local work that left the host. That is
+the point of it — the plan asked for one number that can go red. `G-2`, which
+asks whether each report actually reports, treated any non-zero exit as "this
+report is mute", so its single most valuable outcome would have been recorded as
+the report failing. The louder the finding, the redder the wrong check.
+
+So `G-2` gained a fourth field per report: the exit codes that mean the report
+WORKED. `0 1` for this one, and deliberately not `2`, which is what it exits
+when the backend cannot be read. G-2's question is whether a report reports,
+never whether the news is good.
+
+**That fix introduced the actual mistake.** `set -eu` is on, and
+
+    _rout=$(timeout 300 "$_sc" "$_ar" 2>/dev/null)
+    _rrc=$?
+
+is not "run it and keep the status". Under `set -e` an assignment whose command
+substitution exits non-zero is *itself* a failing command, so the shell dies on
+that line and `$?` is never read. Harmless for as long as every report exited 0.
+The moment one was allowed to exit 1 on a finding, the whole audit aborted — at
+`G-4`, one check before `G-2`, and `G-2` simply never printed.
+
+**A check that vanishes is worse than one that fails.** Nothing was red. The run
+ended with exit 1 and a plausible-looking wall of PASS lines, and the check that
+would have described the problem was not in the output at all. `sh -n` was
+happy, shellcheck was happy, and the normal path — no findings, exit 0 — passed
+exactly as before. Only running it with a deliberately impossible threshold,
+`TRACE_MAX_ERROR_PCT=-1`, made the report exit 1 and exposed it.
+
+The fix keeps `set -e` and does not reach for `|| true`, which would set the
+status to 0 and is the exact construct `G-6` exists to find:
+
+    if _rout=$(timeout 300 "$_sc" "$_ar" 2>/dev/null); then _rrc=0; else _rrc=$?; fi
+
+`if` suspends `set -e` for its condition, so a non-zero status becomes data
+instead of a fatality.
+
+**The general shape, which is entry 5 wearing a new coat.** Every time exit
+status has bitten this repo it has been the same error: assuming a status
+belongs to the command I was thinking about. In a pipeline it belongs to the
+last stage. Behind `&&` it belongs to whichever side ran. Here, under `set -e`,
+there is no status to belong to anyone, because the shell is already gone.

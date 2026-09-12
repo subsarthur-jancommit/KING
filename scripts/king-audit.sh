@@ -3293,20 +3293,44 @@ dim_G() {
     for _rs in scripts/*-report.sh; do
         [ -x "$_rs" ] || continue
         case "$_rs" in
-            scripts/gateway-report.sh|scripts/alerts-report.sh|scripts/agent-report.sh) : ;;
+            scripts/gateway-report.sh|scripts/alerts-report.sh|scripts/agent-report.sh|scripts/trace-report.sh) : ;;
             *) _undeclared="$_undeclared $(basename "$_rs")" ;;
         esac
     done
-    for _spec in "scripts/gateway-report.sh|24|provider reliability" \
-                 "scripts/alerts-report.sh|14|gateway alerts" \
-                 "scripts/agent-report.sh|14|agent runs"; do
+    # A fourth field: the exit codes that mean THE REPORT WORKED.
+    #
+    # It used to be "0, or you are mute", and that was right while every report
+    # only ever described. `trace-report.sh` also JUDGES -- it exits 1 when it
+    # finds local work that left the host, which is the whole reason it exists.
+    # Under the old rule its single most valuable outcome would have been
+    # recorded here as the report failing to report, and the louder the finding
+    # the redder the wrong check.
+    #
+    # It still separates "found something" from "could not look": that script
+    # exits 2 when the backend cannot be read, and 2 is not on its list. G-2's
+    # question is whether a report reports, never whether the news is good.
+    for _spec in "scripts/gateway-report.sh|24|provider reliability|0" \
+                 "scripts/alerts-report.sh|14|gateway alerts|0" \
+                 "scripts/agent-report.sh|14|agent runs|0" \
+                 "scripts/trace-report.sh|24|model routing and latency|0 1"; do
         _sc=$(printf '%s' "$_spec" | cut -d'|' -f1)
         _ar=$(printf '%s' "$_spec" | cut -d'|' -f2)
         _ex=$(printf '%s' "$_spec" | cut -d'|' -f3)
+        _ok=$(printf '%s' "$_spec" | cut -d'|' -f4)
         [ -x "$_sc" ] || continue
-        _rout=$(timeout 300 "$_sc" "$_ar" 2>/dev/null)
-        _rrc=$?
-        if [ "$_rrc" -ne 0 ]; then
+        # `set -e` is on, and a bare `_rout=$(cmd)` whose command exits non-zero
+        # is itself a failing command: the audit dies THERE, before `$?` is ever
+        # read. That was harmless while every report exited 0 and became a live
+        # fault the moment one of them was allowed to exit 1 on a finding —
+        # measured 2026-09-12, the run aborted at G-4 and G-2 never printed.
+        # A check that vanishes is worse than one that fails: nothing is red.
+        # `if` context suspends `set -e` for the condition, so the status is
+        # captured instead of being fatal, and without `|| true`, which G-6
+        # exists to find.
+        if _rout=$(timeout 300 "$_sc" "$_ar" 2>/dev/null); then _rrc=0; else _rrc=$?; fi
+        _okrc=0
+        case " ${_ok:-0} " in *" $_rrc "*) _okrc=1 ;; esac
+        if [ "$_okrc" -eq 0 ]; then
             _mute="$_mute $(basename "$_sc")(exit $_rrc)"
         elif ! printf '%s' "$_rout" | grep -qF "$_ex"; then
             _mute="$_mute $(basename "$_sc")(no headline)"
