@@ -163,6 +163,29 @@ file must be named **in this document** or acknowledged in
 `scripts/not-secrets.txt`. That predicate has no blind spot: a new variable is
 either reviewed or the audit is red.
 
+### The `activepieces` gateway key, reset and then pasted — 2026-09-12
+
+The operator reset the gateway API key named `activepieces` and pasted the new
+value into chat so the Activepieces AI-provider form could be filled. It is
+disclosed and queued for rotation, on their stated intent to do it after the
+build settles.
+
+Verified before use rather than after: it answers 200 on all three models the
+four MCP flows request (`websearch-tiers`, `paid-first`, `free-then-local`), the
+separate `flow-search` key still answers 200 on `/v1/search`, and
+`gateway_monitor` kept running — so the reset broke nothing.
+
+Blast radius is the same shape as `flow-search` but wider: it reaches models
+rather than only search, so a holder can spend on `agy/*`, `openrouter/*`,
+`oc/*` and `ollama/*` through this gateway. It holds no manage scope.
+
+One string that arrived the same day needs NO rotation, and saying so is part
+of keeping this list honest: `sk-2983778ri` was offered as a key to record, and
+it is not one. Gateway keys are `sk-` plus three hex blocks, 35 characters; that
+string is 12 and contains `r` and `i`, which are not hex. It is not a key and
+not the prefix of one. A rotation list that carries non-credentials teaches
+people to skim it.
+
 ### A fourth shape: the step settings carried the bearer — 2026-09-12
 
 `flow-search` is disclosed. Diagnosing why an MCP tool call returned nothing, I
