@@ -2696,24 +2696,45 @@ PYMCP
         # written down for `agy`: a failed round two triggers a cooldown that
         # affects other traffic.
         #
-        # So the canary reads the CATALOGUE instead. /v1/models is free, has no
-        # side effect, and still discriminates: an impossible name must be
-        # ABSENT from it, or the list is not a list. Only then is one real
-        # request sent, and only ever for the configured model.
-        _f6cat=$(curl -s -m 45 http://localhost:20128/v1/models \
-                 -H "Authorization: Bearer $_f6k" 2>/dev/null \
-                 | "$PY" -c 'import sys,json
-try: d=json.load(sys.stdin)
-except Exception: raise SystemExit
-print("\n".join(str(m.get("id","")) for m in d.get("data",[])))' 2>/dev/null || true)
-        if [ -z "$_f6cat" ]; then
-            chk F-6b UNKNOWN "the gateway did not return a model catalogue" \
+        # So the canary is a READ that still takes the impossible name as INPUT.
+        #
+        # The first fix here read the catalogue — GET /v1/models — and checked
+        # the impossible name was absent from the list. That is free and has no
+        # side effect, but on 2026-09-12 it turned out to be barely a canary at
+        # all: /v1/models takes no input, so an arbitrary string cannot appear
+        # in its answer whether the gateway discriminates or not. It could only
+        # ever have caught an endpoint that echoed its own query, which this one
+        # has no way to do. A control that cannot fail is not a control.
+        #
+        # GET /v1/models/{id} is the probe that was wanted all along. It takes
+        # the name, it is a pure registry lookup that contacts no provider, and
+        # it discriminates: 404 `model_not_found` for the impossible name, 200
+        # for the real one. Measured before adopting it, because the whole point
+        # of entry 43 is that the last canary's safety was assumed:
+        #
+        #   canary read (impossible)      -> 404
+        #   next real inference request   -> 200      ← the sequence that FAILED
+        #                                              with the old canary
+        #
+        # Three questions, three verdicts, each with its own diagnosis:
+        #   canary 404   the lookup discriminates, so its answers mean something
+        #   real   200   the gateway knows this model — it has been registered
+        #   POST   200   and the route behind the registration actually works
+        _f6url='http://localhost:20128/v1/models'
+        _f6can=$(curl -s -o /dev/null -w '%{http_code}' -m 45 \
+                 "$_f6url/ollama/king-audit-canary-no-such-model-9f3a1" \
+                 -H "Authorization: Bearer $_f6k" 2>/dev/null || printf '000')
+        _f6reg=$(curl -s -o /dev/null -w '%{http_code}' -m 45 \
+                 "$_f6url/ollama/$_f6m" \
+                 -H "Authorization: Bearer $_f6k" 2>/dev/null || printf '000')
+        if [ "$_f6can" = "000" ] || [ "$_f6reg" = "000" ]; then
+            chk F-6b UNKNOWN "the gateway's model lookup did not answer" \
                 "not reachable is not the same as not serving"
-        elif printf '%s\n' "$_f6cat" | grep -qx 'ollama/king-audit-canary-no-such-model-9f3a1'; then
-            chk F-6b UNKNOWN "the catalogue contains a model that cannot exist" \
-                "it is not a list of what is served, so its silence about a real model would mean nothing"
-        elif ! printf '%s\n' "$_f6cat" | grep -qx "ollama/$_f6m"; then
-            chk F-6b FAIL "the gateway's catalogue does not contain ollama/$_f6m" \
+        elif [ "$_f6can" != "404" ]; then
+            chk F-6b UNKNOWN "a model that cannot exist was not rejected; the lookup answered $_f6can" \
+                "the lookup does not discriminate, so its 200 for a real model would mean nothing"
+        elif [ "$_f6reg" != "200" ]; then
+            chk F-6b FAIL "the gateway does not know ollama/$_f6m; the lookup answered $_f6reg" \
                 "compose pulls this model and the gateway has never been told about it — run scripts/localmodel-register.sh"
         else
             _f6got=$(curl -s -o /dev/null -w '%{http_code}' -m 90 \
@@ -2723,9 +2744,9 @@ print("\n".join(str(m.get("id","")) for m in d.get("data",[])))' 2>/dev/null || 
                      2>/dev/null || printf '000')
             case "$_f6got" in
                 200) chk F-6b PASS "the gateway reaches the local model" \
-                         "ollama/$_f6m is in the catalogue and answered 200; the catalogue was proven to exclude an impossible name first" ;;
-                *)   chk F-6b FAIL "ollama/$_f6m is advertised but answered $_f6got" \
-                         "the catalogue and the connection disagree; the model is pulled and the route does not work" ;;
+                         "ollama/$_f6m is registered and answered 200; the same lookup was proven to reject an impossible name first" ;;
+                *)   chk F-6b FAIL "ollama/$_f6m is registered but answered $_f6got" \
+                         "the registration and the connection disagree; the model is pulled and the route does not work" ;;
             esac
         fi
     fi
@@ -5536,10 +5557,79 @@ PYPC
         fi
     fi
 
+    # F-6b -- the gateway's model lookup must reject a name that cannot exist.
+    #
+    # Registered here on 2026-09-12, at the same time the check's own canary was
+    # upgraded. Both changes come from one realisation: /v1/models takes no
+    # input, so "the impossible name is absent from the list" was a control that
+    # could not fail. GET /v1/models/{id} takes the name, contacts no provider,
+    # and answers 404 for a name the gateway does not know.
+    #
+    # It is a READ on purpose. An inference request for an impossible model put
+    # `ollama-local` into a one-minute backoff on 2026-09-12 and handed the next
+    # REAL request the canary's own 404 -- the instrument breaking its subject
+    # and then reporting the breakage as the subject's fault. See king-mistakes
+    # 43. This probe was measured against that exact sequence before adoption:
+    # canary 404, next real inference request 200.
+    _pgk=$(sed -n 's/^OMNIROUTE_API_KEY=//p' agent-sidecar/.env 2>/dev/null | tail -1)
+    if [ -z "$_pgk" ]; then
+        printf '  ????  F-6b no gateway key here; the model lookup cannot be exercised\n'
+        _pf=$((_pf+1))
+    else
+        _pgc=$(curl -s -o /dev/null -w '%{http_code}' -m 45 \
+               'http://localhost:20128/v1/models/ollama/king-audit-canary-no-such-model-9f3a1' \
+               -H "Authorization: Bearer $_pgk" 2>/dev/null || printf '000')
+        if [ "$_pgc" = "404" ]; then
+            printf '  ok    F-6b the gateway rejects a model name that cannot exist\n'
+        elif [ "$_pgc" = "000" ]; then
+            printf '  ????  F-6b the gateway did not answer; the lookup is unexercised\n'
+            _pf=$((_pf+1))
+        else
+            printf '  FAIL  F-6b an impossible model name answered %s, not 404\n' "$_pgc"
+            printf '        the lookup does not discriminate, so F-6b'"'"'s 200 for a real model proves nothing\n'
+            _pf=$((_pf+1))
+        fi
+    fi
+
+    # F-6 -- the container's own model lookup must reject a name that cannot
+    # exist. F-6 asserts the local model answers with no gateway on the path;
+    # this asserts that the thing answering can also say no.
+    #
+    # `/api/show` and not `/api/tags`, for the same reason as above: tags takes
+    # no input. Show takes the model name, is a pure read that loads no weights,
+    # and answers 404 for a name Ollama does not hold. This is the path
+    # `local-router.sh` has depended on since the gateway came off it.
+    _pcid=$(docker compose --profile localmodel ps -q ollama 2>/dev/null || true)
+    if [ -z "$_pcid" ]; then
+        printf '  ????  F-6  the localmodel profile is not running; the lookup cannot be exercised\n'
+        _pf=$((_pf+1))
+    else
+        _pip=$(docker inspect "$_pcid" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' 2>/dev/null | awk '{print $1}')
+        _poc=$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+               "http://$_pip:11434/api/show" \
+               -d '{"name":"king-audit-canary-no-such-model-9f3a1"}' 2>/dev/null || printf '000')
+        if [ "$_poc" = "404" ]; then
+            printf '  ok    F-6  the local model container rejects a model name that cannot exist\n'
+        elif [ "$_poc" = "000" ]; then
+            printf '  ????  F-6  the container did not answer; the lookup is unexercised\n'
+            _pf=$((_pf+1))
+        else
+            printf '  FAIL  F-6  an impossible model name answered %s, not 404\n' "$_poc"
+            printf '        the container does not discriminate, so F-6 green would prove nothing\n'
+            _pf=$((_pf+1))
+        fi
+    fi
+
     echo
-    echo "  Three live instruments carry a canary. Every other check on this host is"
+    echo "  Five live instruments carry a canary. Every other check on this host is"
     echo "  proven only by --self-test fixtures, which exercise the predicate but"
     echo "  never the system it talks to. That gap is stated, not implied."
+    echo
+    echo "  All five canaries are READS that take the impossible value as INPUT."
+    echo "  Both halves matter. A probe that changes state can break its own"
+    echo "  subject — that is king-mistakes 43. A probe the system takes no input"
+    echo "  for cannot fail at all, which is what F-6b's first canary turned out"
+    echo "  to be: an arbitrary name was never going to appear in a fixed list."
     echo
     if [ "$_pf" -eq 0 ]; then c_green "positive control passed"; echo; exit 0; fi
     c_red "$_pf instrument(s) could not demonstrate a miss"; echo; exit 1
