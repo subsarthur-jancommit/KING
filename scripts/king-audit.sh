@@ -5413,9 +5413,25 @@ ollama-local/embeddinggemma' 'qwen2.5:1.5b-instruct-q4_K_M' 'ollama-local/embedd
     # An abbreviation is not a prefix to be rejected; it is the same commit
     # spelled shorter. Both sides go through `git rev-parse` now, so what this
     # has to pin is that two spellings of one commit compare equal.
-    _c2a=$(git rev-parse da98876c 2>/dev/null || true)
-    _c2b=$(git rev-parse da98876 2>/dev/null || true)
-    if [ -n "$_c2a" ] && [ "$_c2a" = "$_c2b" ]
+    # From HEAD, and never from a named historical commit. The first version
+    # pinned `da98876c`, a real commit from the day before — and CI checks out
+    # with `actions/checkout` at its default depth of 1, so that object does not
+    # exist there. `git rev-parse` returned nothing, the comparison failed, and
+    # this fixture took CI red for nineteen hours while `--self-test` passed on
+    # every machine with the full history: mine, and the VPS.
+    #
+    # A fixture that depends on repository history is an integration test in a
+    # fixture's clothes. It passes where the data happens to be and fails where
+    # it is not, which makes it a test of the checkout rather than of the
+    # predicate. HEAD is the one commit every clone has, shallow included.
+    _c2full=$(git rev-parse HEAD 2>/dev/null || true)
+    _c2short=$(printf '%s' "$_c2full" | cut -c1-7)
+    _c2a=$(git rev-parse "$_c2full" 2>/dev/null || true)
+    _c2b=$(git rev-parse "$_c2short" 2>/dev/null || true)
+    if [ -z "$_c2full" ]; then
+        printf '  ????  no git history here; the abbreviation rule is unexercised\n'
+        _f=$((_f+1))
+    elif [ -n "$_c2a" ] && [ "$_c2a" = "$_c2b" ]
     then printf '  ok    two abbreviations of one commit resolve to the same sha\n'
     else printf '  FAIL  two abbreviations of one commit resolve to the same sha\n'; _f=$((_f+1)); fi
 

@@ -2154,3 +2154,52 @@ is the detector for that.
 written from the first sample would have been invented again, one sample later.
 The fixtures now carry the distribution the gateway emits, and the header
 records the sample size so the next reader knows what they are trusting.
+
+---
+
+## 48. A fixture that needed the repository's history, in the one place there is none
+
+Found 2026-09-12, nineteen hours after it broke CI, by finally looking at CI.
+
+The C-2 fix of 2026-09-12 came with a fixture pinning the rule it restored —
+that two spellings of one commit compare equal once both go through
+`git rev-parse`:
+
+    _c2a=$(git rev-parse da98876c 2>/dev/null || true)
+    _c2b=$(git rev-parse da98876  2>/dev/null || true)
+
+`da98876c` is a real commit from the day before. It passed everywhere I ran it:
+this machine, and the VPS. Both have the full history.
+
+**`actions/checkout` clones at depth 1.** That object does not exist in CI, so
+both `rev-parse` calls returned nothing, the comparison of two empty strings…
+was true, actually — and the `[ -n "$_c2a" ]` guard then failed it, which is the
+guard working correctly. `1 self-test check(s) failed`, exit 1, red preflight.
+
+**A fixture that depends on repository history is an integration test wearing a
+fixture's clothes.** It tests the checkout, not the predicate, and it passes or
+fails on where it happens to run. `HEAD` is the one commit every clone has,
+shallow included, so the rule is now pinned against that.
+
+**The part that is mine and not the fixture's.** I ran `--self-test` perhaps a
+dozen times today and reported it passing every time. Every one of those runs
+was on a machine with the full history — the two environments where the bug is
+invisible. CI is a third environment and I did not look at it once until the
+work was finished, so a red X sat on fourteen consecutive commits while I wrote
+"shellcheck clean, self-test passed" under each of them.
+
+Reproducing it took one command:
+
+    git clone --depth 1 file://$PWD /tmp/shallow && cd /tmp/shallow \
+      && ./scripts/king-audit.sh --self-test
+
+Old version: FAIL. New version: pass. The same positive-control discipline the
+checks themselves are built around, applied to the fix — and available the whole
+time.
+
+**The general rule, which this file keeps re-learning in new costumes.**
+Verifying in the environment where something works is not verification. Entry 44
+was `command -v` succeeding on a Windows stub. Entry 47 was fixtures built from
+a row shape the gateway never emits. This is the same error in the third place:
+the test environment was chosen, unconsciously, to be one where the answer was
+already yes.
