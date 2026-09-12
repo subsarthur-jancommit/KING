@@ -1332,23 +1332,69 @@ dim_C() {
             "the directory is the durable half: file modes are rewritten by the app, its mode is not"
     fi
 
-    # C-2: rotation does not help if the old value is still in the history.
-    # Bounded to token-shaped prefixes rather than a full entropy scan, so it
-    # stays fast enough to run every time -- an audit nobody runs finds nothing.
-    if git rev-parse --git-dir >/dev/null 2>&1; then
-        _hist=""
-        for _pat in 'sk-[A-Za-z0-9]\{24,\}' 'oma_live_[A-Za-z0-9]\{16,\}' \
-                    'tk_[A-Za-z0-9]\{20,\}' 'AKIA[0-9A-Z]\{16\}'; do
-            _h=$(git log --all --oneline -S"$_pat" --pickaxe-regex 2>/dev/null | head -2 || true)
-            [ -n "$_h" ] && _hist="$_hist $(printf '%s' "$_h" | awk '{print $1}' | tr '\n' ',')"
-        done
-        if [ -z "$_hist" ]; then
-            chk C-2 PASS "no token-shaped string appears anywhere in git history"
-        else
-            chk C-2 FAIL "token-shaped string(s) in history — rotation alone is not enough" "$_hist"
-        fi
-    else
+    # C-2: rotation does not help if the old value is still in the history, and
+    # this repository is PUBLIC.
+    #
+    # IT COULD NOT FIRE. The patterns were written with BRE quantifiers —
+    # `sk-[A-Za-z0-9]\{24,\}` — and passed to `git log --pickaxe-regex`, which
+    # is ERE. There `\{` is a literal brace, so all four patterns matched
+    # nothing, ever. Proven 2026-09-12: the same search without a quantifier
+    # finds the commit in one second; with the BRE escape it finds nothing.
+    #
+    # What that cost: on 2026-09-11 the live AP_REDIS_PASSWORD was committed
+    # into a self-test fixture and pushed here. C-2 ran minutes later and
+    # reported "no token-shaped string appears anywhere in git history". A
+    # third-party scanner found the two FABRICATED strings beside it and missed
+    # the real one. The check that existed for exactly this said nothing.
+    #
+    # Three changes. ERE, because that is the flavour git actually uses. A
+    # canary, because a search that cannot match is indistinguishable from a
+    # clean history — the same reason E-5, E-9 and L-3 carry one. And a
+    # named-variable pattern, which is what would have caught a 48-character
+    # hex value that looks like nothing at all until you read the name in front
+    # of it.
+    #
+    # `omniroute/` is excluded: it is upstream's, its own fixtures include an
+    # AKIA-shaped key, and CLAUDE.md forbids editing it. Carrying findings we
+    # cannot act on would hide the ones we can.
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
         chk C-2 UNKNOWN "not a git checkout; history unscannable"
+    else
+        # A pattern with a quantifier that MUST match: "chk C-2 PASS" has been
+        # in this file for weeks. If this finds nothing, the regex flavour is
+        # wrong and every clean result below would be meaningless.
+        _c2can=$(git log --all --oneline -S'chk C-2 [A-Z]{4,}' --pickaxe-regex 2>/dev/null | head -1)
+        if [ -z "$_c2can" ]; then
+            chk C-2 UNKNOWN "the history search cannot match a quantifier" \
+                "a pattern known to be present returned nothing; a clean result here would prove nothing"
+        else
+            _ack=scripts/history-known-strings.txt
+            _hist=""; _seen=0
+            for _pat in 'sk-[A-Za-z0-9_-]{24,}' 'pk-lf-[A-Za-z0-9-]{10,}' \
+                        'oma_live_[A-Za-z0-9]{16,}' 'tk_[A-Za-z0-9]{20,}' \
+                        'AKIA[0-9A-Z]{16}' '(Bearer|Basic) [A-Za-z0-9._=+/-]{20,}' \
+                        'eyJ[A-Za-z0-9_-]{10,}[.][A-Za-z0-9_-]{10,}' \
+                        'postgres(ql)?://[^:@/ ]+:[^@ ]+@' \
+                        '(PASSWORD|SECRET|TOKEN|API_KEY|_KEY)[A-Za-z_]*=[A-Za-z0-9+/_-]{24,}'; do
+                for _c in $(git log --all --format='%h' -S"$_pat" --pickaxe-regex \
+                            -- . ':(exclude)omniroute' 2>/dev/null); do
+                    _seen=$((_seen + 1))
+                    grep -qE "^[[:space:]]*${_c}[[:space:]]*$" "$_ack" 2>/dev/null && continue
+                    case " $_hist " in *" $_c "*) : ;; *) _hist="$_hist $_c" ;; esac
+                done
+            done
+            metric c2_history_hits "$_seen"
+            if [ -n "$_hist" ]; then
+                chk C-2 FAIL "credential-shaped string(s) in history, not acknowledged:$_hist" \
+                    "read each one, then rotate what is real and record it in $_ack — rotation alone is not enough while the old value is readable"
+            elif [ ! -f "$_ack" ]; then
+                chk C-2 UNKNOWN "no acknowledgement file; every historical match would read as new" \
+                    "expected $_ack"
+            else
+                chk C-2 PASS "every credential-shaped string in history is acknowledged" \
+                    "$_seen match(es) across 9 patterns, all in $_ack; the search proved it can match before this was believed"
+            fi
+        fi
     fi
 
     # C-6: both directions. A 401 for everyone is a wall, not a door; the
@@ -5060,6 +5106,29 @@ NSFIX
     if [ "$(_doorold 502 '401 403')" = "open" ]
     then printf '  ok    the OLD two-bucket test called a 502 an open door, which is why it was replaced\n'
     else printf '  FAIL  the OLD two-bucket test called a 502 an open door, which is why it was replaced\n'; _f=$((_f+1)); fi
+    # ---- C-2: the regex flavour that made a history scan unable to fire ----
+    #
+    # `git log --pickaxe-regex` is ERE. C-2 was written with BRE quantifiers,
+    # where `\{` is a literal brace, so all four of its patterns matched
+    # nothing for the whole of their life — including the run made minutes
+    # after a live credential was pushed to this public repository.
+    if printf 'chk C-2 PASS' | grep -qE 'chk C-2 [A-Z]{4,}'
+    then printf '  ok    an ERE quantifier matches, which is the flavour git uses\n'
+    else printf '  FAIL  an ERE quantifier matches, which is the flavour git uses\n'; _f=$((_f+1)); fi
+
+    if ! printf 'chk C-2 PASS' | grep -qE 'chk C-2 [A-Z]\{4,\}'
+    then printf '  ok    a BRE quantifier matches NOTHING under ERE, which is why C-2 never fired\n'
+    else printf '  FAIL  a BRE quantifier matches NOTHING under ERE, which is why C-2 never fired\n'; _f=$((_f+1)); fi
+
+    # The acknowledgement file has to be matched whole-line, or a short sha
+    # would be "acknowledged" by any longer one that contains it.
+    _c2ack="$_t/ack.txt"
+    printf '# comment\n\nda98876c\n7333fe50\n' > "$_c2ack"
+    if grep -qE '^[[:space:]]*da98876c[[:space:]]*$' "$_c2ack" \
+       && ! grep -qE '^[[:space:]]*da98876[[:space:]]*$' "$_c2ack"
+    then printf '  ok    an acknowledged sha matches whole-line, a prefix of one does not\n'
+    else printf '  FAIL  an acknowledged sha matches whole-line, a prefix of one does not\n'; _f=$((_f+1)); fi
+
     # ---- L-3 / L-5: the credential shapes this deployment actually holds ---
     #
     # The old L-3 pattern caught ONE of the seven shapes on the rotation list.

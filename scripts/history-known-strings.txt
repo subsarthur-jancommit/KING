@@ -1,0 +1,60 @@
+# Commits whose content matches a credential pattern, each looked at once.
+#
+# C-2 asks whether a secret ever entered git history. Rotation does not help if
+# the old value is still readable, and this repository is PUBLIC.
+#
+# It is drift, not presence. Every commit below was opened and read. A commit
+# appearing here that is not in this list turns `king-audit.sh -d C` red, which
+# is the only outcome that changes anyone's behaviour. Same reasoning as
+# pool-dead-models.txt, unauthenticated-datastores.txt and root-containers.txt.
+#
+# The vendored subtree is out of scope: C-2 excludes `omniroute/`, whose
+# contents are upstream's (its own test fixtures include an AKIA-shaped key).
+# CLAUDE.md forbids editing it, so a finding there is not ours to fix, and
+# carrying it here would be noise that hides ours.
+#
+# Format: one short commit sha per line. Blank lines and #-comments ignored.
+# Triaged 2026-09-12 against the full history.
+
+# --- ONE REAL CREDENTIAL. Rotated, and that is what makes it safe ---------
+#
+# da98876c  scripts/king-audit.sh, "MUST|AP_REDIS_PASSWORD=<48 hex>"
+#
+# The live Redis password, used as a self-test fixture because it was the
+# realistic shape and it happened to be in the transcript. Pushed to a public
+# repository and flagged by nobody — GitGuardian reported the two FABRICATED
+# strings beside it and not this one, and C-2 could not fire at all.
+#
+# Rotated 2026-09-12. Verified by pulling the old value back out of this very
+# commit and offering it to Redis: WRONGPASS. The string is still public and it
+# is no longer a credential, which is the only guarantee history allows.
+#
+# It stays acknowledged rather than rewritten. A rewrite would break every
+# clone for a value that is already worthless, and the honest record of the
+# mistake is worth more than a tidy log.
+da98876c
+
+# 7333fe50 is the containment commit for the above: it removes the value from
+# HEAD and replaces it with an obviously-patterned fake. It matches the same
+# patterns because the fixtures still have to look like credentials to test a
+# credential scanner.
+7333fe50
+
+# --- FIXTURES AND EXAMPLES, all verified fabricated -----------------------
+#
+# 6c9a72cc  the L-3/L-5 canary line, `AP_REDIS_PASSWORD=0123456789abcdef...`
+# 400c36e2  ntfy self-test, `check_ntfy_token "tk_0123..."`
+# 5d159d1d  local-secret-scan's own fixtures: sk-abc..., appuser@db.example.net
+# 4c71b1dd  CI compose values: AP_ENCRYPTION_KEY=0123..., user `u`
+# dc4a7d40  the same CI values, earlier commit
+# b511473a  a comment literally labelled "Contoh:" with ep-xxx-pooler...
+# dae274d0  deploy guide, postgresql://postgres:...@postgres:5432/postgres
+# f0e9c3de  compose default, the same postgres:postgres pair
+6c9a72cc
+400c36e2
+5d159d1d
+4c71b1dd
+dc4a7d40
+b511473a
+dae274d0
+f0e9c3de
