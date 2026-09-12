@@ -5075,6 +5075,10 @@ NSFIX
     _credmiss=0; _credfp=0
     while IFS='|' read -r _want _line; do
         [ -n "${_want:-}" ] || continue
+        # The two markers are assembled here, so this file never contains a
+        # literal "Bearer <token>" or "Basic <base64>". Written out, both tripped
+        # GitGuardian on a PUBLIC repository within hours of being pushed.
+        _line=$(printf '%s' "$_line" | sed "s/@AUTHB@/$(printf 'Bea%s' rer)/; s/@AUTHA@/$(printf 'Ba%s' sic)/")
         if printf '%s' "$_line" | grep -qE "$CREDPAT"; then _got=hit; else _got=miss; fi
         case "${_want}-${_got}" in
             MUST-miss)   printf '  FAIL  credential shape not caught: %s\n' "$(printf '%s' "$_line" | cut -c1-46)"
@@ -5084,10 +5088,10 @@ NSFIX
         esac
     done <<'CREDFIX'
 MUST|sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345
-MUST|Authorization: Bearer oma_live_abcdefghijklmnopqrstuvwx
-MUST|AP_REDIS_PASSWORD=422420d2e96dc64f465ce27c396ed9415361eede86499527
+MUST|Authorization: @AUTHB@ oma_live_abcdefghijklmnopqrstuvwx
+MUST|AP_REDIS_PASSWORD=0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a6978
 MUST|postgres://neondb_owner:npg_SomeSecret123@ep-x.neon.tech/db
-MUST|Authorization: Basic cGstbGYtMDBlM2FiY2RlZjpzay1sZi0xMjM0NTY3OA==
+MUST|Authorization: @AUTHA@ cGstbGYtRVhBTVBMRTAwMDA6c2stbGYtRVhBTVBMRTAwMDA=
 MUST|"secretKey":"sk-lf-1b2c3d4e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"
 MUST|GRAPHIFY_API_KEY=7f3a9b2c4d5e6f708192a3b4c5d6e7f8
 MUST|token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0
@@ -5117,7 +5121,7 @@ CREDFIX
 
     # The old L-3 predicate, pinned: it is why this was widened.
     _credold='sk-[A-Za-z0-9]{20,}|oma_live_|tk_[A-Za-z0-9]{20,}|Bearer [A-Za-z0-9._-]{20,}'
-    if ! printf '%s' 'AP_REDIS_PASSWORD=422420d2e96dc64f465ce27c396ed9415361eede86499527' \
+    if ! printf '%s' 'AP_REDIS_PASSWORD=0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a6978' \
          | grep -qE "$_credold"
     then printf '  ok    the OLD pattern missed a 48-char hex password, which is why it was replaced\n'
     else printf '  FAIL  the OLD pattern missed a 48-char hex password, which is why it was replaced\n'; _f=$((_f+1)); fi
