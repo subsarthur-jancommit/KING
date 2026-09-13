@@ -2994,7 +2994,7 @@ for m in d.get("models",[]): print(str(m.get("name","")))' 2>/dev/null || true)
         chk F-4 UNKNOWN "no interpreter to parse the journal"
     else
         _ov=$(printf '%s' "$_jr" | "$PY" -c "
-import json,sys
+import collections,json,sys
 real=[]; probes=0
 for line in sys.stdin:
     line=line.strip()
@@ -3005,11 +3005,18 @@ for line in sys.stdin:
     if str(d.get('caller','')).startswith('probe'):
         probes+=1
         continue
-    real.append(bool(d['model_overridden']))
+    real.append((str(d.get('caller') or '?'), bool(d['model_overridden'])))
 real = real[-12:]
-print('%d %d %d' % (sum(1 for x in real if x), len(real), probes))" 2>/dev/null || true)
+# The population, named. F-4 reports a RATE, and a rate whose denominator is
+# invisible cannot be argued with -- which is how it came to be measuring the
+# audit's own probes without anyone noticing for as long as it existed. Naming
+# who was counted lets the next reader see at a glance whether the traffic is
+# representative of anything.
+mix=collections.Counter(c for c,_ in real)
+print('%d %d %d %s' % (sum(1 for _,x in real if x), len(real), probes,
+                       ','.join('%s=%d' % kv for kv in sorted(mix.items())) or '-'))" 2>/dev/null || true)
         _o=$(printf '%s' "$_ov" | awk '{print $1}'); _t=$(printf '%s' "$_ov" | awk '{print $2}')
-        _pb=$(printf '%s' "$_ov" | awk '{print $3}')
+        _pb=$(printf '%s' "$_ov" | awk '{print $3}'); _mix=$(printf '%s' "$_ov" | awk '{print $4}')
         if [ -z "$_t" ] || [ "$_t" = "0" ]; then
             # Not a pass. An audit whose own probes are the only traffic has
             # learned nothing about what real callers are served.
@@ -3019,10 +3026,10 @@ print('%d %d %d' % (sum(1 for x in real if x), len(real), probes))" 2>/dev/null 
             metric f4_overridden "$_o"; metric f4_runs "$_t"; metric f4_probes "${_pb:-0}"
             if [ "$_o" -eq 0 ]; then
                 chk F-4 PASS "0 of $_t real run(s) had their model overridden" \
-                    "${_pb:-0} probe run(s) excluded from the rate and counted here instead"
+                    "callers: ${_mix:--}; ${_pb:-0} probe run(s) excluded from the rate and counted here instead"
             else
                 chk F-4 FAIL "$_o of $_t real run(s) did not get the model they asked for" \
-                    "${_pb:-0} probe run(s) excluded; these are real callers, and the reroute lives in the vendored subtree"
+                    "callers: ${_mix:--}; ${_pb:-0} probe run(s) excluded — these are real callers, and the reroute lives in the vendored subtree"
             fi
         fi
     fi

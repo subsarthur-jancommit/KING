@@ -2413,3 +2413,53 @@ property is never worth it. The question was abandoned unanswered on exactly
 those grounds, and the `note` defect keeps its workaround — delete the step and
 re-add it, which costs nothing while a flow is young enough to have no sample
 data.
+
+---
+
+## 54. One check measured another check's probe, and went red because the probe worked
+
+Found 2026-09-13, by asking which runs `F-4` was actually counting.
+
+`F-4` reads the run journal and asks whether callers got the model they asked
+for. Its comment has always said, in those words, *"from the journal rather than
+from a probe"*. Every one of the twelve rows in its window was the same probe:
+
+    task   "What is 2 plus 2? Answer with the number only."
+    caller "http"                                      x 12
+
+sent by `check-model-routing.sh`, which `F-3` runs **immediately before** `F-4`.
+That script exists to trip the gateway's content-based reroute. It succeeded.
+`F-3` passed *because* it succeeded — and `F-4` reported the same event as a
+fault, every audit run, permanently.
+
+**The intent was written down and the implementation contradicted it**, which is
+the only reason this is embarrassing rather than merely wrong. `tail -12` of a
+journal the audit itself writes to cannot measure anything but the audit.
+
+The journal could not tell a probe from a caller, so neither could the check.
+`caller` was hardcoded `"http"` for every HTTP run. It is now self-declared
+through a header, sanitised to an allowlist and capped, defaulting to `"http"`
+so every existing caller keeps the label it had. `check-model-routing.sh` names
+itself. `F-4` reads sixty rows to find the last twelve real ones, because eight
+probes an audit would crowd real work out of any fixed tail.
+
+**Three deliberate refusals in the design, each one a trap avoided:**
+
+- Probes are counted and **reported**, never dropped. The label is advisory —
+  a caller could mislabel real work to keep it out of the rate — so a mislabel
+  changes which column a run appears in, not whether it appears. It is not a
+  privilege boundary and the comment says so, because the token that reaches
+  that endpoint already reaches a read-write docker socket.
+- No window containing only probes is a **pass**. It is UNKNOWN: an audit whose
+  own traffic is the only traffic has learned nothing, and a zero there would be
+  an absence wearing a measurement's clothes.
+- No matching on the probe's task TEXT, which was the obvious fix and would have
+  been a hand-kept string in two files — the fault this repo has now been caught
+  committing five times.
+
+**And the evidence line now names the population.** A rate whose denominator is
+invisible cannot be argued with, which is how this survived for as long as the
+check existed. Today it reads `callers: mcp=12`, and that is worth seeing: the
+twelve "real" runs are all from `agent-eval`. Not probes — ordinary tasks, real
+completions, real routing, so they belong in the rate — but they are not
+production usage either, and a reader can now tell at a glance.
