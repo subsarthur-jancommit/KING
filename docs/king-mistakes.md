@@ -2203,3 +2203,49 @@ was `command -v` succeeding on a Windows stub. Entry 47 was fixtures built from
 a row shape the gateway never emits. This is the same error in the third place:
 the test environment was chosen, unconsciously, to be one where the answer was
 already yes.
+
+---
+
+## 49. `degraded: false`, `step_errors: []`, the right tool called — and the wrong answer
+
+Found 2026-09-12, by asking the same question down two paths instead of one.
+
+A `run_agent` call was given a question with a checkable answer: *the current
+latest stable version of PostgreSQL*. The journal for that run is a clean bill
+of health in every field it has:
+
+    result            "17.11"
+    runner            "smolagents"
+    steps             2
+    step_errors       []
+    degraded          false
+    tools_used        ["omniroute_web_search"]
+
+It ran, it used the web tool it is supposed to use, it took two steps, nothing
+errored. Every health signal the sidecar records says this run went well.
+
+The `search_web` flow, asked the same question, answered **18.6, released
+2026-08-13, fixing 28 security vulnerabilities**, and cited postgresql.org and
+Wikipedia. 17.11 is a back-branch maintenance release, not the latest stable.
+
+**The agent was wrong while reporting itself healthy.** `degraded`,
+`step_errors` and `tools_used` measure the MECHANISM — did the loop terminate,
+did a tool throw, was a tool reached. None of them is about the output, and
+nothing in that journal row could have been. Reading a clean run as a correct
+answer is reading the wrong instrument, and it is the same substitution this
+whole file is about: the artefact's self-report standing in for the thing
+itself.
+
+**The cross-check is the only reason this was visible**, and it was nearly free:
+two paths already existed, the flow answers in ~8 s, and the disagreement took
+one extra call to find. Where an answer will be acted on, ask twice down
+different paths — a sourced answer and an unsourced one disagreeing is not a
+tie.
+
+**And a second thing fell out of the same run.** `model_overridden: true`:
+asked `opencode/big-pickle`, served `claude-sonnet-4-6`. The content-based
+reroute is documented in `king-system.md` §4 against requests naming
+`ollama/…`, and this one named a *paid* model and was still upgraded. So the
+reroute is not a local-model problem that happens to cost money — it re-decides
+any request whose prompt reads as agent or coding work. Second live sighting in
+one afternoon, both unprompted, both caught by `F-4`.
