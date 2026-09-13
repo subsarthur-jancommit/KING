@@ -95,6 +95,40 @@ It can be stale by up to a day, which is normal; weeks behind is not. Check
 with `graph_stats`, refresh with `scripts/codegraph-refresh.sh`. A confident
 answer about month-old code is worse than no graph at all.
 
+
+## Delegated work: measure it, and cross-check facts
+
+**`degraded: false` is not "the answer is right".** On 2026-09-12 a `run_agent`
+call returned `17.11` for the current PostgreSQL version with `steps: 2`,
+`step_errors: []`, `degraded: false` and `tools_used: ["omniroute_web_search"]`
+— every health field the sidecar records saying the run went well. The
+`search_web` flow, asked the same question, answered **18.6, released
+2026-08-13**, with sources. Those fields measure the mechanism: did the loop
+terminate, did a tool throw, was a tool reached. None of them is about the
+output.
+
+**So before acting on a fact an agent or a model gave you, ask a second path.**
+It costs one call and about 8 seconds. `search_web` retrieves and then
+synthesises from what it retrieved; `run_agent` answers from the model plus a
+tool it chose — genuinely different failure modes, which is why the
+disagreement was visible at all. A sourced answer and an unsourced one
+disagreeing is not a tie.
+
+This applies to **facts from the world**: versions, prices, dates, whether
+something shipped. It does not apply to arithmetic or to the repo in front of
+you, where a second opinion adds nothing you cannot check directly.
+
+**What is automated, and what is not.** `./scripts/agent-eval.sh` grades the
+agent weekly on 17 tasks whose answers a string comparison can settle, and
+`F-11` reports that score — measured baseline 17/17, floor 90%. That set is a
+regression guard and it structurally **cannot** catch a wrong current fact,
+because a frozen expectation about a moving fact would go red for being out of
+date. A cross-path checker was built for that gap and abandoned: extracting the
+answer from search-result titles failed its own control, since a search for the
+Apollo 11 landing returns titles containing `07`, `11`, `16`, `2024` and no
+`1969`. Grounding it properly needs a second model to synthesise, which is the
+substitution the eval exists to end. Hence a rule here rather than a timer.
+
 ## Skills
 
 Eleven ECC skills are installed in `~/.claude/skills/`, chosen to match what is

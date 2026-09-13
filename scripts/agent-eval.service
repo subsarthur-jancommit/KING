@@ -1,0 +1,45 @@
+# Weekly grading of the agent. Paired with agent-eval.timer.
+#
+# The gap it closes: of 106 audit checks, not one asked whether a delegated
+# answer was CORRECT. F-1 proves a tool answers, F-4 which model served, F-5 how
+# often calls fail — all mechanism. On 2026-09-12 a run returned "17.11" for the
+# current PostgreSQL version with steps=2, step_errors=[], degraded=false and
+# the right tool called. Wrong, and every health signal green.
+#
+# It writes audit/agent-eval.json; F-11 reads that file and never runs the eval
+# itself, because the audit is run by hand many times a day and must not bill
+# for 17 model calls each time.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/agent-eval.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now agent-eval.timer
+#   sudo loginctl enable-linger "$USER"     # already set for monitor-deadman
+#
+# The unit FAILS when the eval could not be scored — the sidecar down, the token
+# wrong, most tasks never reaching the agent. It does NOT fail when the agent
+# merely scored badly: that is the eval working, and F-11 is where it is
+# reported. Conflating "the instrument is broken" with "the instrument found
+# something" leaves `systemctl --user --failed` unable to say which.
+#
+#   journalctl --user -u agent-eval -n 60
+#   ./scripts/agent-eval.sh            # the same run, by hand
+
+[Unit]
+Description=Grade the agent on tasks whose answers are checkable
+Documentation=file:%h/KING/docs/king-system.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/KING
+ExecStart=%h/KING/scripts/agent-eval.sh
+
+# A below-floor score is exit 1 and is NOT a unit failure — see above. Only
+# exit 2, "could not be scored", reaches systemd as a failure.
+SuccessExitStatus=1
+
+# 17 sequential agent calls; measured at 59 s, with one task taking 24 s on its
+# own. Generous enough that a slow provider does not look like a broken eval.
+TimeoutStartSec=20min
+Nice=10

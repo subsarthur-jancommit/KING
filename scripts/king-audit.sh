@@ -141,6 +141,7 @@ F-7
 F-8
 F-9
 F-10
+F-11
 G-1
 G-2
 G-3
@@ -242,6 +243,7 @@ F-7|flow mirror parses and exports what its tests import
 F-8|every destructive tool the servers offer is blocked from the agent
 F-9|every tool that can reach the network is acknowledged
 F-10|model-authored code runs off this host, per the RUNNING container
+F-11|the agent's measured accuracy on tasks whose answers are checkable
 G-1|every guard with a self-test still passes it
 G-2|every instrument measures what it claims
 G-3|timers: last run, and whether any unit failed
@@ -2584,6 +2586,28 @@ PYL9
 # written -- G-1, G-2, J-1 and A-9. The acknowledgement file is the one hand-kept
 # list here, and it is deliberately the short side: it holds what cannot be
 # fixed, not what is currently true.
+# _f11verdict <raw|ERR|empty> <eval verdict> <age in days> <max age in days>
+#
+# F-11's judgement, pulled out of the check body so --self-test exercises the
+# SAME code the audit runs. A verdict the test re-implements proves only that
+# two transcriptions agree, which is how E-5 stayed green for a week.
+#
+# The order encodes the rule: age is checked BEFORE the score. A perfect score
+# from three weeks ago describes an agent that may have been reconfigured twice
+# since, and reporting it as current is the fault E-4 exists to catch in the
+# code graph. Ignorance outranks good news.
+_f11verdict() {
+    case "${1:-}" in ERR|'') printf 'unreadable'; return ;; esac
+    [ -n "${2:-}" ] || { printf 'unreadable'; return ; }
+    if [ "${3:-0}" -gt "${4:-10}" ]; then printf 'stale'; return; fi
+    case "$2" in
+        unrun|empty) printf 'incomplete'; return ;;
+        below)       printf 'fail'; return ;;
+        ok)          printf 'pass'; return ;;
+    esac
+    printf 'unreadable'
+}
+
 _f6cphantom() {
     printf '%s\n' "$1" | while IFS= read -r _fa; do
         [ -n "$_fa" ] || continue
@@ -3170,6 +3194,58 @@ PYNET
         *)
             chk F-10 FAIL "the running sidecar has an executor smolagents does not accept: $_ex" ;;
     esac
+
+    # F-11: the agent's measured ACCURACY. Every other check in this dimension
+    # asks whether the agent ran — F-1 that a tool answers, F-4 which model
+    # served, F-5 how often calls fail. None of them grades an answer, and on
+    # 2026-09-12 the gap showed itself: a run returned "17.11" for the current
+    # PostgreSQL version with steps=2, step_errors=[], degraded=false and the
+    # right tool called. Wrong, and every health signal green.
+    #
+    # This reads the score `scripts/agent-eval.sh` last wrote. It does NOT run
+    # the eval: that spends real model calls against providers, and an audit
+    # someone runs eight times in an afternoon must not bill for it each time.
+    # The weekly timer produces the file; this asks how old it is and what it
+    # said.
+    #
+    # A missing file is UNKNOWN, never a pass. "The agent has never been graded"
+    # and "the agent grades well" are opposite states and only one of them is
+    # reassuring.
+    _f11f="${KING_AGENT_EVAL:-audit/agent-eval.json}"
+    if [ ! -f "$_f11f" ]; then
+        chk F-11 UNKNOWN "the agent has never been graded; no $_f11f" \
+            "run ./scripts/agent-eval.sh — nothing else here measures whether its answers are right"
+    elif [ -z "$PY" ]; then
+        chk F-11 UNKNOWN "no interpreter to read the eval result with"
+    else
+        _f11=$("$PY" -c 'import json,sys,io,os
+try: d=json.load(io.open(sys.argv[1],encoding="utf-8"))
+except Exception: print("ERR"); raise SystemExit
+print("%s\t%s\t%s\t%s\t%s\t%s" % (d.get("verdict"), d.get("correct"), d.get("scored"),
+      d.get("accuracy"), d.get("floor"), d.get("overridden_pct")))' "$_f11f" 2>/dev/null || printf 'ERR')
+        # Age is part of the verdict. A score from three weeks ago describes an
+        # agent that may have been reconfigured twice since, and reporting it as
+        # current is the same fault E-4 exists to catch in the code graph.
+        _f11age=$(( ( $(date +%s) - $(date -r "$_f11f" +%s 2>/dev/null || date +%s) ) / 86400 ))
+        _f11v=$(printf '%s' "$_f11" | cut -f1)
+        _f11c=$(printf '%s' "$_f11" | cut -f2); _f11s=$(printf '%s' "$_f11" | cut -f3)
+        _f11a=$(printf '%s' "$_f11" | cut -f4); _f11fl=$(printf '%s' "$_f11" | cut -f5)
+        _f11o=$(printf '%s' "$_f11" | cut -f6)
+        metric f11_accuracy "${_f11a:-0}"
+        metric f11_age_days "$_f11age"
+        metric f11_overridden_pct "${_f11o:-0}"
+        case "$(_f11verdict "$_f11" "$_f11v" "$_f11age" 10)" in
+            unreadable) chk F-11 UNKNOWN "$_f11f is not a readable eval result" ;;
+            stale)      chk F-11 UNKNOWN "the last grading is $_f11age days old" \
+                            "the weekly timer should keep this under 8; a stale score describes an agent that may have changed since" ;;
+            incomplete) chk F-11 UNKNOWN "the last grading did not complete" \
+                            "tasks that never reached the agent are an absence, not a low score" ;;
+            fail)       chk F-11 FAIL "the agent answered $_f11c of $_f11s checkable tasks correctly ($_f11a%)" \
+                            "below its $_f11fl% floor — delegating work it gets wrong costs more than doing it here" ;;
+            *)          chk F-11 PASS "the agent answered $_f11c of $_f11s checkable tasks correctly ($_f11a%)" \
+                            "floor $_f11fl%, graded $_f11age day(s) ago; $_f11o% of those calls were served by a model other than the one asked for" ;;
+        esac
+    fi
 
     # F-7: mirror vs live. A mirror that has drifted invites review of code
     # that is not running.
@@ -5219,6 +5295,42 @@ NSFIX
     if [ "$(_e5old "$_e5miss")" -gt 0 ]
     then printf '  ok    the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'
     else printf '  FAIL  the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'; _f=$((_f+1)); fi
+
+    # ---- F-11: the agent's accuracy, and why age outranks the score ---------
+    #
+    # Every other check in dimension F asks whether the agent RAN. This one asks
+    # whether it was RIGHT, and the ordering of its verdict is the argument: a
+    # perfect score nobody has refreshed in a month is not evidence about the
+    # agent running today.
+    if [ "$(_f11verdict 'ok	17	17	100.0	90	0' ok 0 10)" = "pass" ]
+    then printf '  ok    a fresh score at or above the floor passes\n'
+    else printf '  FAIL  a fresh score at or above the floor passes\n'; _f=$((_f+1)); fi
+
+    # The canary. A predicate that could only ever return 'pass' would satisfy
+    # every other fixture here and be worth nothing.
+    if [ "$(_f11verdict 'below	13	17	76.5	90	11.8' below 0 10)" = "fail" ]
+    then printf '  ok    a score below the floor IS a failure\n'
+    else printf '  FAIL  a score below the floor IS a failure\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f11verdict 'ok	17	17	100.0	90	0' ok 30 10)" = "stale" ]
+    then printf '  ok    a month-old PERFECT score reads as stale, not as a pass\n'
+    else printf '  FAIL  a month-old PERFECT score reads as stale, not as a pass\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f11verdict 'below	1	1	0.0	90	0' below 30 10)" = "stale" ]
+    then printf '  ok    age is decided before the score, in both directions\n'
+    else printf '  FAIL  age is decided before the score, in both directions\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f11verdict 'unrun	0	0	0.0	90	0' unrun 0 10)" = "incomplete" ]
+    then printf '  ok    tasks that never reached the agent are an absence, not a low score\n'
+    else printf '  FAIL  tasks that never reached the agent are an absence, not a low score\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f11verdict ERR '' 0 10)" = "unreadable" ]
+    then printf '  ok    an unreadable eval result is unknown, never a pass\n'
+    else printf '  FAIL  an unreadable eval result is unknown, never a pass\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f11verdict 'x' 'nonsense-verdict' 0 10)" = "unreadable" ]
+    then printf '  ok    a verdict this check does not recognise is unknown, not a pass\n'
+    else printf '  FAIL  a verdict this check does not recognise is unknown, not a pass\n'; _f=$((_f+1)); fi
 
     # ---- F-6c: advertised local models against the ones actually held -------
     #

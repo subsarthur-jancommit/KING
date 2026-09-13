@@ -1,0 +1,30 @@
+[Unit]
+Description=Weekly grading of the agent on tasks whose answers are checkable
+Documentation=file:%h/KING/docs/king-system.md
+
+[Timer]
+# Sunday 04:47 — chosen so F-11 reads a FRESH score rather than last week's.
+# The order on Sunday morning is codegraph-refresh 03:00, pool-prove 04:17,
+# king-backup 04:30, this at 04:47, king-audit 05:11. Twenty-four minutes of
+# clearance before the audit, against a run measured at 59 s.
+#
+# Weekly, not nightly, and that is the whole cost argument. Every run spends 17
+# real model calls. The failure being watched for — an agent that has started
+# getting things wrong — is a slow event, and paying for a nightly probe to
+# notice it six days sooner is the wrong trade. Same reasoning as pool-prove.
+OnCalendar=Sun *-*-* 04:47:00
+
+# A missed run must catch up. A week the machine was off is not a week the agent
+# was known to be right, and skipping in silence would let F-11 go stale without
+# anything saying why.
+Persistent=true
+
+AccuracySec=5min
+
+# After a reboot, Persistent=true catches up every missed run at once. Without
+# this the eval's 17 model calls would stampede alongside pool-prove's pool
+# probe, both triggered by the same boot.
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

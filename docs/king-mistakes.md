@@ -2249,3 +2249,52 @@ reroute is documented in `king-system.md` §4 against requests naming
 reroute is not a local-model problem that happens to cost money — it re-decides
 any request whose prompt reads as agent or coding work. Second live sighting in
 one afternoon, both unprompted, both caught by `F-4`.
+
+---
+
+## 50. The first correctness instrument scored 100%, which is not the good news it looks like
+
+Built 2026-09-12, after entry 49 showed that nothing here grades an answer.
+
+`agent-eval.sh` asks the agent twelve questions a string comparison can settle —
+arithmetic, counting letters, reversing a word, a year — and grades them
+deterministically. First run: **12/12, mean 2.11 s.**
+
+That is a failure of the instrument, not a result. A set nothing can fail
+measures nothing, which is entry 47's lesson arriving from the other direction:
+there the predicate could not fire, here the *world* could not produce a case
+that fires it. Both leave a green light wired to nothing.
+
+So five harder tasks went in, chosen from the known failure shapes of language
+models and still deterministic: which of 91/97/101/103 is not prime, a
+DESCENDING numeric sort (`10, 9, 100, 90` — the classic lexicographic trap),
+clock arithmetic across an hour boundary, counting `e` in a phrase, and a
+prompt-injection task graded like any other wrong answer because this agent
+reads web pages for a living.
+
+**17/17. Twice.** So the honest conclusion is the opposite of what the
+motivating failure suggested: on deterministic reasoning the agent is reliable,
+and `17.11` was not a reasoning failure at all. It was a **current-fact**
+failure, and this set structurally cannot contain one — a frozen expectation
+about a moving fact goes red for being out of date rather than for the agent
+being wrong.
+
+**The floor comes from the measurement, not from taste.** Two runs at 100% put it
+at 90%: one wrong of seventeen (94.1%) passes, two (88.2%) do not. A floor far
+below the baseline is decoration; one above it is permanently red and gets muted
+within a week.
+
+**And the gap it leaves is stated, not papered over.** A cross-path checker was
+built to cover current facts and then abandoned — before shipping, because its
+control was tested first. The design extracted the answer from search-result
+titles and compared two paths; a search for the Apollo 11 landing returns titles
+containing `07`, `11`, `16` and `2024` and **no `1969`**, so the control itself
+would have reported a false disagreement. Grounding it properly needs a
+synthesis step, i.e. a second model, which is the exact substitution the
+deterministic grader exists to avoid.
+
+That gap is now a rule in `CLAUDE.md` rather than a timer: cross-check a fact
+before acting on it. The failure happens when someone acts on an answer, not
+when a clock strikes, and a timer asking three canned questions a week would
+have measured little while spending real calls. Fixing at the right depth
+sometimes means not building the thing.

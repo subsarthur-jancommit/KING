@@ -100,3 +100,12 @@ omniroute/plugins/*
 /_*.txt
 /_*.yml
 /.rotation-state*
+
+# The agent's weekly grade, written by agent-eval.timer. A measurement, not a
+# reference point: it changes on its own every Sunday, so committing it would
+# make A-2 red every week and put a line in every nightly delta for nothing.
+# audit/baseline.json IS committed, and the difference is the point — a human
+# moves that one deliberately, with a message explaining the shift.
+# A fresh clone therefore has no grade, and F-11 reports UNKNOWN rather than a
+# pass, which is the correct reading of "this agent has never been graded here".
+audit/agent-eval.json
