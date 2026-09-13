@@ -382,3 +382,36 @@ that flips one is visible as a change to this list.
 help if the old value is still in the log. `C-9` compares what exists against
 what this document names — if it fails, a secret was added and this file was
 not updated, which is exactly the gap it was written to close.
+
+### The same key, the same way, one day later — 2026-09-13
+
+`flow-search` is disclosed **again**, by the same mechanism the entry above
+describes, in a session where that entry had already been read.
+
+The question this time was smaller and that is the point: I wanted to know
+whether four flows carry a stray `note` property on their reply step — a
+**cosmetic** defect that blocks `ap_update_step` and has a known workaround
+(delete and re-add the step). I asked `ap_read_step_settings` for `step_3` of
+`search_web`, which is the HTTP request step, and its settings carry its
+`Authorization` header.
+
+Two things are worth writing down rather than just apologising for.
+
+**A documented hazard is not a guard.** The entry above states the rule in bold
+— *any object that contains a credential prints it when you ask the object
+about something else* — and I read that file this session. Knowing a rule and
+being stopped by it are different things, and only the second one is a control.
+The mirror in `flows/` has a real guard: it excludes each step's `input` block.
+The API path has none, and nothing in this repo can add one.
+
+**The cost was set by the question's value, and the question was worth nothing.**
+The credential radius is unchanged — same key, already on this list, rotation
+already pending — but the trade was a credential re-exposure for a cosmetic
+finding. The lesson is not "be more careful reading step settings". It is:
+**before reading an object that may contain a credential, ask what the answer is
+worth.** A cosmetic property is never worth it, and the `note` question was
+abandoned unanswered on those grounds.
+
+No change to the rotation radius: `flow-search` was already listed, scoped to
+`models=['search']` with `scopes=['self:usage']`, and reaches only
+`POST /v1/search`. It cannot spend on models and holds no manage scope.

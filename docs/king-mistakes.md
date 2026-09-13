@@ -2339,3 +2339,77 @@ check to keep it that way is queued rather than built here: fixing the text is
 in scope for the session that found it, and building a 108th audit check is a
 piece of work that deserves its own verification pass rather than being tacked
 onto the end of another.
+
+---
+
+## 52. The canary could reject broken source the subject could never contain
+
+Found 2026-09-13, by running the live positive control instead of trusting the
+fixtures.
+
+`F-7` had reported UNKNOWN for its whole life — *"no node here to parse the
+mirror with"* — which was true of the HOST and false of the machine: node runs
+in two of its containers. Rewiring it to derive a parser from the running
+containers turned it green, with a canary attached on the rule this file keeps
+restating: prove the instrument can say no before believing it when it says yes.
+
+The canary was `const = ;`. The parser rejected it. F-7 went PASS.
+
+Then the live control: append `const = ;` to the real mirror and watch F-7 go
+red. **It stayed green.**
+
+`node --check` on a `.js` file uses module DETECTION, and on node v24 that path
+returns 0 for a file whose first line is valid ESM and whose later lines are
+not. Measured, same container, same node:
+
+    const = ;                        -> 1   rejected
+    export const a = 1;              -> 0   fine
+    export const a = 1;  const = ;   -> 0   ACCEPTED
+    const a = 1;         const = ;   -> 1   rejected
+    const = ;  export const a = 1;   -> 1   rejected
+
+The mirror opens with `export const`, so it sat exactly in the blind spot.
+
+**The canary was broken source that was not MODULE-shaped, and the subject is a
+module.** So it proved the parser could reject something the subject could never
+be. Entry 47 said a canary must ask a question the world can actually produce;
+this is the same rule one level finer — it must also produce it in the
+subject's own shape. Both versions of the canary "fired". Only one of them was
+about the thing being measured.
+
+Two fixes, and the second matters more. The parser now writes `.mjs`, which
+forces the ESM parser and makes line three of that table a 1. And the canary is
+now `export const a = 1;\nconst = ;` — broken, and broken the way the subject
+could be.
+
+**What actually caught it was the cheapest test available**: break the real
+file, run the real check, put it back. Fixtures pin a predicate; only the live
+control asks whether the predicate is pointed at the right thing. It cost three
+commands and it was the difference between a green check and a green light
+wired to nothing.
+
+---
+
+## 53. Reading a step to check a cosmetic property re-exposed a credential
+
+Found 2026-09-13. Fully recorded, with its radius, in `docs/king-rotation.md`
+under *"The same key, the same way, one day later"*.
+
+The short version, because the engineering lesson is separable from the
+rotation bookkeeping: I asked `ap_read_step_settings` for a flow step in order
+to find out whether it carries a stray `note` property — a **cosmetic** defect
+with a known workaround. The step is an HTTP request, and an HTTP request's
+settings carry its `Authorization` header.
+
+The entry directly above it in that file states the hazard in bold — *any object
+that contains a credential prints it when you ask the object about something
+else* — and I had read that file the same session. **Knowing a rule and being
+stopped by one are different things, and only the second is a control.**
+
+The addition to the rule is about price, not care. The radius was unchanged and
+already pending rotation; what was wrong was the trade. **Before reading an
+object that may contain a credential, ask what the answer is worth.** A cosmetic
+property is never worth it. The question was abandoned unanswered on exactly
+those grounds, and the `note` defect keeps its workaround — delete the step and
+re-add it, which costs nothing while a flow is young enough to have no sample
+data.

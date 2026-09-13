@@ -239,7 +239,7 @@ F-5|per-provider failure rate, and what reached the caller
 F-6|the local model answers, and answers from this host
 F-6b|the gateway can reach the local model, which F-6 deliberately does not ask
 F-6c|every local model the gateway advertises is one the container actually holds
-F-7|flow mirror parses and exports what its tests import
+F-7|flow mirror parses as a module and exports what its tests import
 F-8|every destructive tool the servers offer is blocked from the agent
 F-9|every tool that can reach the network is acknowledged
 F-10|model-authored code runs off this host, per the RUNNING container
@@ -2586,6 +2586,76 @@ PYL9
 # written -- G-1, G-2, J-1 and A-9. The acknowledgement file is the one hand-kept
 # list here, and it is deliberately the short side: it holds what cannot be
 # fixed, not what is currently true.
+# _nodeparser — print how JavaScript can be parsed here: "host", or the name of
+# a running container that carries node. Empty when neither exists.
+#
+# F-7 reported UNKNOWN — "no node here to parse the mirror with" — for as long
+# as it has existed, because this VPS has no node on the host. It has node in
+# TWO running containers (activepieces v24.14.0, omniroute v26.8.1), which is
+# the same distinction F-6 makes for the local model: the capability is present,
+# the path to it was just never taken.
+#
+# The container is DERIVED, never named. A hardcoded container name is the
+# hand-kept inventory this repo has now been caught keeping five times, and it
+# would break the first time a service is renamed or the workflow profile is off.
+_nodeparser() {
+    if have node; then printf 'host'; return; fi
+    have docker || return
+    for _npc in $(docker ps --format '{{.Names}}' 2>/dev/null); do
+        if docker exec "$_npc" node --version >/dev/null 2>&1; then
+            printf '%s' "$_npc"; return
+        fi
+    done
+}
+
+# _nodecheck <parser> — parse stdin as an ES MODULE. Non-zero if it does not.
+#
+# The `.mjs` extension is load-bearing, not tidiness. `node --check` on a `.js`
+# file uses module DETECTION, and on node v24 that path returns 0 for a file
+# whose first line is valid ESM and whose later lines are not. Measured
+# 2026-09-13, same container, same node:
+#
+#   const = ;                              -> 1   rejected
+#   export const a = 1;                    -> 0   fine
+#   export const a = 1;  const = ;         -> 0   ACCEPTED, and it must not be
+#   const a = 1;         const = ;         -> 1   rejected
+#
+# The mirror this checks opens with `export const`, so it sat in exactly the
+# blind spot. `.mjs` forces the ESM parser and the third line above becomes 1.
+_nodecheck() {
+    case "${1:-}" in
+        '')   return 1 ;;
+        host) _nct=$(mktemp -d) || return 1
+              cat > "$_nct/m.mjs"
+              node --check "$_nct/m.mjs" >/dev/null 2>&1
+              _ncr=$?
+              rm -rf "$_nct"
+              return "$_ncr" ;;
+        *)    docker exec -i "$1" sh -c \
+                  'cat > /tmp/_f7.mjs; node --check /tmp/_f7.mjs; _r=$?; rm -f /tmp/_f7.mjs; exit $_r' \
+                  >/dev/null 2>&1 ;;
+    esac
+}
+
+# _f7verdict <parser> <canary: rejected|accepted|""> <mirror: ok|bad|"">
+#
+# F-7's judgement, separated so --self-test exercises the real thing.
+#
+# The canary is a dimension of the verdict, not a preamble to it. A parser that
+# ACCEPTS deliberately broken source is not a parser, and its acceptance of the
+# mirror would mean nothing — that is king-mistakes 47 in the one place here it
+# costs nothing to guard, since parsing has no side effects at all. So a
+# non-discriminating parser yields UNKNOWN, never a pass.
+_f7verdict() {
+    [ -n "${1:-}" ] || { printf 'noparser'; return ; }
+    [ "${2:-}" = "rejected" ] || { printf 'blindparser'; return ; }
+    case "${3:-}" in
+        ok)  printf 'pass' ;;
+        bad) printf 'fail' ;;
+        *)   printf 'noparser' ;;
+    esac
+}
+
 # _f11verdict <raw|ERR|empty> <eval verdict> <age in days> <max age in days>
 #
 # F-11's judgement, pulled out of the check body so --self-test exercises the
@@ -3257,20 +3327,55 @@ print("%s\t%s\t%s\t%s\t%s\t%s" % (d.get("verdict"), d.get("correct"), d.get("sco
     # import, and it exports the two functions they reach for. A mirror that
     # stopped parsing, or lost an export, is drifted in a way that matters
     # regardless of what the live step says.
+    #
+    # It reported UNKNOWN for as long as it existed — "no node here" — and that
+    # was true of the HOST and false of the machine: node runs in two containers
+    # on it. Same distinction F-6 draws for the local model, and the same fix:
+    # take the path that exists instead of reporting that the obvious one does
+    # not. The parser is derived, never named, and is asked to reject broken
+    # source before its acceptance of the mirror is believed.
     if [ -f flows/gateway_monitor.step_1.js ]; then
         _missing=""
         for _fn in isCredentialFailure callerImpact code; do
             grep -q "export const $_fn" flows/gateway_monitor.step_1.js || _missing="$_missing $_fn"
         done
+        _f7p=$(_nodeparser)
+        _f7canary=""
+        _f7mirror=""
+        if [ -n "$_f7p" ]; then
+            # Free, and with no side effect whatever: parsing changes nothing,
+            # so unlike the model canaries this one cannot perturb its subject.
+            #
+            # The canary is an ES MODULE that is broken, and the shape is the
+            # whole point. The first version was `const = ;` — broken, but not
+            # module-shaped — and it passed while the real check was blind: on
+            # node v24, `--check` on a .js file returns 0 for valid ESM followed
+            # by a syntax error. Proven by appending `const = ;` to the live
+            # mirror and watching F-7 stay green. A canary must have the
+            # SUBJECT'S shape, or it proves the parser can reject something the
+            # subject could never be. king-mistakes 47, third time.
+            if printf 'export const a = 1;\nconst = ;\n' | _nodecheck "$_f7p"
+            then _f7canary=accepted
+            else _f7canary=rejected
+            fi
+            if _nodecheck "$_f7p" < flows/gateway_monitor.step_1.js
+            then _f7mirror=ok
+            else _f7mirror=bad
+            fi
+        fi
         if [ -n "$_missing" ]; then
             chk F-7 FAIL "flow mirror is missing export(s) the tests import" "$_missing"
-        elif have node && node --check flows/gateway_monitor.step_1.js >/dev/null 2>&1; then
-            chk F-7 PASS "flow mirror parses and exports what the tests import" \
-                "a live diff needs ap_read_step_code, which has no key on this host"
-        elif have node; then
-            chk F-7 FAIL "flow mirror does not parse"
         else
-            chk F-7 UNKNOWN "no node here to parse the mirror with"
+            case "$(_f7verdict "$_f7p" "$_f7canary" "$_f7mirror")" in
+                noparser)    chk F-7 UNKNOWN "no node on this host and none in any running container" \
+                                 "the mirror's exports were checked; only its syntax could not be" ;;
+                blindparser) chk F-7 UNKNOWN "the parser accepted source that cannot parse" \
+                                 "it does not discriminate, so its acceptance of the mirror would mean nothing" ;;
+                fail)        chk F-7 FAIL "flow mirror does not parse" \
+                                 "parsed by node in $_f7p, which rejected deliberately broken source first" ;;
+                *)           chk F-7 PASS "flow mirror parses and exports what the tests import" \
+                                 "parsed by node in $_f7p, proven able to reject broken source first; a live diff needs ap_read_step_code, which has no key on this host" ;;
+            esac
         fi
     else
         chk F-7 SKIP "no flow mirror in this repo"
@@ -5295,6 +5400,40 @@ NSFIX
     if [ "$(_e5old "$_e5miss")" -gt 0 ]
     then printf '  ok    the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'
     else printf '  FAIL  the OLD echo-grep scored a miss as a hit, which is why it was replaced\n'; _f=$((_f+1)); fi
+
+    # ---- F-7: a parser is only evidence if it can reject ---------------------
+    #
+    # This check reported UNKNOWN for its whole life because the HOST has no
+    # node, while two running containers do. The verdict now has a canary
+    # dimension, and parsing is the one place in this file where a canary is
+    # completely free: it changes nothing, so unlike F-6b's first attempt it
+    # cannot perturb the thing it measures.
+    if [ "$(_f7verdict host rejected ok)" = "pass" ]
+    then printf '  ok    a discriminating parser accepting the mirror is a pass\n'
+    else printf '  FAIL  a discriminating parser accepting the mirror is a pass\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f7verdict king-activepieces-1 rejected bad)" = "fail" ]
+    then printf '  ok    a mirror that does not parse IS a failure\n'
+    else printf '  FAIL  a mirror that does not parse IS a failure\n'; _f=$((_f+1)); fi
+
+    # The canary dimension itself. A parser that accepts `const = ;` is not a
+    # parser, and its verdict on the mirror is worth nothing in EITHER direction
+    # — so this must not become a pass and must not become a failure.
+    if [ "$(_f7verdict host accepted ok)" = "blindparser" ]
+    then printf '  ok    a parser that accepts broken source cannot vouch for the mirror\n'
+    else printf '  FAIL  a parser that accepts broken source cannot vouch for the mirror\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f7verdict host accepted bad)" = "blindparser" ]
+    then printf '  ok    a blind parser is unknown even when it rejects the mirror\n'
+    else printf '  FAIL  a blind parser is unknown even when it rejects the mirror\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f7verdict '' '' '')" = "noparser" ]
+    then printf '  ok    no parser anywhere is unknown, never a pass\n'
+    else printf '  FAIL  no parser anywhere is unknown, never a pass\n'; _f=$((_f+1)); fi
+
+    if [ "$(_f7verdict host rejected '')" = "noparser" ]
+    then printf '  ok    a parser that produced no verdict on the mirror is unknown\n'
+    else printf '  FAIL  a parser that produced no verdict on the mirror is unknown\n'; _f=$((_f+1)); fi
 
     # ---- F-11: the agent's accuracy, and why age outranks the score ---------
     #
