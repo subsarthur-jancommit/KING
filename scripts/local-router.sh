@@ -135,15 +135,35 @@ SERVED = set()
 
 VALID = ("LOCAL", "FREE", "PAID", "WEB")
 
-# Which ladder each label spends on. These are combo names that already exist in
-# the gateway; the combo decides provider ORDER, this script only decides which
-# combo the task deserves. The LOCAL rung carries the gateway's `ollama/` prefix
-# because it is consumed by the gateway — unlike MODEL above, which is not.
+# Where each label sends the work. Three are gateway names — the combo decides
+# provider ORDER and this script only decides which combo the task deserves. The
+# LOCAL rung carries the gateway's `ollama/` prefix because it is consumed by the
+# gateway, unlike MODEL above.
+#
+# WEB is NOT a gateway name, and that correction was paid for. This table said
+# `websearch-tiers`, and `docs/king-system.md` said `the web_research flow` — the
+# two had disagreed for as long as both existed, and nobody noticed because
+# nothing ever CONSUMED this mapping. The script printed a label and stopped.
+# Dead configuration is unverified configuration; it was wired to a real call on
+# 2026-09-13 and failed on the first question.
+#
+# `websearch-tiers` is five plain chat models in priority order and contains no
+# retrieval step of any kind — read back from the gateway, not assumed. Asked
+# "the current stable PostgreSQL version" it answered, honestly, *"as of my last
+# knowledge update in early 2025 … PostgreSQL 17.2"*. The search path on the same
+# host returned "PostgreSQL 18 Released!" in the same minute.
+#
+# The combo is not misnamed: `search_web` and `web_research` use it as the
+# SYNTHESISER that runs after retrieval, which is a real job and the name fits
+# it. It is misused when called on its own, because then there is nothing to
+# synthesise from. Web capability lives in those flows — expand the query, POST
+# /v1/search, then synthesise — so WEB routes there and the caller is told it is
+# a flow rather than a model, since the two are invoked differently.
 LADDER = {
-    "LOCAL": "ollama/" + MODEL,
-    "FREE":  "free-then-local",
-    "PAID":  "paid-first",
-    "WEB":   "websearch-tiers",
+    "LOCAL": ("ollama/" + MODEL,   "gateway model"),
+    "FREE":  ("free-then-local",   "gateway combo"),
+    "PAID":  ("paid-first",        "gateway combo"),
+    "WEB":   ("search_web",        "Activepieces flow — combos cannot reach the web"),
 }
 
 
@@ -298,7 +318,13 @@ if MODE == "classify":
         print("Falling back to free-then-local, which is the safe default:")
         print("free-then-local")
         sys.exit(2)
-    print("%s  %s   (%.1fs)" % (label, LADDER[label], dt))
+    _dest, _kind = LADDER[label]
+    # The KIND is printed, not just the name. A gateway combo and an
+    # Activepieces flow are invoked differently, and a caller that treats one as
+    # the other sends a flow name to /v1/chat/completions and gets a 404 — or
+    # worse, sends a WEB question to a ladder of chat models and gets a
+    # confident answer from training data.
+    print("%s  %s   [%s]   (%.1fs)" % (label, _dest, _kind, dt))
     sys.exit(0)
 
 # --------------------------------------------------------------------- eval

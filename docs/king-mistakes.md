@@ -2463,3 +2463,60 @@ check existed. Today it reads `callers: mcp=12`, and that is worth seeing: the
 twelve "real" runs are all from `agent-eval`. Not probes — ordinary tasks, real
 completions, real routing, so they belong in the rate — but they are not
 production usage either, and a reader can now tell at a glance.
+
+---
+
+## 55. A routing table nothing executed, wrong in the one entry that mattered
+
+Found 2026-09-13, by wiring the navigator to a real call for the first time.
+
+`local-router.sh` classifies a task into `LOCAL / FREE / PAID / WEB` and maps
+the label to a destination. It has never once been consumed: the script prints
+the label and exits, and Claude picks directly. So the map was configuration
+that had never run.
+
+Running it end to end — navigator decides, the chosen destination answers, a
+second model extracts the bare value, all on the host — the very first question
+came back wrong:
+
+    seed      "What is the current latest stable release version of PostgreSQL?"
+    stage 1   WEB                    <- correct, local model, free
+    stage 2   WEB -> websearch-tiers
+    stage 3   "as of my last knowledge update in early 2025 … PostgreSQL 17.2"
+    stage 4   17.2
+
+**`websearch-tiers` is five plain chat models in priority order with no
+retrieval step of any kind.** Read back from the gateway, not assumed. The
+navigator classified perfectly and routed the work to a ladder that cannot
+reach the web, so a WEB question is answered from training data — and the model
+said so, plainly, in its own answer.
+
+**The repo already knew.** `docs/king-system.md` says `WEB -> the web_research
+flow`. The script said `websearch-tiers`. The two had disagreed for as long as
+both existed, and nothing caught it because nothing ever read the map. **Dead
+configuration is unverified configuration**, and this repo has now found the
+same shape four ways: a flag the parser accepted and nothing implemented (38), a
+`--positive-control` that parsed and did nothing (the poscontrol block), `F-7`
+reporting UNKNOWN where node was one container away (52), and now a table whose
+one wrong entry could not be wrong until something read it.
+
+**The combo is not misnamed, and saying so matters.** `search_web` and
+`web_research` use `websearch-tiers` as the SYNTHESISER that runs after
+retrieval — a real job the name fits. It is misused when called on its own,
+because then there is nothing to synthesise from.
+
+Corrected and re-run with the same seed, same navigator, and the **same
+synthesising model**:
+
+    WEB -> search_web   retrieve (tavily, 6 documents) then synthesise
+    answer   "…the link titled PostgreSQL 18 Released! from postgresql.org…"
+    stage 4  18
+
+`claude-opus-4-6-thinking-high` gave 17.2 ungrounded and 18 grounded. **The
+model was never the problem.** The destination was, and one honest end-to-end
+run found in four minutes what a year of the table sitting unread could not.
+
+The map now also prints the KIND of each destination — gateway model, gateway
+combo, Activepieces flow — because the three are invoked differently and a
+caller that confuses them either gets a 404 or, worse, a confident answer from
+the wrong kind of thing.
