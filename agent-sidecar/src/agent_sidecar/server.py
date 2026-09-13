@@ -114,6 +114,34 @@ async def health(_request: Request) -> JSONResponse:
     )
 
 
+def _caller_label(request: Request) -> str:
+    """Who says it is calling, for the run journal only.
+
+    `caller` was hardcoded "http" for every POST /run, so the journal could not
+    tell a real caller from a probe — and on 2026-09-13 that turned out to
+    matter. The audit's `F-4` reads the last rows of this journal to ask whether
+    callers got the model they asked for, and `F-3` runs
+    `check-model-routing.sh` immediately before it, which sends eight
+    agent-shaped probes through this very endpoint. Every row in F-4's window
+    was one of them: the check was measuring the audit, not the deployment.
+
+    Self-declared, and deliberately advisory. A caller could label real work as
+    a probe to keep it out of a count — but only a holder of
+    AGENT_SIDECAR_AUTH_TOKEN can reach this endpoint at all, and that token
+    already reaches a read-write docker socket. The label is not a privilege
+    boundary and must never be used as one. `F-4` also never DROPS a labelled
+    row; it counts and reports probes separately, so a mislabel changes which
+    column a run appears in and not whether it appears.
+
+    Sanitised because it is attacker-shaped input that lands in a JSON file
+    someone will later grep: a short allowlist of characters, a hard length cap,
+    and "http" whenever the header is absent or does not survive that.
+    """
+    raw = request.headers.get("x-agent-caller", "")
+    cleaned = "".join(c for c in raw if c.isalnum() or c in "-_.:")[:40]
+    return cleaned or "http"
+
+
 def _authorise(request: Request, settings) -> JSONResponse | None:
     """Return a rejection response, or None when the caller may proceed.
 
@@ -319,7 +347,10 @@ async def run(request: Request) -> JSONResponse:
     outcome = result if isinstance(result, dict) else {"result": result}
     summary = summarise(outcome, runner=runner, model=settings.model_id)
     journal_run(
-        summary, task=task, seconds=time.monotonic() - started, caller="http"
+        summary,
+        task=task,
+        seconds=time.monotonic() - started,
+        caller=_caller_label(request),
     )
     return JSONResponse(summary)
 

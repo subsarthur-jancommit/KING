@@ -1293,3 +1293,55 @@ def test_the_journal_records_which_tools_were_used(tmp_path, monkeypatch):
     assert entry["tools_used"] == ["get_neighbors"]
     # Both halves are recorded, because the comparison is the point.
     assert entry["tools"] == ["omniroute_web_search", "get_neighbors"]
+
+
+def _req(headers):
+    """A Request-shaped stand-in carrying only what _caller_label reads."""
+
+    class _R:
+        def __init__(self, h):
+            self.headers = h
+
+    return _R(headers)
+
+
+def test_the_caller_label_defaults_to_http_when_no_header_is_sent():
+    """Every existing caller keeps the label the journal has always recorded."""
+    from agent_sidecar.server import _caller_label
+
+    assert _caller_label(_req({})) == "http"
+
+
+def test_a_caller_may_name_itself_for_the_journal():
+    """`F-4` reads this journal to ask whether real callers got the model they
+    asked for, and could not tell a real caller from a probe while every row
+    said "http"."""
+    from agent_sidecar.server import _caller_label
+
+    assert (
+        _caller_label(_req({"x-agent-caller": "probe-check-model-routing"}))
+        == "probe-check-model-routing"
+    )
+
+
+def test_the_caller_label_is_sanitised_and_bounded():
+    """It is attacker-shaped input that lands in a JSON file someone will grep.
+
+    Anything outside the allowlist is dropped rather than escaped, and the
+    result is capped, so a label can never carry a newline into a JSONL file or
+    grow without bound.
+    """
+    from agent_sidecar.server import _caller_label
+
+    assert _caller_label(_req({"x-agent-caller": "a b\nc\td"})) == "abcd"
+    assert _caller_label(_req({"x-agent-caller": '{"x":1}'})) == "x:1"
+    assert len(_caller_label(_req({"x-agent-caller": "z" * 500}))) == 40
+
+
+def test_a_label_that_sanitises_to_nothing_falls_back_to_http():
+    """An empty label would make the journal row say nothing at all, which is
+    worse than the default it replaced."""
+    from agent_sidecar.server import _caller_label
+
+    assert _caller_label(_req({"x-agent-caller": "!!!"})) == "http"
+    assert _caller_label(_req({"x-agent-caller": "   "})) == "http"

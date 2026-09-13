@@ -80,8 +80,14 @@ sidecar_served=""
 tok=$(sed -n 's/^AGENT_SIDECAR_AUTH_TOKEN=//p' agent-sidecar/.env 2>/dev/null | tail -n 1)
 if [ -n "$tok" ]; then
     task='{"task":"What is 2 plus 2? Answer with the number only.","model":"'"$MODEL"'"}'
+    # The probe names itself, because F-4 reads the same journal this writes to.
+    # F-3 runs THIS script and F-4 runs immediately after it, so on 2026-09-13
+    # every row in F-4's twelve-row window was one of these probes: a check
+    # measuring the audit instead of the deployment, and going red because this
+    # script had successfully done its job of tripping the reroute.
     body=$(curl -s -m 300 -X POST "$SIDECAR/run" \
         -H 'Content-Type: application/json' \
+        -H 'X-Agent-Caller: probe-check-model-routing' \
         -H "Authorization: Bearer $tok" \
         -d "$task" 2>/dev/null || true)
     sidecar_served=$(printf '%s' "$body" | sed -n 's/.*"served_by":"\([^"]*\)".*/\1/p')

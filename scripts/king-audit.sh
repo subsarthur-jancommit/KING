@@ -2967,10 +2967,27 @@ for m in d.get("models",[]): print(str(m.get("name","")))' 2>/dev/null || true)
     # F-4: whether the caller got the model it asked for, from the journal
     # rather than from a probe. 19 of 21 runs were overridden before
     # graph_stats left the default set.
-    # Last 12, not last 40. The journal spans the change that fixed this,
-    # and a rate averaged across a fix describes neither the before nor the
-    # after -- it drifts toward the truth while looking like a measurement.
-    _jr=$(docker exec king-agent-sidecar-http-1 sh -c 'tail -12 /audit/runs.jsonl 2>/dev/null' 2>/dev/null || true)
+    #
+    # "rather than from a probe" was the stated intent and was not what it did.
+    # On 2026-09-13 every one of the twelve rows in its window was the SAME
+    # probe — "What is 2 plus 2? Answer with the number only." — sent by
+    # `check-model-routing.sh`, which `F-3` runs immediately before this. That
+    # script exists to trip the content-based reroute, it succeeded, F-3 passed
+    # for that reason, and F-4 then reported the success as a fault. One check
+    # measuring another check's deliberate probe, while the comment above
+    # promised the opposite.
+    #
+    # Two changes. The sidecar now records a self-declared `caller`, so a probe
+    # can say so, and the window reads 60 rows to find the last 12 REAL ones —
+    # eight probes per audit run would otherwise crowd real work out of any
+    # fixed tail.
+    #
+    # Probes are COUNTED AND REPORTED, never dropped. The label is advisory and
+    # a caller could mislabel real work to keep it out of the rate — but only a
+    # holder of AGENT_SIDECAR_AUTH_TOKEN can reach that endpoint at all, and
+    # that token already reaches a read-write docker socket. A mislabel changes
+    # which column a run appears in, not whether it appears.
+    _jr=$(docker exec king-agent-sidecar-http-1 sh -c 'tail -60 /audit/runs.jsonl 2>/dev/null' 2>/dev/null || true)
     if [ -z "$_jr" ]; then
         chk F-4 UNKNOWN "run journal unreadable; override rate unknown"
     elif [ -z "$PY" ]; then
@@ -2978,29 +2995,37 @@ for m in d.get("models",[]): print(str(m.get("name","")))' 2>/dev/null || true)
     else
         _ov=$(printf '%s' "$_jr" | "$PY" -c "
 import json,sys
-tot=ov=0
+real=[]; probes=0
 for line in sys.stdin:
     line=line.strip()
     if not line: continue
     try: d=json.loads(line)
     except Exception: continue
     if 'model_overridden' not in d: continue
-    tot+=1
-    if d['model_overridden']: ov+=1
-print('%d %d' % (ov,tot))" 2>/dev/null || true)
+    if str(d.get('caller','')).startswith('probe'):
+        probes+=1
+        continue
+    real.append(bool(d['model_overridden']))
+real = real[-12:]
+print('%d %d %d' % (sum(1 for x in real if x), len(real), probes))" 2>/dev/null || true)
         _o=$(printf '%s' "$_ov" | awk '{print $1}'); _t=$(printf '%s' "$_ov" | awk '{print $2}')
+        _pb=$(printf '%s' "$_ov" | awk '{print $3}')
         if [ -z "$_t" ] || [ "$_t" = "0" ]; then
-            chk F-4 UNKNOWN "no recent run records model_overridden"
+            # Not a pass. An audit whose own probes are the only traffic has
+            # learned nothing about what real callers are served.
+            chk F-4 UNKNOWN "no real caller in the last 60 journal rows; ${_pb:-0} were probes" \
+                "the override rate is unknown, which is not the same as zero"
         else
-            metric f4_overridden "$_o"; metric f4_runs "$_t"
+            metric f4_overridden "$_o"; metric f4_runs "$_t"; metric f4_probes "${_pb:-0}"
             if [ "$_o" -eq 0 ]; then
-                chk F-4 PASS "0 of $_t recent run(s) had their model overridden"
+                chk F-4 PASS "0 of $_t real run(s) had their model overridden" \
+                    "${_pb:-0} probe run(s) excluded from the rate and counted here instead"
             else
-                chk F-4 FAIL "$_o of $_t recent run(s) did not get the model they asked for"
+                chk F-4 FAIL "$_o of $_t real run(s) did not get the model they asked for" \
+                    "${_pb:-0} probe run(s) excluded; these are real callers, and the reroute lives in the vendored subtree"
             fi
         fi
     fi
-
     # F-5: attempts are not outcomes. Delegated to the report that already
     # groups by correlationId, because duplicating that logic is how two
     # instruments come to disagree.
