@@ -2520,3 +2520,47 @@ The map now also prints the KIND of each destination — gateway model, gateway
 combo, Activepieces flow — because the three are invoked differently and a
 caller that confuses them either gets a 404 or, worse, a confident answer from
 the wrong kind of thing.
+
+---
+
+## 56. The check that watches credentials had never been tested, and weighed them all the same
+
+Found 2026-09-13, by acting on L-1's own finding and looking at what it had not
+said.
+
+`L-1` went red: *"7 key(s); unused for over a fortnight: claude-code(15d)"*. A
+true finding — that key has no configured consumer at all; `ANTHROPIC_BASE_URL`
+appears nowhere outside the vendored subtree. But reading the full key list next
+to it showed the check had been quiet about something worse:
+
+| key | idle | reaches |
+|---|---|---|
+| `claude-code` | 15d | **any model** |
+| `claude-mcp-bridge` | **9d** | **any model**, and holds `manage` |
+| `flow-search` | 0d | `['search']` |
+
+One fortnight threshold for every key, whatever it can do. So an unrestricted
+key holding `manage`, idle nine days, **passed unmentioned** while a narrower one
+was named at fifteen. An idle key's risk is what it can reach, not only how long
+it has sat there — `flow-search` idle a month is nearly harmless, and
+`claude-mcp-bridge` idle nine days is the whole door.
+
+Two thresholds now, derived from the key's own scope rather than a typed list:
+**7 days** for a key with no model restriction or with `manage`/`admin`, **14**
+for a scoped one. Against the live gateway it now names both.
+
+**And the part that is worse than the threshold.** `L-1` had **no fixtures at
+all** — a check that decides whether a live credential is stale, never once
+exercised against a known case, for its entire life. It has seven now, including
+the canary that must come back empty for a key used an hour ago, and one pinning
+that an absent `lastUsedAt` reads as "never used" rather than as nothing to
+report. The reassuring reading of a missing field is the wrong one.
+
+Ages are pinned by passing `now` in. A fixture dated against the real clock
+drifts into passing or failing on its own, which is a test that measures the
+date.
+
+**What was deliberately not done.** The two idle keys were left alone. Deleting
+a live credential is outward-facing and not cleanly reversible, the operator was
+not present, and the check's job is to report the door — not to decide who may
+close it. Recommending it is the finding; doing it is theirs.

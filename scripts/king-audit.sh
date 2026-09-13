@@ -4605,44 +4605,76 @@ dim_L() {
         _kp=$(mktemp)
         cat > "$_kp" <<'PYKEYS'
 import datetime, json, sys
+
+# Two thresholds, because an idle key's risk is what it can DO, not only how
+# long it has sat there. Read from the gateway on 2026-09-13: `flow-search` is
+# scoped to models=['search'] and `claude-code` to ANY. A single fortnight rule
+# reported those identically, and let `claude-mcp-bridge` — ANY scope, idle nine
+# days — pass unmentioned while naming a narrower key at fifteen.
+#
+# BROAD means the key can reach any model, or carries `manage`/`admin`. That is
+# the whole door rather than one room, so it gets the shorter fuse.
+BROAD_DAYS = 7
+NARROW_DAYS = 14
+
+# argv[1] is an optional ISO timestamp used as "now". Only --self-test passes
+# it: fixtures that pinned ages against the real clock would drift into passing
+# or failing on their own, which is a test that measures the date.
+NOW = (datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+       if len(sys.argv) > 1 else datetime.datetime.now(datetime.timezone.utc))
+
 try:
     d = json.load(sys.stdin)
 except Exception:
     print("ERR"); raise SystemExit(0)
 ks = d if isinstance(d, list) else (d.get("keys") or d.get("data") or [])
-now = datetime.datetime.now(datetime.timezone.utc)
-stale, manage = [], []
+
+manage, broad_stale, narrow_stale = [], [], []
 for x in ks:
     name = str(x.get("name") or "?")
-    if "manage" in (x.get("scopes") or []) or "admin" in (x.get("scopes") or []):
+    scopes = x.get("scopes") or []
+    if "manage" in scopes or "admin" in scopes:
         manage.append(name)
+    # An ABSENT or empty allowedModels means no model restriction at all. The
+    # reassuring reading of a missing field is the wrong one here.
+    models = x.get("allowedModels") or x.get("models")
+    is_broad = (not models) or ("manage" in scopes) or ("admin" in scopes)
     last = x.get("lastUsedAt") or x.get("last_used_at")
     if not last:
-        stale.append(name + "(never)"); continue
+        (broad_stale if is_broad else narrow_stale).append(name + "(never)")
+        continue
     try:
         t = datetime.datetime.fromisoformat(str(last).replace("Z", "+00:00"))
-        if (now - t).days > 14:
-            stale.append("%s(%dd)" % (name, (now - t).days))
     except Exception:
-        pass
-print("%d\t%s\t%s" % (len(ks), ",".join(manage), ",".join(stale)))
+        continue
+    age = (NOW - t).days
+    if is_broad and age > BROAD_DAYS:
+        broad_stale.append("%s(%dd,ANY)" % (name, age))
+    elif (not is_broad) and age > NARROW_DAYS:
+        narrow_stale.append("%s(%dd)" % (name, age))
+print("%d\t%s\t%s\t%s" % (len(ks), ",".join(manage),
+                          ",".join(broad_stale), ",".join(narrow_stale)))
 PYKEYS
         _out=$(curl -s -m 25 "http://localhost:20128/api/keys" \
                -H "Authorization: Bearer $_k" 2>/dev/null | "$PY" "$_kp" 2>/dev/null || true)
         rm -f "$_kp"
         _tot=$(printf '%s' "$_out" | cut -f1)
         _mg=$(printf '%s' "$_out" | cut -f2)
-        _st=$(printf '%s' "$_out" | cut -f3)
+        _bs=$(printf '%s' "$_out" | cut -f3)
+        _ns=$(printf '%s' "$_out" | cut -f4)
         if [ -z "$_out" ] || [ "$_tot" = "ERR" ]; then
             chk L-1 UNKNOWN "could not read the gateway key list"
         else
             metric l1_keys "$_tot"
-            if [ -n "$_st" ]; then
-                chk L-1 FAIL "$_tot key(s); unused for over a fortnight: $_st" \
-                    "manage-scoped: ${_mg:-none} — a key nobody uses still opens the door"
+            if [ -n "$_bs" ]; then
+                chk L-1 FAIL "$_tot key(s); UNRESTRICTED key(s) idle over a week: $_bs" \
+                    "manage-scoped: ${_mg:-none} — these reach any model, so an idle one is the whole door standing open, not one room"
+            elif [ -n "$_ns" ]; then
+                chk L-1 FAIL "$_tot key(s); scoped key(s) idle over a fortnight: $_ns" \
+                    "manage-scoped: ${_mg:-none} — narrower than an unrestricted key, and still a credential nobody is using"
             else
-                chk L-1 PASS "$_tot key(s), all used within the fortnight" \
-                    "manage-scoped: ${_mg:-none}"
+                chk L-1 PASS "$_tot key(s), each used inside its own idle limit" \
+                    "manage-scoped: ${_mg:-none}; 7 days for a key that reaches any model, 14 for a scoped one"
             fi
         fi
     fi
@@ -5502,6 +5534,76 @@ NSFIX
     if [ "$(_f11verdict 'x' 'nonsense-verdict' 0 10)" = "unreadable" ]
     then printf '  ok    a verdict this check does not recognise is unknown, not a pass\n'
     else printf '  FAIL  a verdict this check does not recognise is unknown, not a pass\n'; _f=$((_f+1)); fi
+
+    # ---- L-1: idle keys, weighed by what they can reach ---------------------
+    #
+    # This predicate had NO fixtures for its whole life — a check that decides
+    # whether a live credential is stale, never once exercised against a known
+    # case. Found 2026-09-13 while acting on its own finding.
+    #
+    # `now` is passed in so ages are pinned. Fixtures dated against the real
+    # clock drift into passing or failing on their own, which is a test that
+    # measures the date.
+    if [ -n "$PY" ]; then
+        _l1m=$(printf 'PY%s' 'KEYS')
+        _l1r=$(mktemp)
+        sed -n "/<<'$_l1m'/,/^$_l1m\$/p" "$REPO/scripts/$(basename "$0")" 2>/dev/null \
+            | sed '1d;$d' > "$_l1r"
+        _l1now='2026-09-13T12:00:00Z'
+
+        # An unrestricted key idle nine days: under the old single fortnight
+        # rule this passed unmentioned. It is the reason the check changed.
+        _l1o=$(printf '%s' '{"keys":[{"name":"broad","scopes":["models"],"lastUsedAt":"2026-09-04T12:00:00Z"}]}' \
+               | "$PY" "$_l1r" "$_l1now" 2>/dev/null)
+        if [ "$(printf '%s' "$_l1o" | cut -f3)" = "broad(9d,ANY)" ]
+        then printf '  ok    an unrestricted key idle 9 days is reported\n'
+        else printf '  FAIL  an unrestricted key idle 9 days is reported\n'; _f=$((_f+1)); fi
+
+        # The same age on a SCOPED key is not a finding. Without this the new
+        # rule would just be "fail sooner for everyone", which is not what it
+        # claims to be.
+        _l1o=$(printf '%s' '{"keys":[{"name":"narrow","scopes":["models"],"allowedModels":["search"],"lastUsedAt":"2026-09-04T12:00:00Z"}]}' \
+               | "$PY" "$_l1r" "$_l1now" 2>/dev/null)
+        if [ "$(printf '%s' "$_l1o" | cut -f3)" = "" ] && [ "$(printf '%s' "$_l1o" | cut -f4)" = "" ]
+        then printf '  ok    a scoped key idle 9 days is not a finding\n'
+        else printf '  FAIL  a scoped key idle 9 days is not a finding\n'; _f=$((_f+1)); fi
+
+        _l1o=$(printf '%s' '{"keys":[{"name":"narrow","scopes":["models"],"allowedModels":["search"],"lastUsedAt":"2026-08-20T12:00:00Z"}]}' \
+               | "$PY" "$_l1r" "$_l1now" 2>/dev/null)
+        if [ "$(printf '%s' "$_l1o" | cut -f4)" = "narrow(24d)" ]
+        then printf '  ok    a scoped key still fails at the fortnight\n'
+        else printf '  FAIL  a scoped key still fails at the fortnight\n'; _f=$((_f+1)); fi
+
+        # THE CANARY. Every fixture above could be satisfied by a predicate that
+        # reports everything; this is the one that must come back empty.
+        _l1o=$(printf '%s' '{"keys":[{"name":"fresh","scopes":["models"],"lastUsedAt":"2026-09-13T11:00:00Z"}]}' \
+               | "$PY" "$_l1r" "$_l1now" 2>/dev/null)
+        if [ "$(printf '%s' "$_l1o" | cut -f3)" = "" ] && [ "$(printf '%s' "$_l1o" | cut -f4)" = "" ]
+        then printf '  ok    a key used an hour ago is reported by neither rule\n'
+        else printf '  FAIL  a key used an hour ago is reported by neither rule\n'; _f=$((_f+1)); fi
+
+        # A `manage` key is broad however narrow its model list, because the
+        # scope is the door, not the room.
+        _l1o=$(printf '%s' '{"keys":[{"name":"mg","scopes":["manage"],"allowedModels":["search"],"lastUsedAt":"2026-09-04T12:00:00Z"}]}' \
+               | "$PY" "$_l1r" "$_l1now" 2>/dev/null)
+        if [ "$(printf '%s' "$_l1o" | cut -f3)" = "mg(9d,ANY)" ] && [ "$(printf '%s' "$_l1o" | cut -f2)" = "mg" ]
+        then printf '  ok    a manage-scoped key counts as unrestricted whatever its model list\n'
+        else printf '  FAIL  a manage-scoped key counts as unrestricted whatever its model list\n'; _f=$((_f+1)); fi
+
+        # A key that has NEVER been used is the strongest case of all, and the
+        # absent-field reading must not be the reassuring one.
+        _l1o=$(printf '%s' '{"keys":[{"name":"virgin","scopes":["models"]}]}' \
+               | "$PY" "$_l1r" "$_l1now" 2>/dev/null)
+        if [ "$(printf '%s' "$_l1o" | cut -f3)" = "virgin(never)" ]
+        then printf '  ok    a key never used at all is reported, not skipped\n'
+        else printf '  FAIL  a key never used at all is reported, not skipped\n'; _f=$((_f+1)); fi
+
+        _l1o=$(printf '%s' 'not json at all' | "$PY" "$_l1r" "$_l1now" 2>/dev/null)
+        if [ "$_l1o" = "ERR" ]
+        then printf '  ok    an unreadable key list is ERR, never "no stale keys"\n'
+        else printf '  FAIL  an unreadable key list is ERR, never "no stale keys"\n'; _f=$((_f+1)); fi
+        rm -f "$_l1r"
+    fi
 
     # ---- F-6c: advertised local models against the ones actually held -------
     #
