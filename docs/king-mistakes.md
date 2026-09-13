@@ -2298,3 +2298,44 @@ before acting on it. The failure happens when someone acts on an answer, not
 when a clock strikes, and a timer asking three canned questions a week would
 have measured little while spending real calls. Fixing at the right depth
 sometimes means not building the thing.
+
+---
+
+## 51. The README counted the scripts it had not listed, and got the count from memory
+
+Found 2026-09-12, while verifying something else, by deriving a list this file
+had asserted.
+
+`README.md` ended its script inventory with:
+
+> **The four not listed above, so the list is not quietly short.**
+
+and then named four. The sentence exists to be honest about coverage, which is
+exactly the right instinct. It was wrong by seven: `king-audit.sh`,
+`king-audit-run.sh`, `king-backup.sh`, `king-firewall.sh`,
+`king-maintenance.sh`, `king-rotate.sh` and `king-tls-patch.sh` appeared
+**nowhere in the file**, not in that paragraph and not in any table above it.
+
+Finding it took one line:
+
+    for f in $(ls -1 scripts/*.sh | sed 's|scripts/||'); do
+      grep -q "$f" README.md || echo "unlisted: $f"
+    done
+
+**This is the fourth time in this repo that a hand-kept inventory has been found
+stale, and the second where the inventory asserted its own completeness.** `G-1`
+kept three guard names by hand, so a fourth guard's self-test was never run.
+`G-2` kept two report names, so `agent-report.sh` was never exercised by the
+check whose whole subject is whether reports report. `J-1` checked one hardcoded
+image. `A-9` the same shape again. Every one was fixed the same way — glob the
+directory, derive the population — and the README was never brought under that
+rule because prose does not look like an inventory.
+
+It is one. A sentence that counts things is a list with the count written down
+separately, and the count is what goes stale.
+
+The paragraph now names every script and says what it was wrong about. A derived
+check to keep it that way is queued rather than built here: fixing the text is
+in scope for the session that found it, and building a 108th audit check is a
+piece of work that deserves its own verification pass rather than being tacked
+onto the end of another.

@@ -513,6 +513,8 @@ how you will be looking for them.
 
 | | |
 |---|---|
+| `agent-eval.sh` | **Whether the agent is right**, not just whether it ran. 17 tasks a string comparison can settle, graded deterministically — no model judges another model here. Baseline 17/17, floor 90%. A weekly timer runs it and `F-11` reports the score; a run by hand gives the same answer in about a minute. |
+| `trace-report.sh [hours]` | Latency by the model that actually served, and how much of the traffic the gateway's own router decided rather than the caller. |
 | `agent-report.sh [days]` | Cost, tool use, degradation and `served_by` across agent runs. |
 | `alerts-report.sh [days]` | What `gateway_monitor` has been complaining about. Reads Postgres directly, so it answers even when Activepieces is wedged. |
 | `gateway-report.sh [hours]` | Who called the gateway and how each call was routed — rerouted by the gateway, through a ladder the caller chose, or left alone. This is how a flow finds out which tier it is really getting, since the AI piece returns text and not a model name. |
@@ -526,11 +528,25 @@ how you will be looking for them.
 | `combo-paid-first.sh` | Build the `paid-first` combo ladder. |
 | `codegraph-refresh.sh` | Rebuild the code graph. A daily timer already does this. |
 
-**The four not listed above, so the list is not quietly short.**
-`monitor-deadman.sh` and `pool-prove.sh` are run by their systemd timers rather
-than by hand — see the guards table in
+**The rest, so the list is not quietly short.** This paragraph used to say
+"the four not listed above" and was wrong by seven: every `king-*.sh` was
+missing from this file entirely while the sentence asserted completeness. A
+hand-kept inventory claiming its own coverage is the exact fault `G-1`, `G-2`,
+`J-1` and `A-9` were each caught committing — found here on 2026-09-12 by
+deriving the list instead of reading it.
+
+`monitor-deadman.sh`, `pool-prove.sh` and `agent-eval.sh` are run by their
+systemd timers rather than by hand — see the guards table in
 [`docs/king-system.md`](docs/king-system.md) §7. `ci-build-omniroute-base.sh`
 runs only in CI, and is described in the workflow section above.
+
+The `king-*` family is operator tooling, each documented where it is used:
+`king-audit.sh` is the 107-check audit (§7 of `docs/king-system.md`) and
+`king-audit-run.sh` is what its nightly timer executes; `king-backup.sh` runs
+nightly at 04:30; `king-firewall.sh` installs the host rules `K-2` checks;
+`king-rotate.sh` is the rotation runbook; `king-tls-patch.sh` is the patch layer
+that closed CVE-2025-68121; `king-maintenance.sh` is the periodic cleanup.
+
 `local-router.sh` chooses which ladder a task deserves using the local model;
 it is retired from the live decision path, since Claude now picks directly, and
 is kept because its scored eval is the record of what that routing actually
